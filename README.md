@@ -7,6 +7,7 @@ Built phase by phase against `Remote_Desktop_Platform_Specification.docx`.
 | Phase | Scope | Status |
 | --- | --- | --- |
 | P1 | Relay, auth, session model, audit log, console shell | **Done — checkpoint passing** |
+| — | Operator console rebuilt to Appendix A, plus the session transport | **Done — 32/32 conformance checks** |
 | P2 | Core session on Windows: capture, control, tray/consent | Not started |
 | P3 | Same on macOS and Linux | Not started |
 | P4 | File transfer, terminal, clipboard, multi-monitor, screenshot/zoom/annotate | Not started |
@@ -18,12 +19,12 @@ Read `PROJECT_STATUS.md` for what actually works right now.
 ## Layout
 
 ```
-relay/      FastAPI relay server (auth, sessions, audit) + Alembic migrations
-console/    React + TypeScript + Vite + Tailwind operator console
-agent/      Endpoint agent - Phase 2
+relay/      FastAPI relay server (auth, sessions, audit, session transport)
+console/    React + TypeScript + Vite + Tailwind operator console (Appendix A)
+agent/      dev_guest.py development guest; the real agent is Phase 2
 infra/      docker-compose stack and the nginx config
-tests/e2e/  Browser acceptance tests, one per phase checkpoint
-docs/       Screenshots from the passing phase checkpoints
+tests/e2e/  Browser conformance tests
+docs/       Screenshots from the passing runs
 ```
 
 ## Run it locally
@@ -55,13 +56,31 @@ cd console && npm install && npm run dev     # http://localhost:5173
 
 Sign in with the seeded account. The console proxies `/api` to the relay.
 
+## See a live session
+
+Create a session in the console, copy its code, then join as a guest:
+
+```bash
+# Streams a generated test image - no display needed
+.venv/bin/python agent/dev_guest.py --code <CODE> --synthetic
+
+# Or stream this machine's real screen
+.venv/bin/python agent/dev_guest.py --code <CODE>
+```
+
+The connection indicator turns green, the waiting line flips to "Your guest has
+joined.", a LIVE preview appears, and Join opens the full viewer.
+
 ## Tests
 
 ```bash
-cd relay && ../.venv/bin/python -m pytest              # 22 API/database tests
-.venv/bin/python tests/e2e/p1_console.py docs/screenshots   # 10 browser checks
+cd relay && ../.venv/bin/python -m pytest        # 31 API and database tests
+
+# Appendix A conformance - needs the relay, the console and a guest running
+GUEST_CODE=<CODE> GUEST_LOG=/tmp/guest.log \
+  .venv/bin/python tests/e2e/console_appendix_a.py docs/screenshots
 ```
 
-The browser test drives the real console in Google Chrome and is the Phase 1
-checkpoint from the specification: an operator logs in, a session record is
-created and appears in the console, and the audit log records it.
+The browser suite drives the real console in Google Chrome against a live guest
+and checks Appendix A point by point, including that pointer input lands on the
+right guest coordinate when the canvas is letterboxed.

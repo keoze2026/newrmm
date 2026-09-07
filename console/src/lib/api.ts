@@ -19,6 +19,10 @@ export function loadToken(): string | null {
   return authToken
 }
 
+export function currentToken(): string | null {
+  return authToken
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   headers.set('Content-Type', 'application/json')
@@ -48,9 +52,29 @@ export interface Operator {
   last_login_at: string | null
 }
 
+export interface Monitor {
+  index: number
+  label: string
+  width: number
+  height: number
+}
+
+export interface SystemInfo {
+  hostname?: string
+  os?: string
+  os_version?: string
+  user?: string
+  ip?: string
+  cpu?: string
+  cores?: number
+  memory?: string
+  agent_version?: string
+}
+
 export interface Session {
   id: string
   code: string
+  name: string
   mode: 'attended' | 'unattended'
   state: 'pending' | 'active' | 'ended'
   operator_id: string
@@ -58,15 +82,24 @@ export interface Session {
   created_at: string
   started_at: string | null
   ended_at: string | null
+  host_name: string | null
+  guest_connected: boolean
+  guest_joined_at: string | null
+  guest_last_seen_at: string | null
+  system_info: SystemInfo
+  monitors: Monitor[]
 }
 
-export interface Device {
+export interface HistoryEntry {
   id: string
   name: string
-  os: 'windows' | 'macos' | 'linux'
-  status: 'online' | 'offline'
-  enrolled_at: string
-  last_seen_at: string | null
+  code: string
+  kind: string
+  state: string
+  created_at: string
+  started_at: string | null
+  ended_at: string | null
+  duration_seconds: number | null
 }
 
 export interface AuditEvent {
@@ -89,20 +122,32 @@ export const api = {
       body: JSON.stringify({ email, password }),
     }),
   me: () => request<Operator>('/auth/me'),
-  listSessions: () => request<Session[]>('/sessions'),
-  createSession: (mode: 'attended' | 'unattended', deviceId?: string) =>
-    request<Session>('/sessions', {
-      method: 'POST',
-      body: JSON.stringify({ mode, device_id: deviceId ?? null }),
-    }),
-  updateSessionState: (id: string, state: 'active' | 'ended') =>
-    request<Session>(`/sessions/${id}`, { method: 'PATCH', body: JSON.stringify({ state }) }),
-  listDevices: () => request<Device[]>('/devices'),
-  enrollDevice: (name: string, os: Device['os']) =>
-    request<Device & { enrollment_secret: string }>('/devices', {
-      method: 'POST',
-      body: JSON.stringify({ name, os }),
-    }),
-  listAudit: () => request<AuditEvent[]>('/audit'),
+  listSessions: (q?: string) =>
+    request<Session[]>(`/sessions${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+  getSession: (id: string) => request<Session>(`/sessions/${id}`),
+  createSession: () => request<Session>('/sessions', { method: 'POST', body: JSON.stringify({ mode: 'attended' }) }),
+  renameSession: (id: string, name: string) =>
+    request<Session>(`/sessions/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  endSession: (id: string) =>
+    request<Session>(`/sessions/${id}`, { method: 'PATCH', body: JSON.stringify({ state: 'ended' }) }),
+  deleteSession: (id: string) => request<void>(`/sessions/${id}`, { method: 'DELETE' }),
+  sessionHistory: (id: string) => request<HistoryEntry[]>(`/sessions/${id}/history`),
+  sessionLogs: (id: string) => request<AuditEvent[]>(`/sessions/${id}/logs`),
   health: () => request<{ status: string; checks: Record<string, string> }>('/health'),
+}
+
+/** Absolute join URL the guest is directed to (Appendix A.5). */
+export function joinUrl(): string {
+  return `${window.location.origin}/join`
+}
+
+export function joinLink(code: string): string {
+  return `${window.location.origin}/join?code=${code}`
+}
+
+export function operatorSocketUrl(code: string): string {
+  const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  return `${scheme}://${window.location.host}/api/ws/operator/${code}?token=${encodeURIComponent(
+    authToken ?? '',
+  )}`
 }

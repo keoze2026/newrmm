@@ -87,3 +87,46 @@ A server host with a public domain and TLS certificate is available for the rela
 Code-signing certificates for Windows and macOS installers can be procured.
 Target OS versions: Windows 10 2004+ / 11, macOS 12+, mainstream Linux desktops (X11 and Wayland).
 Endpoints have outbound internet access to the relay.
+
+
+Appendix A — Exact UI & Functionality Specification
+The operator console must reproduce the following layout and behaviour exactly. It is a single-page application (no page reloads); selecting an item on the left fills the panels to the right. Light theme, corporate palette: primary blue #2F6FE4, deep navy #1F3A5F, near-white background #F7F9FC, subtle grey borders. System font (Inter/system-ui).
+A.1 Login screen
+Centered card on a light background. Brand mark + 'RMM Console' title, subtitle 'Sign in to your monitoring server'.
+Fields: EMAIL, PASSWORD only. No server field (server is the site the console is served from).
+Primary 'Sign in' button (full width). Footer note: 'The first account registered on a server becomes the admin.'
+Enter key submits. Invalid credentials show an inline error.
+A.2 Main layout — four columns, left to right
+Column 1 — Icon rail (~74px): square brand logo tile at top; a 'Support' nav item (icon + label) highlighted when active; a notification bell and a circular user-initial avatar pinned at the bottom.
+Column 2 — Section panel (~300px): large 'Support' heading; subtitle 'Provide on-demand support for any device on the internet.'; full-width blue 'Create +' button; below it a 'My Sessions' row with a live count badge.
+Column 3 — Session list (fixed width): header row 'My Sessions' + a toolbar of text+icon actions: Join, Edit, Delete, More. Below: a select-all checkbox with a dropdown caret, and a rounded 'Search My Sessions' box. Then the list of session rows.
+Column 4 — Detail panel (fills remaining width): a vertical icon tab strip on its left edge, and the selected session's content to its right.
+A.3 Session list rows
+Each row: session name (e.g. 'MKWJN') in bold, 'Host: <name>' beneath it, and a per-row checkbox.
+Right side of the row: a connection indicator — a person icon, a horizontal line, a second person icon — the line/second person turns green when the guest is connected, grey when not.
+Clicking a row selects it and fills the detail panel. The selected row is highlighted.
+A.4 Detail panel — vertical tab strip (top to bottom)
+Session/participant (default), System info, Session history, Chat, Terminal (command prompt), Files (document), Tools (wrench), Download, Logs, Locate (crosshair).
+The active tab is marked with a blue left-border and blue icon; inactive icons are grey.
+A.5 Detail panel — Session tab (default view)
+'Name:' label with the session name in an editable field that has a pencil affordance (Edit renames the session; the join code is never editable).
+'Invite via:' with two tabs — Code (default) and Link.
+Code view: a card reading 'Direct guest to:' with the join URL centered, then 'And instruct to type in the code:' with the code shown large and bold (e.g. 'UE9904'); a copy/more affordance.
+Link view: the shareable https join link in a read-only field with a copy button.
+A centered blue 'Join' button (enabled once the guest has joined).
+A waiting-state line with an hourglass: 'Your guest has not joined yet…' with the italic helper 'Once you and your guest join the session, you can control their screen. Click Join to launch the host client.' When joined it reads 'Your guest has joined.'
+Once joined, a small LIVE preview of the guest screen appears below; clicking it (or Join) opens the full viewer.
+A.6 Other detail tabs
+System info: hostname, OS + version, logged-in user, IP, CPU, cores, memory, agent version, status, last seen.
+Session history: past sessions for this machine — start time, kind, status, duration.
+Logs: the server-side audit trail for this machine.
+Terminal / Files / Download: launch into the active remote session; if the guest hasn't joined, show a clear 'available once your guest joins' state.
+Chat / Tools / Locate: present in the strip; label clearly if not yet implemented.
+A.7 Full-screen remote viewer (opens on Join)
+Full-window overlay. Top bar: machine name + live status dot, and a live 'fps · kbps' readout.
+Toolbar (right): Controlling/View-only toggle, Terminal, Files, Screenshot, Monitor switcher, Zoom in, Zoom out, Annotate (pen) + Clear, Send file (upload), Get file (download), Fullscreen, and End (X).
+The guest screen renders on a canvas that scales to fill the viewer while preserving aspect ratio; the mouse maps 1:1 to the correct point on the guest even when letterboxed.
+Full mouse + keyboard control when 'Controlling' is on. Terminal and Files open as panels within the viewer.
+Blank (eye-slash) toggles the guest privacy screen.
+A.8 Cross-platform requirement
+This exact console UI and every behaviour above must work identically regardless of whether the connected endpoint is Windows, macOS or Linux. The console is one web app; only the endpoint agent differs per OS.

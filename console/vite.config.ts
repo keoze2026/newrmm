@@ -11,6 +11,8 @@ export default defineConfig({
       '/api': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
+        // The session transport runs over this proxy, so it must upgrade.
+        ws: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
       },
     },
