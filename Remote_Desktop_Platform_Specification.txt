@@ -1,0 +1,89 @@
+Remote Desktop & Support Platform
+Engineering Specification & Delivery Plan
+Cross-platform: Windows • macOS • Linux
+Version 1.0    |    1 September 2026
+
+1. Executive Summary
+This document specifies a self-hosted remote desktop and remote-support platform that lets an authorised operator securely view and control a remote computer over the internet. It supports both attended support (a user shares a short session code to receive help) and unattended access (a managed device the operator can reach at any time).
+The platform must deliver a complete, reliable experience on all three major operating systems — Windows, macOS and Linux — for both the operator console and the endpoint being controlled. This document defines the objectives, architecture, full feature set, per-platform technical approach, milestones, timeline, acceptance criteria, security model and risks.
+2. Objectives & Success Definition
+A user can start or join a session in seconds — no manual configuration.
+The operator sees the remote screen live and controls mouse and keyboard with low latency.
+Works end-to-end on Windows, macOS and Linux endpoints, and from a browser-based operator console.
+Secure by default: encrypted transport, authenticated operators, and a visible consent surface on the endpoint.
+Stable for long sessions and over constrained/low-bandwidth connections.
+Definition of done: every feature in Section 4 works on all three platforms, meets the acceptance criteria in Section 8, and is deployed and reproducibly built.
+3. System Architecture
+Operator Console — browser-based UI: device/session list, live viewer, control, tools. Runs anywhere.
+Relay Server — authenticates operators, brokers sessions, and relays commands and screen frames between operator and endpoint. Horizontally scalable.
+Endpoint Agent — a lightweight application installed on the remote machine: captures the screen, injects input, and runs the on-endpoint tools. One build per OS.
+Directory / Data store — devices, users, sessions and an append-only audit log.
+All operator↔endpoint traffic is encrypted and flows through the relay, so no inbound firewall changes are required on the endpoint.
+4. Feature Set
+Feature | Description
+Attended sessions | User receives a short code + link, runs a connector, and is instantly connected to the operator.
+Unattended access | Managed devices stay enrolled and reachable at any time, with per-device credentials.
+Live screen view | Continuous capture of the endpoint screen, streamed to the console.
+Remote control | Full mouse and keyboard control, resolution-independent.
+Multi-monitor | Enumerate the endpoint's displays and switch which one is viewed.
+File transfer | Send files to and retrieve files from the endpoint.
+Remote terminal | A shell on the endpoint (PowerShell/cmd, bash, zsh).
+Clipboard sync | Copy/paste text between operator and endpoint.
+Privacy blank screen | The endpoint's physical display shows black while the operator retains a live view and control.
+Session tools | Screenshot, zoom, on-screen annotation.
+Consent & presence | A tray indicator and session notifications on the endpoint; nothing captured outside an active session.
+Audit log | Every session and significant action recorded.
+
+5. Per-Platform Technical Approach
+Each capability maps to native OS facilities. The hardest cross-platform item is the privacy blank screen, because hiding the endpoint's screen from its own capture is an OS-graphics-layer operation that differs per platform.
+Capability | Windows | macOS | Linux
+Screen capture | Windows.Graphics.Capture (native) | ScreenCaptureKit | PipeWire (Wayland) / X11 XShm
+Input injection | SendInput | CGEvent | uinput / XTest
+Privacy blank | Capture-exclusion flag + native capture engine (Rust) | Window sharing-type = none | Compositor exclusion; else guest-lock variant
+Tray / presence | Native shell tray | Menu-bar status item | StatusNotifier/AppIndicator
+Auto-start | Registry / Startup / Task | LaunchAgent | systemd user service
+
+Privacy blank: on Windows the black window is marked excluded from capture and a native capture engine (implemented in Rust, via the windows-capture binding) keeps delivering live frames of the desktop behind it; on macOS the window's sharing type is set so it does not appear in captures; on Linux, where no universal capture-exclusion exists, the platform provides a guest-lock variant (black overlay + blocked local input) as the reliable fallback. No kernel display driver is used on any platform.
+6. Technology Stack
+Operator console: modern web app (TypeScript).
+Relay server: async service (e.g. Python/FastAPI) with a pub/sub layer and a relational store.
+Endpoint agent: a cross-platform core plus a small native capture module per OS (Windows native module in RUST via the windows-capture / Windows.Graphics.Capture binding, exposed to the agent as a Python module; macOS in Swift/Obj-C with ScreenCaptureKit; Linux in C with PipeWire/X11).
+Transport: secure WebSockets over TLS.
+Build/CI: automated per-OS builds producing signed installers.
+7. Milestones & Timeline
+Phased delivery. Indicative total: 10–14 weeks for full cross-platform parity, front-loading the core session path so a usable product exists early.
+Testing gate: every phase ends with the test checkpoint in the table below. The system is verified working — on real Windows, macOS and Linux machines where the phase applies — before the next phase begins. A phase is not considered done until its checkpoint passes and the previous phases still pass (regression).
+Phase | Milestone | Scope | Test checkpoint (must pass before next phase) | Duration
+P1 | Foundation | Relay server, auth, session model, audit log; operator console shell | Operator can log in; a session record is created and appears in the console; audit log records it. | 2 weeks
+P2 | Core session (Windows) | Enroll/connect, live capture, remote control, tray/consent on Windows | A Windows endpoint connects, streams a live screen, and is controllable; tray + consent show. End-to-end tested on a real Windows machine. | 2 weeks
+P3 | Cross-platform core | Bring capture + control + tray to macOS and Linux; console viewer parity | Same connect → live view → control test passes on a real macOS and a real Linux machine. | 2–3 weeks
+P4 | Productivity tools | File transfer, terminal, clipboard, multi-monitor, screenshot/zoom/annotate — all platforms | Each tool exercised and confirmed working on Windows, macOS and Linux; core session still passes (regression). | 2 weeks
+P5 | Privacy blank | Native capture-exclusion on Windows & macOS; guest-lock variant on Linux | Blank on → guest black, operator stays LIVE + in control for 10+ min (Win/mac); guest-lock verified on Linux; agent stays online across toggles. | 2–3 weeks
+P6 | Hardening & release | Security review, low-bandwidth tuning, logging, signed installers, cross-machine testing, deployment | Full acceptance suite (Section 8) re-run on all three OSes; signed installers install clean; deployed build verified live. | 2 weeks
+
+8. Acceptance Criteria
+A new user connects an attended session in under 60 seconds on each OS.
+Live view sustains a smooth frame rate and responsive control on a normal broadband link; remains usable on ~1 Mbps.
+All Section 4 features function on Windows, macOS and Linux endpoints.
+Privacy blank: guest sees black; operator keeps a LIVE view and control for a full session (Windows/macOS); Linux delivers the guest-lock behaviour.
+Endpoint agent stays connected across long sessions and reconnects automatically after drops.
+Encrypted transport, authenticated operators, visible endpoint consent, and a complete audit trail.
+Every platform build is reproducible from CI and installs without manual steps.
+9. Security & Consent
+All traffic encrypted (TLS); operators authenticated; per-device secrets stored hashed.
+The endpoint always shows a visible presence indicator and notifies the user when a session starts.
+No input capture or screen capture occurs outside an active, consented session.
+Full audit log of connects, disconnects, sessions and administrative actions.
+10. Risks & Mitigations
+Risk | Mitigation
+Privacy blank varies by OS; Linux has no universal exclusion | Native exclusion on Windows/macOS; guest-lock fallback on Linux, clearly specified.
+Antivirus/SmartScreen flags installers | Code-sign installers; test on AV-enabled machines early.
+Low-bandwidth performance | Changed-region streaming, adaptive quality/frame-rate.
+Native per-OS modules add build complexity | Isolate native code behind a stable interface; automated per-OS CI.
+Scope creep | Phased plan; each phase independently shippable.
+
+11. Assumptions & Dependencies
+A server host with a public domain and TLS certificate is available for the relay.
+Code-signing certificates for Windows and macOS installers can be procured.
+Target OS versions: Windows 10 2004+ / 11, macOS 12+, mainstream Linux desktops (X11 and Wayland).
+Endpoints have outbound internet access to the relay.
