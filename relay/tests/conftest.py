@@ -72,3 +72,27 @@ async def auth_headers(client):
     )
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+@pytest.fixture(autouse=True)
+async def reset_rate_limits():
+    """Give every test a clean rate-limit allowance.
+
+    The suite logs in once per test through `auth_headers`, which the login
+    limit would throttle after ten. Tests are not a realistic caller; the
+    limits themselves are exercised deliberately in test_security.py.
+    """
+    from app.services import ratelimit
+
+    async def clear():
+        ratelimit._memory.clear()
+        client = await ratelimit._client()
+        if client is None:
+            return
+        keys = [key async for key in client.scan_iter("rmm:rate:*")]
+        if keys:
+            await client.delete(*keys)
+
+    await clear()
+    yield
+    await clear()

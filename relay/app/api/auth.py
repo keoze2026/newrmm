@@ -10,7 +10,7 @@ from app.core.security import create_access_token, verify_secret
 from app.db.session import get_db
 from app.models import Operator
 from app.schemas.auth import LoginRequest, OperatorOut, TokenResponse
-from app.services import audit
+from app.services import audit, ratelimit
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -21,6 +21,9 @@ async def login(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> TokenResponse:
+    # Nothing throttled password guessing before the Phase 6 review.
+    await ratelimit.enforce(request, "login", limit=10, window=60)
+
     operator = await db.scalar(select(Operator).where(Operator.email == payload.email.lower()))
     ip = client_ip(request)
 

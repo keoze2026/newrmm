@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import client_ip
 from app.db.session import get_db
 from app.models import Session
-from app.services import audit
+from app.services import audit, ratelimit
 
 router = APIRouter(prefix="/connector", tags=["connector"])
 
@@ -92,12 +92,18 @@ async def list_connectors() -> dict:
 
 
 @router.get("/session/{code}")
-async def session_for_code(code: str, db: AsyncSession = Depends(get_db)) -> dict:
+async def session_for_code(
+    code: str, request: Request, db: AsyncSession = Depends(get_db)
+) -> dict:
     """Confirm a code before the guest downloads anything.
 
     Returns only what a guest needs to see - never the operator, the device or
     anything about other sessions.
     """
+    # This route answers "is this code real?", so it is the cheapest way to
+    # hunt for live sessions. A guest types their code once; a script does not.
+    await ratelimit.enforce(request, "code-probe", limit=20, window=60)
+
     session = await db.scalar(select(Session).where(Session.code == code.upper()))
     if session is None or session.state == "ended":
         raise HTTPException(status_code=404, detail="That session code is not valid")

@@ -16,7 +16,7 @@ from sqlalchemy import select
 from app.core.security import decode_access_token, verify_secret
 from app.db.session import SessionLocal
 from app.models import Device, Operator, Session
-from app.services import audit
+from app.services import audit, ratelimit
 from app.services.hub import hub
 
 router = APIRouter(tags=["session-transport"])
@@ -60,6 +60,14 @@ async def guest_socket(
     type in.
     """
     code = code.upper()
+
+    # The code is the whole credential for an attended session, so guessing it
+    # here has to be as slow as guessing it over HTTP.
+    origin = websocket.client.host if websocket.client else "unknown"
+    if not await ratelimit.allowed(origin, "guest-join", limit=20, window=60):
+        await websocket.close(code=4429, reason="Too many attempts")
+        return
+
     async with SessionLocal() as db:
         session = await db.scalar(select(Session).where(Session.code == code))
         if session is None or session.state == "ended":
