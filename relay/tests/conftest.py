@@ -2,7 +2,12 @@ import os
 
 # The test suite runs against a dedicated database, set before app.core.config
 # reads its settings.
-os.environ["DATABASE_URL"] = "postgresql+asyncpg://rdp:rdp_dev_pass@127.0.0.1:55433/rdp_test"
+# Respect a DATABASE_URL the environment already provides - CI supplies its own
+# Postgres - and fall back to the local development container otherwise. Setting
+# it unconditionally made the suite ignore whichever database it was given.
+os.environ.setdefault(
+    "DATABASE_URL", "postgresql+asyncpg://rdp:rdp_dev_pass@127.0.0.1:55433/rdp_test"
+)
 
 import subprocess  # noqa: E402
 import sys  # noqa: E402
