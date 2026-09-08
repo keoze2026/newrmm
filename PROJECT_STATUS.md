@@ -59,7 +59,16 @@ covers standing the relay up somewhere the other machines can reach.
 | Agent capture, input injection and tray all available on Linux | `python -m rmm_agent status` |
 | Operator coordinates map correctly on Retina, DPI-scaled and secondary displays | `agent/tests/test_input_mapping.py` — the cases this hardware cannot reproduce |
 | Reported display geometry matches the captured frame | `tests/e2e/p3_linux_endpoint.py` |
-| The build script produces a standalone binary that joins a session and streams | Built here: 23 MB `agent/dist/rmm-agent`, run and connected |
+| The build script produces a standalone binary that joins a session and streams | Built here: `agent/dist/rmm-agent`, run and connected, with the native module bundled |
+| **The native C capture module (X11 XShm) is the capture path in use, not the mss fallback** | `tests/e2e/p3_linux_endpoint.py` asserts the backend is `native-x11-shm` |
+| The native module is measurably faster than the fallback | 164 fps raw at 1920x1200, 62 fps end to end, against about 40 fps on mss |
+| Privacy blank: the captured screen really goes black, and comes back | `tests/e2e/p5_privacy_blank.py` — mean luminance 73 → 0.1 → 73 |
+| The agent keeps streaming and stays online across repeated blank toggles | `tests/e2e/p5_privacy_blank.py` (the P5 checkpoint) |
+| The endpoint reports guest-lock rather than claiming capture-exclusion | `tests/e2e/p5_privacy_blank.py`, `agent/tests/test_privacy.py` |
+| The overlay is proven to cover the whole screen, and refuses to claim success otherwise | `agent/tests/test_privacy.py` |
+| The guest-lock blocks local input, and always releases it | `agent/tests/test_privacy_input_block.py` (in a throwaway process with a watchdog) |
+| A blank never outlives its session, and a watchdog releases it regardless | `tests/e2e/p5_privacy_blank.py`, `agent/tests/test_privacy.py` |
+| Ending a session disconnects the endpoint, so capture actually stops | `relay/tests/test_session_console.py`, `tests/e2e/p5_privacy_blank.py` |
 | Agent reconnects with exponential backoff after a drop | `agent/rmm_agent/session.py` (code path exercised; drop scenario is on the Windows checklist) |
 | **Real** screen capture of the Linux desktop, sustaining 41 fps | `tests/e2e/p3_linux_endpoint.py` |
 | **Real** pointer injection lands on the right pixel of the real screen | `tests/e2e/p3_linux_endpoint.py` — the pointer is moved and read back |
@@ -103,6 +112,12 @@ Real bugs surfaced by these runs, all fixed:
   desktop, that `pynput` drives SendInput for clicks and keystrokes, that
   `pystray` shows a tray icon, that the consent dialog appears above other
   windows, and that PyInstaller produces a working `.exe`.
+- **The Windows (Rust) and macOS (Swift) native capture modules have not been
+  compiled.** They were written against the real APIs — the `windows-capture`
+  1.5 source was read to confirm every signature — but this machine has no
+  Windows Rust target (no `rustup`, so `x86_64-pc-windows-*` cannot be added)
+  and no Swift toolchain. Reading a crate is not compiling against it: expect
+  to fix compile errors on first build.
 - **macOS has not been run.** The support is written — Screen Recording and
   Accessibility checks, Retina coordinate mapping, a `.app` bundle build — but
   no Mac has executed a line of it.
@@ -117,8 +132,13 @@ Real bugs surfaced by these runs, all fixed:
 - The terminal renders colour and plain output, but is not a full terminal
   emulator: cursor addressing means full-screen programs such as `vim` or `top`
   will not display correctly.
-- Privacy blank sends the message and the agent logs it, but no screen is
-  blanked. That is Phase 5.
+- The privacy blank on **Windows and macOS is untested**. Both use the OS's
+  capture-exclusion (`WDA_EXCLUDEFROMCAPTURE`, `NSWindowSharingNone`) and the
+  agent falls back to a guest lock if the OS refuses — but no machine has run
+  either path. On Windows the specification calls for a native Rust capture
+  engine; this uses mss and relies on the compositor honouring the exclusion
+  flag instead.
+- macOS capture-exclusion needs pyobjc installed, or the agent guest-locks.
 - The relay hub is single-process and in-memory, so a deployment must run one
   relay process. Moving fan-out onto Redis pub/sub is Phase 6.
 - **The console no longer has Devices or Audit pages.** Appendix A's icon rail
@@ -154,6 +174,41 @@ cd relay && ../.venv/bin/python -m alembic downgrade 0001_initial
 ```
 
 ## Change log
+
+- **Native capture modules (specification §5 and §6).** The documentation
+  requires a native capture module per OS, exposed to the agent as a Python
+  module, and none had been built — the agent used mss everywhere. Now:
+  Linux in **C** (X11 XShm via MIT-SHM, XRandR for monitor geometry, PipeWire
+  compiled in when its headers are present), Windows in **Rust** (`windows-capture`
+  / Windows.Graphics.Capture through PyO3), macOS in **Swift** (ScreenCaptureKit
+  behind a C ABI, loaded with ctypes). All three present the same interface and
+  `rmm_agent/native.py` loads whichever is built, falling back to mss — which
+  is where `BUILD_PROMPT.md:35` puts it — when none is.
+
+  This matters beyond speed: the privacy blank marks its black window excluded
+  from capture, and only a compositor-level API honours that and keeps
+  delivering the desktop behind it. A plain screen grab returns the black
+  window, which is the exact failure §5 describes.
+
+  The Linux module is built and verified here at 164 fps raw. The Windows and
+  macOS modules cannot be compiled on this machine and are unverified.
+
+- **P5 — Privacy blank.** Per-platform: capture-exclusion on Windows and macOS,
+  and the guest-lock variant on Linux, where no universal exclusion exists. The
+  agent reports which of the two it can deliver and the console says so plainly,
+  including a confirmation before locking someone's screen. Verified on Linux
+  against real capture: the frames the operator receives go from luminance 73 to
+  0.1 and back, and the agent stays online across repeated toggles.
+
+  Three bugs found while building it. The overlay was created at its natural
+  size — 579x26 — because `-fullscreen` is only a request to the window manager,
+  so the blank reported success while blanking nothing; it now forces the
+  geometry and refuses to claim success if it still cannot cover the screen.
+  Tk was being called from threads that did not own it, aborting the process.
+  And **ending a session did not disconnect the endpoint**: the agent kept
+  capturing and streaming after the session was marked ended, which section 9
+  forbids — the relay now hangs up on both halves, and the agent retires
+  cleanly rather than reconnecting to a session that is over.
 
 - **P3 — Cross-platform core.** Per-OS setup and capability checks: Windows DPI
   awareness before capture, macOS Screen Recording and Accessibility checks,

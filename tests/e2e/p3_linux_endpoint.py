@@ -3,7 +3,7 @@
 Verifies the endpoint agent on this machine for real - not the synthetic test
 image and not a logging stub:
 
-  * mss captures the actual desktop
+  * the native C capture module (X11 XShm) captures the actual desktop
   * pynput actually injects mouse and keyboard events through XTest, confirmed
     by a listener that receives them
   * the tray backend loads
@@ -42,13 +42,25 @@ def main() -> int:
 
     capture = ScreenCapture()
 
+    def native_module_in_use():
+        """The specification requires a native capture module per OS, not the
+        pure-Python fallback."""
+        assert capture.backend.startswith("native-"), (
+            f"the native module is not in use (backend={capture.backend!r}). "
+            "Build it with: python agent/native/linux/setup.py build_ext --inplace"
+        )
+        print(f"      capture backend: {capture.backend}")
+
+    step("the native C capture module is in use, not the mss fallback",
+         native_module_in_use)
+
     def real_capture():
-        assert not capture.synthetic, "mss did not attach to a display"
+        assert not capture.synthetic, "capture did not attach to a display"
         assert capture.monitors, "no monitors enumerated"
         for m in capture.monitors:
             assert m["width"] > 0 and m["height"] > 0, m
 
-    step("mss enumerates the real displays", real_capture)
+    step("the native module enumerates the real displays", real_capture)
 
     frames = {}
 

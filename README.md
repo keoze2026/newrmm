@@ -11,7 +11,7 @@ Built phase by phase against `Remote_Desktop_Platform_Specification.docx`.
 | P2 | Core session on Windows: capture, control, tray/consent | Code complete, verified on Linux — **Windows checkpoint open** |
 | P3 | Cross-platform core: macOS and Linux | **Linux verified (11/11)**; Windows and macOS support written, not yet run there |
 | P4 | Tools: file transfer, terminal, clipboard, multi-monitor, screenshot/zoom/annotate | **Done — 13/13 tool checks, 9/9 through the console** |
-| P5 | Privacy blank screen | Not started |
+| P5 | Privacy blank screen | **Linux guest-lock verified (14/14)**; Windows/macOS capture-exclusion written, untested |
 | P6 | Hardening, signed installers, deployment | Not started |
 
 Read `PROJECT_STATUS.md` for what actually works right now.
@@ -22,6 +22,7 @@ Read `PROJECT_STATUS.md` for what actually works right now.
 relay/      FastAPI relay server (auth, sessions, audit, session transport)
 console/    React + TypeScript + Vite + Tailwind operator console (Appendix A)
 agent/      endpoint agent: consent, tray, capture, input, tools, per-OS build
+agent/native/   the per-OS native capture modules (C, Rust, Swift)
 infra/      docker-compose stack and the nginx config
 tests/e2e/  Browser conformance tests
 docs/       Screenshots from the passing runs
@@ -94,6 +95,10 @@ cd relay && ../.venv/bin/python -m pytest        # 33 API and database tests
 # Phase 4 tools: terminal, file transfer, clipboard
 .venv/bin/python tests/e2e/p4_tools.py           # relay must be running
 .venv/bin/python tests/e2e/p4_console_tools.py docs/screenshots   # + console
+
+# Phase 5 privacy blank - your screen goes black for a few seconds
+.venv/bin/python tests/e2e/p5_privacy_blank.py
+cd agent && ../.venv/bin/python -m pytest tests/ -q   # agent unit tests
 
 # Appendix A conformance - needs the relay, the console and the agent running
 GUEST_CODE=<CODE> GUEST_LOG=/path/to/agent.log \

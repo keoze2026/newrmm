@@ -17,6 +17,8 @@ const IDLE_STATE: StreamState = {
   systemInfo: {},
   monitors: [],
   stats: { fps: 0, kbps: 0 },
+  privacyMode: null,
+  blanked: false,
 }
 
 export default function App() {

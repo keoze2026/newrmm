@@ -11,3 +11,10 @@ dist/
 agent/dist/
 agent/build/
 agent/*.spec
+
+# Native module build artefacts
+agent/native/linux/build/
+agent/native/linux/*.so
+agent/native/windows/target/
+agent/native/macos/.build/
+agent/native/macos/*.dylib

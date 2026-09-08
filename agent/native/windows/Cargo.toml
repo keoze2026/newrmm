@@ -1,0 +1,31 @@
+[package]
+name = "rmm_capture_windows"
+version = "0.1.0"
+edition = "2021"
+description = "Native Windows.Graphics.Capture engine for the endpoint agent"
+license = "Proprietary"
+
+[lib]
+name = "rmm_capture_windows"
+# cdylib so the built artefact is a .pyd the agent imports directly, which is
+# what the specification means by "exposed to the agent as a Python module".
+crate-type = ["cdylib"]
+
+[dependencies]
+# The specification names this binding for Windows.Graphics.Capture.
+# Pinned to the version whose API this module was written against.
+windows-capture = "1.5"
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"] }
+
+[dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

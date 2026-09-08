@@ -11,6 +11,9 @@ export interface StreamStats {
   kbps: number
 }
 
+/** What the endpoint can actually do when asked to blank its screen. */
+export type PrivacyMode = 'capture-excluded' | 'guest-lock' | 'unavailable' | null
+
 export interface StreamState {
   connected: boolean
   guestConnected: boolean
@@ -18,6 +21,8 @@ export interface StreamState {
   systemInfo: SystemInfo
   monitors: Monitor[]
   stats: StreamStats
+  privacyMode: PrivacyMode
+  blanked: boolean
 }
 
 export type FrameHandler = (bitmap: ImageBitmap) => void
@@ -63,6 +68,8 @@ export class SessionStream {
     systemInfo: {},
     monitors: [],
     stats: { fps: 0, kbps: 0 },
+    privacyMode: null,
+    blanked: false,
   }
 
   constructor(
@@ -115,16 +122,25 @@ export class SessionStream {
   private handleControl(message: Record<string, unknown>) {
     const type = message.type as string
     if (type === 'attached' || type === 'guest_joined') {
+      const info = (message.system_info as SystemInfo) ?? this.state.systemInfo
       this.state = {
         ...this.state,
         guestConnected: type === 'guest_joined' ? true : Boolean(message.guest_connected),
         hostName: (message.host_name as string) ?? this.state.hostName,
-        systemInfo: (message.system_info as SystemInfo) ?? this.state.systemInfo,
+        systemInfo: info,
         monitors: (message.monitors as Monitor[]) ?? this.state.monitors,
+        privacyMode: (message.privacy_mode as PrivacyMode) ?? this.state.privacyMode,
       }
       this.onState(this.state)
     } else if (type === 'guest_left') {
-      this.state = { ...this.state, guestConnected: false }
+      this.state = { ...this.state, guestConnected: false, blanked: false }
+      this.onState(this.state)
+    } else if (type === 'blank' && message.action === 'state') {
+      this.state = {
+        ...this.state,
+        blanked: Boolean(message.active),
+        privacyMode: (message.mode as PrivacyMode) ?? this.state.privacyMode,
+      }
       this.onState(this.state)
     }
   }

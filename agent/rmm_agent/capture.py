@@ -1,8 +1,12 @@
 """Screen capture.
 
-Phase 2 uses mss on every platform, which is enough to stream a live screen and
-be controlled. The native Windows.Graphics.Capture engine (Rust) arrives in
-Phase 5, where the privacy blank needs capture-exclusion.
+Two paths, in the order the documentation sets out:
+
+  1. The native per-OS capture module the specification requires - C with
+     PipeWire/X11 XShm on Linux, Rust with Windows.Graphics.Capture on Windows,
+     Swift with ScreenCaptureKit on macOS. Used whenever it is built.
+  2. mss, the cross-platform core capture named in the build prompt, used when
+     the native module for this platform has not been built.
 """
 import io
 import logging
@@ -10,6 +14,8 @@ import math
 import time
 
 from PIL import Image, ImageDraw
+
+from rmm_agent import native as native_loader
 
 log = logging.getLogger(__name__)
 
@@ -20,13 +26,19 @@ class ScreenCapture:
         self.size = size
         self.monitor_index = 0
         self._sct = None
+        self._native = None
         self._monitors: list[dict] = []
+        self.backend = "synthetic"
+
+        if not synthetic and self._open_native():
+            return
 
         if not synthetic:
             try:
                 import mss
 
                 self._sct = mss.mss()
+                self.backend = "mss"
                 for i, m in enumerate(self._sct.monitors[1:]):
                     # width/height/left/top from mss are in the OS's own
                     # coordinate space - logical points, not captured pixels.
@@ -58,6 +70,30 @@ class ScreenCapture:
                 }
             ]
 
+    def _open_native(self) -> bool:
+        """Try the native capture module the specification requires."""
+        module = native_loader.load()
+        if module is None:
+            return False
+        try:
+            backend = module.open()
+            monitors = module.monitors()
+            if not monitors:
+                raise RuntimeError("the native module reported no monitors")
+            self._native = module
+            self._monitors = [dict(m) for m in monitors]
+            self.backend = f"native-{backend}"
+            log.info("capturing with the native module (%s)", backend)
+            return True
+        except Exception as exc:
+            log.warning("the native capture module did not start (%s); using mss", exc)
+            try:
+                module.close()
+            except Exception:
+                pass
+            self._native = None
+            return False
+
     @property
     def monitors(self) -> list[dict]:
         return self._monitors
@@ -83,11 +119,22 @@ class ScreenCapture:
         return False
 
     def grab(self) -> Image.Image:
+        if self._native is not None:
+            data, width, height = self._native.grab(self.monitor_index)
+            return Image.frombytes("RGB", (width, height), data)
         if self.synthetic or self._sct is None:
             return self._generated()
         monitor = self._sct.monitors[1:][self.monitor_index]
         shot = self._sct.grab(monitor)
         return Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+
+    def close(self) -> None:
+        if self._native is not None:
+            try:
+                self._native.close()
+            except Exception:
+                pass
+            self._native = None
 
     def encode(self, image: Image.Image, quality: int) -> bytes:
         buffer = io.BytesIO()

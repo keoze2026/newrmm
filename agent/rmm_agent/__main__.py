@@ -82,6 +82,8 @@ def cmd_join(args) -> int:
             auto_consent=args.auto_consent,
             device_id=args.device_id,
             device_secret=args.secret,
+            blank_watchdog=args.blank_watchdog,
+            blank_blocks_input=args.blank_blocks_input,
         )
         holder["session"] = session
         await session.run_forever()
@@ -124,6 +126,7 @@ def cmd_status(_args) -> int:
 
     capture = ScreenCapture()
     print(f"capture       : {'synthetic (no display)' if capture.synthetic else 'screen'}")
+    print(f"capture path  : {capture.backend}")
     for monitor in capture.monitors:
         print(f"  monitor {monitor['index']}   : {monitor['label']} "
               f"{monitor['width']}x{monitor['height']} "
@@ -191,6 +194,15 @@ def build_parser() -> argparse.ArgumentParser:
     join.add_argument(
         "--no-input", dest="inject", action="store_false",
         help="log operator input instead of applying it (used by the tests)",
+    )
+    join.add_argument(
+        "--blank-watchdog", type=float, default=0.0, metavar="SECONDS",
+        help="release the privacy blank automatically after this long (0 = off)",
+    )
+    join.add_argument(
+        "--blank-no-input-block", dest="blank_blocks_input", action="store_false",
+        help="blank the screen without blocking local input - TESTING ONLY, so a "
+             "test run cannot lock the machine it is running on",
     )
     join.add_argument(
         "--auto-consent", action="store_true",

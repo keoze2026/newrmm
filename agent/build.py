@@ -25,6 +25,35 @@ ROOT = Path(__file__).resolve().parent
 NAME = "rmm-agent"
 SYSTEM = platform.system()
 
+# The native capture module the specification requires, per platform. Built
+# separately (see agent/native/<os>/) and bundled here when present.
+NATIVE_ARTEFACTS = {
+    "Linux": ("native/linux", ["rmm_capture_linux*.so"]),
+    "Windows": ("native/windows", ["rmm_capture_windows*.pyd", "target/release/*.dll"]),
+    "Darwin": ("native/macos", ["libRMMCapture.dylib", "rmm_capture_macos.py"]),
+}
+
+
+def native_binaries() -> list[str]:
+    """--add-binary arguments for the native module, if it has been built."""
+    directory, patterns = NATIVE_ARTEFACTS.get(SYSTEM, ("", []))
+    if not directory:
+        return []
+    source = ROOT / directory
+    separator = ";" if SYSTEM == "Windows" else ":"
+    found = []
+    for pattern in patterns:
+        for path in source.glob(pattern):
+            found.append(f"{path}{separator}.")
+    if not found:
+        print(
+            f"WARNING: no native capture module found in {source}.\n"
+            "         The agent will fall back to mss. Build it first - see\n"
+            "         docs/BUILDING_AGENTS.md.",
+            file=sys.stderr,
+        )
+    return found
+
 # pystray and pynput pick their backend at runtime, so PyInstaller cannot see
 # the imports it needs to bundle.
 HIDDEN = {
@@ -70,6 +99,10 @@ def build(app_bundle: bool, windowed: bool) -> int:
 
     for module in HIDDEN.get(SYSTEM, []):
         command += ["--hidden-import", module]
+
+    for binary in native_binaries():
+        command += ["--add-binary", binary]
+        print(f"bundling native capture module: {binary.rsplit(':', 1)[0].rsplit(';', 1)[0]}")
 
     if SYSTEM == "Darwin" and app_bundle:
         # Screen Recording and Accessibility prompts need a real bundle

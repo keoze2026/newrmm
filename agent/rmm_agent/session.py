@@ -5,7 +5,7 @@ import logging
 
 import websockets
 
-from rmm_agent import __version__, clipboard, files, platform_support, sysinfo
+from rmm_agent import __version__, clipboard, files, platform_support, privacy, sysinfo
 from rmm_agent.capture import RateController, ScreenCapture
 from rmm_agent.consent import ask as ask_consent
 from rmm_agent.remote_input import InputInjector
@@ -34,6 +34,8 @@ class AgentSession:
         auto_consent: bool = False,
         device_id: str = "",
         device_secret: str = "",
+        blank_watchdog: float = 0.0,
+        blank_blocks_input: bool = True,
     ) -> None:
         self.relay_url = relay_url.rstrip("/")
         self.code = code.upper()
@@ -49,6 +51,8 @@ class AgentSession:
         self._stop = asyncio.Event()
         self._consented = False
         self._terminal: RemoteTerminal | None = None
+        self._privacy = privacy.PrivacyBlank(watchdog_seconds=blank_watchdog)
+        self._blank_blocks_input = blank_blocks_input
         self._uploads: dict[str, files.Upload] = {}
         self._socket = None
 
@@ -72,6 +76,14 @@ class AgentSession:
                 backoff = BACKOFF_START
             except asyncio.CancelledError:
                 raise
+            except websockets.ConnectionClosed as exc:
+                # 4404 means the relay ended the session, and 4403 that consent
+                # was refused. Neither is worth reconnecting for.
+                if exc.rcvd is not None and exc.rcvd.code in (4403, 4404):
+                    log.info("the session is over (%s); stopping", exc.rcvd.reason or exc.rcvd.code)
+                    self._stop.set()
+                    break
+                log.warning("session connection lost: %s", exc)
             except Exception as exc:
                 log.warning("session connection failed: %s", exc)
 
@@ -101,6 +113,7 @@ class AgentSession:
                         "system_info": info,
                         "monitors": self.capture.monitors,
                         "agent_version": __version__,
+                        "privacy_mode": privacy.supported_mode(),
                     }
                 )
             )
@@ -172,10 +185,7 @@ class AgentSession:
             elif kind == "monitor":
                 self.capture.select(int(message.get("index", 0)))
             elif kind == "blank":
-                # The privacy blank itself is Phase 5. The message is recorded
-                # here so the wiring is verifiable end to end.
-                log.info("privacy blank %s (not implemented until Phase 5)",
-                         "on" if message.get("on") else "off")
+                await self._handle_blank(message)
             elif kind == "terminal":
                 await self._handle_terminal(message)
             elif kind == "files":
@@ -197,6 +207,11 @@ class AgentSession:
                 log.debug("could not send %s: %s", payload.get("type"), exc)
 
     def _close_tools(self) -> None:
+        # A blank left up after the session ends would strand the person at the
+        # keyboard behind a black screen they cannot dismiss.
+        if self._privacy.active:
+            log.warning("session ended while blanked; releasing the privacy blank")
+            self._privacy.disable()
         if self._terminal is not None:
             self._terminal.close()
             self._terminal = None
@@ -278,3 +293,21 @@ class AgentSession:
         elif action == "set":
             ok = await asyncio.to_thread(clipboard.set_text, str(message.get("text", "")))
             await self._send({"type": "clipboard", "action": "set", "ok": ok})
+
+    async def _handle_blank(self, message: dict) -> None:
+        wanted = bool(message.get("on"))
+        if wanted:
+            state = await asyncio.to_thread(self._privacy.enable, self._blank_blocks_input)
+            if self.tray and state.get("active"):
+                self.tray.notify(
+                    "Your screen has been blanked for privacy."
+                    if state["mode"] == privacy.MODE_EXCLUDED
+                    else "Your screen is locked while the session continues.",
+                    "Privacy blank on",
+                )
+        else:
+            state = await asyncio.to_thread(self._privacy.disable)
+            if self.tray:
+                self.tray.notify("Your screen is visible again.", "Privacy blank off")
+
+        await self._send({"type": "blank", "action": "state", **state})

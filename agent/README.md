@@ -80,7 +80,7 @@ It receives JSON control messages:
 | `{"type":"input","kind":"key","action":"down\|up","key":"a"}` | Keyboard |
 | `{"type":"input","kind":"scroll","dx":0,"dy":0}` | Wheel |
 | `{"type":"monitor","index":0}` | Switch captured display |
-| `{"type":"blank","on":true}` | Privacy blank (logged; implemented in Phase 5) |
+| `{"type":"blank","on":true}` | Privacy blank - see below |
 
 Coordinates are normalised 0..1, so the guest lands on the right pixel no matter
 how the operator's canvas is scaled or letterboxed.
@@ -99,8 +99,30 @@ The clipboard keeps one hidden Tk window alive for the life of the agent: on
 X11 the clipboard belongs to a live window, so a root created and destroyed per
 call would lose the contents immediately.
 
+## Privacy blank
+
+What the agent can do depends on whether the OS can hide a window from its own
+screen capture. The agent reports which mode it will use, so the console can say
+so rather than implying something it cannot deliver.
+
+| Platform | Mode | What happens |
+| --- | --- | --- |
+| Windows | `capture-excluded` | A black window marked `WDA_EXCLUDEFROMCAPTURE`. The guest sees black; the operator keeps a live view and control. |
+| macOS | `capture-excluded` | The same through `NSWindowSharingNone`. Needs pyobjc; without it the agent falls back to a guest lock. |
+| Linux | `guest-lock` | No universal capture-exclusion exists, so the screen is blacked **and local input is blocked**. The operator's view goes black too — it locks the machine rather than hiding the operator's work. |
+
+If capture-exclusion is asked for and the OS refuses, the agent falls back to a
+guest lock rather than pretending the operator's work is hidden.
+
+**Safety.** A blank that outlives its session would leave someone at a black
+screen they cannot dismiss, so it is released when the session ends or the
+connection drops. `--blank-watchdog SECONDS` adds a hard time limit on top.
+`--blank-no-input-block` blanks without blocking input and exists only so the
+test suite cannot lock the machine it runs on.
+
 ## What this is not
 
-- The privacy blank is **not** implemented (Phase 5). The message is received
-  and logged; no screen is blanked.
 - There is no installer, service or auto-start yet, and no code signing (Phase 6).
+- The Windows path does not use the native Rust capture engine the specification
+  describes; it keeps mss and relies on the compositor honouring the exclusion
+  flag. Untested on Windows.

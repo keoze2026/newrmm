@@ -104,6 +104,12 @@ export default function Viewer({
     paint()
   }, [paint])
 
+  // The endpoint is the authority on whether it is blanked: a watchdog or a
+  // dropped session can release it without the operator asking.
+  useEffect(() => {
+    setBlanked(state.blanked)
+  }, [state.blanked])
+
   useEffect(() => {
     const onResize = () => paint()
     window.addEventListener('resize', onResize)
@@ -287,8 +293,21 @@ export default function Viewer({
     stream.send({ type: 'clipboard', action: 'get' })
   }
 
+  const guestLock = state.privacyMode === 'guest-lock'
+
   function toggleBlank() {
     const next = !blanked
+    if (next && guestLock) {
+      // On this endpoint the blank is a lock, not a one-way mirror: say so
+      // before taking someone's screen away.
+      const proceed = window.confirm(
+        "This endpoint cannot hide a window from its own screen capture, so " +
+          "blanking will LOCK it instead: the screen goes black, local keyboard " +
+          "and mouse stop responding, and your view goes black too.\n\n" +
+          'Turn it off again with the same button. Continue?',
+      )
+      if (!proceed) return
+    }
     setBlanked(next)
     stream.send({ type: 'blank', on: next })
   }
@@ -437,8 +456,13 @@ export default function Viewer({
             type="button"
             onClick={toggleBlank}
             className={`${tool} ${blanked ? toolActive : ''}`}
-            title="Blank the guest screen"
+            title={
+              guestLock
+                ? 'Lock the guest screen (this endpoint cannot hide it from capture)'
+                : 'Blank the guest screen'
+            }
             data-testid="blank-toggle"
+            data-privacy-mode={state.privacyMode ?? 'unknown'}
           >
             <EyeSlashIcon width={16} height={16} />
           </button>
@@ -476,6 +500,17 @@ export default function Viewer({
           {!frame && (
             <div className="absolute inset-0 flex items-center justify-center text-sm text-white/60">
               {state.guestConnected ? 'Waiting for the first frame…' : 'The guest has left the session.'}
+            </div>
+          )}
+
+          {blanked && (
+            <div
+              data-testid="blank-notice"
+              className="pointer-events-none absolute left-1/2 top-4 -translate-x-1/2 rounded-lg bg-black/70 px-4 py-2 text-center text-xs text-white/85"
+            >
+              {guestLock
+                ? 'Guest screen locked. This endpoint cannot hide a window from its own capture, so your view is black too.'
+                : 'Guest screen blanked. They see black; you still see the desktop.'}
             </div>
           )}
         </div>

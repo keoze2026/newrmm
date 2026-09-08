@@ -52,6 +52,27 @@ class Hub:
             except Exception:
                 channel.operator = None
 
+    async def close_session(self, code: str, reason: str = "Session ended") -> None:
+        """Hang up on both halves of a session.
+
+        Ending a session must actually stop the endpoint capturing. Marking the
+        row 'ended' while the agent keeps streaming would leave capture running
+        outside a consented session.
+        """
+        channel = self._channels.get(code)
+        if channel is None:
+            return
+        for socket in (channel.guest, channel.operator):
+            if socket is None:
+                continue
+            try:
+                await socket.close(code=4404, reason=reason)
+            except Exception:
+                pass
+        channel.guest = None
+        channel.operator = None
+        self._channels.pop(code, None)
+
     async def to_guest_json(self, code: str, payload: dict) -> None:
         channel = self._channels.get(code)
         if channel and channel.guest is not None:

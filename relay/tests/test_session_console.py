@@ -137,3 +137,40 @@ async def test_presence_is_false_once_a_session_has_ended(client, auth_headers):
     fetched = (await client.get(f"/sessions/{created['id']}", headers=auth_headers)).json()
     assert fetched["state"] == "ended"
     assert fetched["guest_connected"] is False
+
+
+async def test_ending_a_session_hangs_up_on_the_endpoint(client, auth_headers, monkeypatch):
+    """A session marked ended must actually disconnect the endpoint.
+
+    Leaving the agent connected would keep it capturing outside a consented
+    session, which section 9 of the specification forbids.
+    """
+    from app.services import hub as hub_module
+
+    closed: list[str] = []
+
+    async def record_close(code, reason="Session ended"):
+        closed.append(code)
+
+    monkeypatch.setattr(hub_module.hub, "close_session", record_close)
+
+    session = await _session(client, auth_headers)
+    await client.patch(
+        f"/sessions/{session['id']}", json={"state": "ended"}, headers=auth_headers
+    )
+    assert closed == [session["code"]], "the endpoint was not disconnected"
+
+
+async def test_deleting_a_session_also_hangs_up(client, auth_headers, monkeypatch):
+    from app.services import hub as hub_module
+
+    closed: list[str] = []
+
+    async def record_close(code, reason="Session ended"):
+        closed.append(code)
+
+    monkeypatch.setattr(hub_module.hub, "close_session", record_close)
+
+    session = await _session(client, auth_headers)
+    await client.delete(f"/sessions/{session['id']}", headers=auth_headers)
+    assert closed == [session["code"]]

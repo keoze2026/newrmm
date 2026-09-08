@@ -182,6 +182,11 @@ async def update_session(
 
     await db.commit()
     await db.refresh(session)
+
+    if session.state == "ended":
+        # Disconnect the endpoint too, so capture actually stops.
+        await hub.close_session(session.code)
+
     return session
 
 
@@ -209,6 +214,7 @@ async def delete_session(
         detail={"to": "ended", "via": "delete"},
     )
     await db.commit()
+    await hub.close_session(session.code)
 
 
 @router.get("/{session_id}/history", response_model=list[SessionHistoryEntry])
