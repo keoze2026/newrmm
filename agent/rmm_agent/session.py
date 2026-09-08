@@ -10,6 +10,7 @@ from rmm_agent.capture import RateController, ScreenCapture
 from rmm_agent.consent import ask as ask_consent
 from rmm_agent.remote_input import InputInjector
 from rmm_agent.terminal import RemoteTerminal, default_shell
+from rmm_agent.tiles import TileEncoder
 from rmm_agent.tray import CONNECTED, IDLE, SHARING, Tray
 
 log = logging.getLogger(__name__)
@@ -52,6 +53,8 @@ class AgentSession:
         self._consented = False
         self._terminal: RemoteTerminal | None = None
         self._privacy = privacy.PrivacyBlank(watchdog_seconds=blank_watchdog)
+        # Changed-region streaming (specification section 10).
+        self._tiles = TileEncoder()
         self._blank_blocks_input = blank_blocks_input
         self._uploads: dict[str, files.Upload] = {}
         self._socket = None
@@ -139,6 +142,7 @@ class AgentSession:
                 return
 
             self._consented = True
+            self._tiles.request_keyframe()
             log.info("consent granted; streaming starts now")
             if self.tray:
                 self.tray.set_state(SHARING, f"Sharing your screen — session {self.code}")
@@ -161,7 +165,7 @@ class AgentSession:
         while not self._stop.is_set():
             started = asyncio.get_running_loop().time()
             image = await asyncio.to_thread(self.capture.grab)
-            payload = await asyncio.to_thread(self.capture.encode, image, self.rate.quality)
+            payload = await asyncio.to_thread(self._tiles.encode, image, self.rate.quality)
             await socket.send(payload)
             self.rate.record(len(payload))
             if self.budget_kbps:
@@ -184,6 +188,8 @@ class AgentSession:
                 self.injector.apply(message, self.capture.geometry)
             elif kind == "monitor":
                 self.capture.select(int(message.get("index", 0)))
+            elif kind == "keyframe":
+                self._tiles.request_keyframe()
             elif kind == "blank":
                 await self._handle_blank(message)
             elif kind == "terminal":

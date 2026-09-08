@@ -5,10 +5,11 @@ import SectionPanel from './components/SectionPanel'
 import SessionList from './components/SessionList'
 import Viewer from './components/Viewer'
 import type { TabKey } from './components/TabStrip'
+import JoinPage from './pages/JoinPage'
 import LoginPage from './pages/LoginPage'
 import { api, type Session } from './lib/api'
 import { useAuth } from './lib/auth'
-import { SessionStream, type StreamState } from './lib/stream'
+import { SessionStream, type FrameSource, type StreamState } from './lib/stream'
 
 const IDLE_STATE: StreamState = {
   connected: false,
@@ -23,6 +24,10 @@ const IDLE_STATE: StreamState = {
 
 export default function App() {
   const { operator, loading } = useAuth()
+
+  // The guest's landing page (section 4) is public: whoever is being helped has
+  // no account, so this is checked before anything asks them to sign in.
+  const isJoinPage = window.location.pathname.replace(/\/+$/, '') === '/join'
   const [sessions, setSessions] = useState<Session[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [tab, setTab] = useState<TabKey>('session')
@@ -31,7 +36,10 @@ export default function App() {
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [viewerOpen, setViewerOpen] = useState(false)
-  const [frame, setFrame] = useState<ImageBitmap | null>(null)
+  const [frame, setFrame] = useState<FrameSource | null>(null)
+  // The assembler reuses one backing canvas, so its identity never changes and
+  // React would never re-render. This counter is what marks a new frame.
+  const [frameSeq, setFrameSeq] = useState(0)
   const [streamState, setStreamState] = useState<StreamState>(IDLE_STATE)
   const [renameRequest, setRenameRequest] = useState(0)
 
@@ -77,12 +85,16 @@ export default function App() {
     streamRef.current?.close()
     streamRef.current = null
     setFrame(null)
+    setFrameSeq(0)
     setStreamState(IDLE_STATE)
 
     if (!selected || selected.state === 'ended') return
     const stream = new SessionStream(
       selected.code,
-      (bitmap) => setFrame(bitmap),
+      (canvas) => {
+        setFrame(canvas)
+        setFrameSeq((n) => n + 1)
+      },
       (state) => setStreamState(state),
     )
     stream.connect()
@@ -91,6 +103,8 @@ export default function App() {
       stream.close()
     }
   }, [selected?.id, selected?.code, selected?.state])
+
+  if (isJoinPage) return <JoinPage />
 
   if (loading) {
     return (
@@ -179,6 +193,7 @@ export default function App() {
         onRename={rename}
         onJoin={openViewer}
         previewBitmap={frame}
+        previewSeq={frameSeq}
         editRequest={renameRequest}
       />
 
@@ -197,6 +212,7 @@ export default function App() {
           stream={streamRef.current}
           state={streamState}
           frame={frame}
+          frameSeq={frameSeq}
           onClose={() => setViewerOpen(false)}
         />
       )}

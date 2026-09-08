@@ -22,7 +22,10 @@ import websockets
 BASE = "http://127.0.0.1:8000"
 WS = "ws://127.0.0.1:8000"
 AGENT = [sys.executable, "-m", "rmm_agent", "join", "--relay", WS,
-         "--synthetic", "--no-tray", "--no-input", "--auto-consent", "--fps", "4"]
+         "--synthetic", "--no-tray", "--no-input", "--auto-consent",
+         # Never take this machine's keyboard; release any blank quickly.
+         "--blank-no-input-block", "--blank-watchdog", "15",
+         "--fps", "4"]
 
 results: list[tuple[bool, str]] = []
 

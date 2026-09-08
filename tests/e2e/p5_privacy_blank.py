@@ -30,20 +30,67 @@ WS = "ws://127.0.0.1:8000"
 
 results: list[tuple[bool, str]] = []
 
+# Hans works on this machine while the tests run, so the blanked periods are
+# measured and kept to the minimum the checks need.
+blank_seconds = 0.0
+_blank_started: float | None = None
+
+
+def blank_on() -> None:
+    global _blank_started
+    _blank_started = time.monotonic()
+
+
+def blank_off() -> None:
+    global blank_seconds, _blank_started
+    if _blank_started is not None:
+        blank_seconds += time.monotonic() - _blank_started
+        _blank_started = None
+
 
 def step(name, ok, extra=""):
     results.append((bool(ok), name))
     print(("PASS  " if ok else "FAIL  ") + name + (f"\n      {extra}" if extra else ""))
 
 
-def brightness(jpeg: bytes) -> float:
-    """Mean luminance 0-255 of a frame."""
-    image = Image.open(io.BytesIO(jpeg)).convert("L").resize((64, 64))
-    pixels = list(image.convert("L").tobytes())
+KEYFRAME = 0x00
+
+
+def is_keyframe(payload: bytes) -> bool:
+    """The endpoint streams changed regions, so only a keyframe carries a
+    whole picture that can be measured on its own."""
+    return len(payload) > 5 and payload[0] == KEYFRAME
+
+
+def brightness(payload: bytes) -> float:
+    """Mean luminance 0-255 of a whole-frame message."""
+    if not is_keyframe(payload):
+        raise AssertionError(
+            "brightness needs a whole frame; got a tile update. Ask for a "
+            "keyframe before measuring."
+        )
+    image = Image.open(io.BytesIO(payload[5:])).convert("L").resize((64, 64))
+    pixels = list(image.tobytes())
     return sum(pixels) / len(pixels)
 
 
-async def sample_frames(socket, count=4, timeout=15.0) -> list[bytes]:
+async def drain(socket, quiet_for=0.25, limit=4.0) -> None:
+    """Throw away whatever is already queued.
+
+    Frames sit in the buffer, so measuring straight after a state change can
+    measure the screen as it was before it.
+    """
+    deadline = time.monotonic() + limit
+    while time.monotonic() < deadline:
+        try:
+            await asyncio.wait_for(socket.recv(), timeout=quiet_for)
+        except (asyncio.TimeoutError, ValueError):
+            return
+
+
+async def sample_frames(socket, count=4, timeout=8.0, whole_only=True) -> list[bytes]:
+    """Collect frame messages. `whole_only` keeps just the keyframes, which are
+    the ones whose brightness can be measured without reassembly."""
     frames: list[bytes] = []
     deadline = time.monotonic() + timeout
     while len(frames) < count and time.monotonic() < deadline:
@@ -52,11 +99,17 @@ async def sample_frames(socket, count=4, timeout=15.0) -> list[bytes]:
         except (asyncio.TimeoutError, ValueError):
             break
         if isinstance(message, bytes):
+            if whole_only and not is_keyframe(message):
+                continue
             frames.append(message)
     return frames
 
 
-async def wait_for_blank_state(socket, want_active: bool, timeout=20.0) -> dict | None:
+async def ask_for_keyframe(socket) -> None:
+    await socket.send(json.dumps({"type": "keyframe"}))
+
+
+async def wait_for_blank_state(socket, want_active: bool, timeout=12.0) -> dict | None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -88,7 +141,7 @@ async def main() -> int:
         agent = subprocess.Popen(
             [sys.executable, "-m", "rmm_agent", "join", "--relay", WS, "--code", code,
              "--no-tray", "--no-input", "--auto-consent",
-             "--blank-no-input-block", "--blank-watchdog", "45",
+             "--blank-no-input-block", "--blank-watchdog", "8",
              "--fps", "5", "--quality", "45"],
             cwd="agent", stdout=log_file, stderr=subprocess.STDOUT,
             text=True, start_new_session=True,
@@ -114,9 +167,11 @@ async def main() -> int:
             async with websockets.connect(f"{WS}/ws/operator/{code}?token={token}",
                                           max_size=None) as op:
                 # --------------------------------------------- before blanking
-                frames = await sample_frames(op)
-                step("the operator receives frames of the desktop", len(frames) >= 2,
-                     f"{len(frames)} frames")
+                await drain(op)
+                await ask_for_keyframe(op)
+                frames = await sample_frames(op, count=1, whole_only=True)
+                step("the operator receives frames of the desktop", len(frames) >= 1,
+                     f"{len(frames)} whole frames")
                 if not frames:
                     return 1
                 desktop = brightness(frames[-1])
@@ -125,6 +180,7 @@ async def main() -> int:
 
                 # ------------------------------------------------- blank on
                 await op.send(json.dumps({"type": "blank", "on": True}))
+                blank_on()
                 state = await wait_for_blank_state(op, want_active=True)
                 step("the endpoint reports the blank is on", state is not None, str(state))
                 if state is None:
@@ -133,21 +189,24 @@ async def main() -> int:
                      state.get("mode") == "guest-lock",
                      f"mode={state.get('mode')} (Linux has no universal capture-exclusion)")
 
-                await asyncio.sleep(1.5)
-                blanked_frames = await sample_frames(op, count=4)
-                step("the agent keeps streaming while blanked", len(blanked_frames) >= 2,
-                     f"{len(blanked_frames)} frames")
+                await asyncio.sleep(0.4)
+                await drain(op)
+                await ask_for_keyframe(op)
+                blanked_frames = await sample_frames(op, count=1)
+                step("the agent keeps streaming while blanked", len(blanked_frames) >= 1,
+                     f"{len(blanked_frames)} whole frames")
                 blanked = brightness(blanked_frames[-1]) if blanked_frames else 255
                 step("the captured screen is black while blanked", blanked < 6,
                      f"mean luminance {blanked:.1f} (was {desktop:.1f})")
 
                 # ------------------------------------------------ blank off
                 await op.send(json.dumps({"type": "blank", "on": False}))
+                blank_off()
                 state = await wait_for_blank_state(op, want_active=False)
                 step("the endpoint reports the blank is off", state is not None, str(state))
 
                 await asyncio.sleep(1.5)
-                restored_frames = await sample_frames(op, count=4)
+                restored_frames = await sample_frames(op, count=1)
                 restored = brightness(restored_frames[-1]) if restored_frames else 0
                 step("the desktop comes back when the blank is released",
                      restored > 8, f"mean luminance {restored:.1f}")
@@ -156,8 +215,10 @@ async def main() -> int:
                 ok = True
                 for _ in range(3):
                     await op.send(json.dumps({"type": "blank", "on": True}))
+                    blank_on()
                     ok = ok and await wait_for_blank_state(op, True) is not None
                     await op.send(json.dumps({"type": "blank", "on": False}))
+                    blank_off()
                     ok = ok and await wait_for_blank_state(op, False) is not None
                 step("the blank survives repeated toggling", ok)
 
@@ -165,11 +226,12 @@ async def main() -> int:
                 step("the agent stays online across the toggles",
                      still.get("guest_connected") is True and agent.poll() is None)
 
-                final = await sample_frames(op, count=2)
+                final = await sample_frames(op, count=2, whole_only=False)
                 step("frames still flow after all the toggling", len(final) >= 1)
 
                 # --------------------- a blank must not outlive its session
                 await op.send(json.dumps({"type": "blank", "on": True}))
+                blank_on()
                 await wait_for_blank_state(op, True)
                 mark = len(agent_log())
 
@@ -219,8 +281,10 @@ async def main() -> int:
             except OSError:
                 pass
 
+    blank_off()
     passed = sum(1 for ok, _ in results if ok)
-    print(f"\n{passed}/{len(results)} privacy blank checks passed")
+    print(f"\nthe screen was black for {blank_seconds:.1f}s in total")
+    print(f"{passed}/{len(results)} privacy blank checks passed")
     return 0 if passed == len(results) else 1
 
 

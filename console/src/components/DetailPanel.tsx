@@ -8,6 +8,7 @@ import {
   SystemInfoTab,
 } from './tabs/OtherTabs'
 import type { Session } from '../lib/api'
+import type { FrameSource } from '../lib/stream'
 
 /** Column 4 (Appendix A.2, A.4-A.6). */
 export default function DetailPanel({
@@ -17,6 +18,7 @@ export default function DetailPanel({
   onRename,
   onJoin,
   previewBitmap,
+  previewSeq,
   editRequest,
 }: {
   session: Session | null
@@ -24,7 +26,8 @@ export default function DetailPanel({
   onTab: (key: TabKey) => void
   onRename: (name: string) => Promise<void>
   onJoin: () => void
-  previewBitmap: ImageBitmap | null
+  previewBitmap: FrameSource | null
+  previewSeq: number
   editRequest: number
 }) {
   if (!session) {
@@ -45,6 +48,7 @@ export default function DetailPanel({
             onRename={onRename}
             onJoin={onJoin}
             previewBitmap={previewBitmap}
+            previewSeq={previewSeq}
             editRequest={editRequest}
           />
         )}

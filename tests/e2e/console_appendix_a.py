@@ -16,6 +16,7 @@ import os
 import pathlib
 import re
 import sys
+import time
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -341,10 +342,33 @@ with sync_playwright() as p:
     step("A.7 pointer input is sent to the guest", cursor_mapping)
 
     def blank_toggle():
+        """Blank, confirm the endpoint acted on it, then unblank immediately.
+
+        This runs against a real endpoint, which on Linux means a real black
+        overlay on a real screen. It must never be left on: the try/finally is
+        the point, not decoration.
+        """
+        log_path = pathlib.Path(GUEST_LOG) if GUEST_LOG else None
         page.get_by_test_id("blank-toggle").click()
-        page.wait_for_timeout(800)
-        log = pathlib.Path(GUEST_LOG).read_text() if GUEST_LOG else ""
-        assert "privacy blank on" in log, "the guest was not told to blank its screen"
+        try:
+            deadline = time.time() + 6
+            blanked = False
+            while time.time() < deadline:
+                text = log_path.read_text() if log_path else ""
+                if "privacy blank on" in text:
+                    blanked = True
+                    break
+                page.wait_for_timeout(200)
+            assert blanked, "the guest was not told to blank its screen"
+        finally:
+            # Off again straight away, whatever happened above.
+            page.get_by_test_id("blank-toggle").click()
+            deadline = time.time() + 6
+            while time.time() < deadline:
+                text = log_path.read_text() if log_path else ""
+                if "privacy blank off" in text:
+                    break
+                page.wait_for_timeout(200)
 
     step("A.7 blank toggles the guest privacy screen", blank_toggle)
 

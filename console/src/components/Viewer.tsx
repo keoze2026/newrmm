@@ -20,7 +20,7 @@ import {
 import FilesPanel from './viewer/FilesPanel'
 import TerminalPanel from './viewer/TerminalPanel'
 import type { Session } from '../lib/api'
-import type { SessionStream, StreamState } from '../lib/stream'
+import type { FrameSource, SessionStream, StreamState } from '../lib/stream'
 
 interface Rect {
   dx: number
@@ -36,12 +36,14 @@ export default function Viewer({
   stream,
   state,
   frame,
+  frameSeq,
   onClose,
 }: {
   session: Session
   stream: SessionStream
   state: StreamState
-  frame: ImageBitmap | null
+  frame: FrameSource | null
+  frameSeq: number
   onClose: () => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -98,7 +100,7 @@ export default function Viewer({
     const dy = (height - dh) / 2
     rectRef.current = { dx, dy, dw, dh }
     ctx.drawImage(frame, dx, dy, dw, dh)
-  }, [frame, zoom])
+  }, [frame, frameSeq, zoom])
 
   useEffect(() => {
     paint()

@@ -4,6 +4,7 @@
  *  thread. Input is sent with normalised 0..1 coordinates so the guest maps a
  *  click to the same point regardless of how the canvas is letterboxed.
  */
+import { FrameAssembler } from './frames'
 import { operatorSocketUrl, type Monitor, type SystemInfo } from './api'
 
 export interface StreamStats {
@@ -25,7 +26,8 @@ export interface StreamState {
   blanked: boolean
 }
 
-export type FrameHandler = (bitmap: ImageBitmap) => void
+export type FrameSource = HTMLCanvasElement | OffscreenCanvas
+export type FrameHandler = (frame: FrameSource) => void
 export type StateHandler = (state: StreamState) => void
 export type MessageHandler = (message: Record<string, unknown>) => void
 
@@ -51,6 +53,7 @@ export type ControlMessage =
   | { type: 'terminal'; action: 'open' | 'input' | 'resize' | 'close'; data?: string; cols?: number; rows?: number }
   | { type: 'files'; action: 'list' | 'get' | 'put'; path?: string; data?: string; final?: boolean }
   | { type: 'clipboard'; action: 'get' | 'set'; text?: string }
+  | { type: 'keyframe' }
   | { type: 'end' }
 
 export class SessionStream {
@@ -60,6 +63,7 @@ export class SessionStream {
   private statsTimer: number | null = null
   private closed = false
   private listeners = new Set<MessageHandler>()
+  private assembler = new FrameAssembler()
 
   state: StreamState = {
     connected: false,
@@ -85,6 +89,8 @@ export class SessionStream {
     this.socket = socket
 
     socket.onopen = () => {
+      // A reconnect starts a new picture: the old one cannot be patched.
+      this.assembler.reset()
       this.state = { ...this.state, connected: true }
       this.onState(this.state)
     }
@@ -101,10 +107,12 @@ export class SessionStream {
       const buffer = event.data as ArrayBuffer
       this.recordFrame(buffer.byteLength)
       try {
-        const bitmap = await createImageBitmap(new Blob([buffer], { type: 'image/jpeg' }))
-        this.onFrame(bitmap)
+        const frame = await this.assembler.apply(buffer)
+        // A tile update that arrives before the first whole frame has nothing
+        // to patch, so it is skipped; the relay has already asked for one.
+        if (frame && frame.tiles > 0) this.onFrame(frame.canvas)
       } catch {
-        /* a truncated frame is dropped; the next one arrives shortly */
+        /* a damaged message is dropped; the next keyframe repairs it */
       }
     }
 

@@ -42,6 +42,7 @@ MODE_GUEST_LOCK = "guest-lock"      # screen locked; the operator sees black too
 MODE_UNAVAILABLE = "unavailable"
 
 BANNER = "This screen is locked while a support session is in progress."
+ESCAPE_HINT = "Press Esc to unlock."
 
 
 def supported_mode() -> str:
@@ -65,8 +66,15 @@ def _has_pyobjc() -> bool:
 class PrivacyBlank:
     """Owns the black overlay and, on the guest-lock path, the input block."""
 
+    # Never let a blank persist without limit. A stuck overlay with local input
+    # blocked leaves someone no way back into their own machine short of a
+    # power cycle, so there is always a ceiling.
+    DEFAULT_WATCHDOG_SECONDS = 120.0
+
     def __init__(self, watchdog_seconds: float = 0.0) -> None:
-        self.watchdog_seconds = watchdog_seconds
+        self.watchdog_seconds = (
+            watchdog_seconds if watchdog_seconds > 0 else self.DEFAULT_WATCHDOG_SECONDS
+        )
         self.mode = supported_mode()
         self.active = False
         self._thread: threading.Thread | None = None
@@ -105,8 +113,7 @@ class PrivacyBlank:
         if block_input and self.mode == MODE_GUEST_LOCK:
             self._block_local_input()
 
-        if self.watchdog_seconds > 0:
-            threading.Thread(target=self._watchdog, name="privacy-watchdog", daemon=True).start()
+        threading.Thread(target=self._watchdog, name="privacy-watchdog", daemon=True).start()
 
         log.info("privacy blank on (%s)", self.mode)
         return self.state()
@@ -171,6 +178,14 @@ class PrivacyBlank:
                     root, text=BANNER, bg="black", fg="#4a5568",
                     font=("Helvetica", 16),
                 ).pack(expand=True)
+                tk.Label(
+                    root, text=ESCAPE_HINT, bg="black", fg="#6b7a90",
+                    font=("Helvetica", 12),
+                ).pack(side="bottom", pady=40)
+                # The overlay itself also honours Escape, in case the global
+                # listener never started.
+                root.bind("<Escape>", lambda _event: self._stop.set())
+                root.focus_force()
 
             self._root = root
             self.screen_size = (screen_width, screen_height)
@@ -303,8 +318,17 @@ class PrivacyBlank:
         try:
             from pynput import keyboard, mouse
 
+            def on_press(key):
+                # Escape is the one key that is never swallowed: it releases
+                # the lock. Without an escape hatch a failure here means a
+                # power cycle.
+                if key == keyboard.Key.esc:
+                    log.warning("Escape pressed at the endpoint; releasing the lock")
+                    threading.Thread(target=self.disable, daemon=True).start()
+                return False
+
             key_listener = keyboard.Listener(
-                on_press=lambda key: False, on_release=lambda key: False, suppress=True
+                on_press=on_press, on_release=lambda key: False, suppress=True
             )
             mouse_listener = mouse.Listener(
                 on_click=lambda *a: False, on_scroll=lambda *a: False, suppress=True

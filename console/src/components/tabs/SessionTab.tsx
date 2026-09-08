@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { CopyIcon, HourglassIcon, PencilIcon } from '../icons'
 import { joinLink, joinUrl, type Session } from '../../lib/api'
+import type { FrameSource } from '../../lib/stream'
 
 function CopyButton({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false)
@@ -31,12 +32,14 @@ export default function SessionTab({
   onRename,
   onJoin,
   previewBitmap,
+  previewSeq,
   editRequest,
 }: {
   session: Session
   onRename: (name: string) => Promise<void>
   onJoin: () => void
-  previewBitmap: ImageBitmap | null
+  previewBitmap: FrameSource | null
+  previewSeq: number
   editRequest: number
 }) {
   const [invite, setInvite] = useState<'code' | 'link'>('code')
@@ -62,7 +65,7 @@ export default function SessionTab({
     canvas.width = previewBitmap.width
     canvas.height = previewBitmap.height
     ctx.drawImage(previewBitmap, 0, 0)
-  }, [previewBitmap])
+  }, [previewBitmap, previewSeq])
 
   async function commitRename() {
     const next = draft.trim()

@@ -51,7 +51,11 @@ def main() -> int:
 
         agent = subprocess.Popen(
             [sys.executable, "-m", "rmm_agent", "join", "--relay", WS, "--code", code,
-             "--synthetic", "--no-tray", "--no-input", "--auto-consent", "--fps", "5"],
+             "--synthetic", "--no-tray", "--no-input", "--auto-consent",
+             # A test must never be able to take this machine's keyboard, and
+             # any blank must release itself quickly.
+             "--blank-no-input-block", "--blank-watchdog", "15",
+             "--fps", "5"],
             cwd="agent", stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, start_new_session=True,
         )

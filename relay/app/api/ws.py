@@ -324,6 +324,10 @@ async def operator_socket(websocket: WebSocket, code: str, token: str = "") -> N
         }
     )
 
+    # The endpoint streams changed regions, so a freshly attached operator has
+    # no picture to patch. Ask for a whole frame first.
+    await hub.to_guest_json(code, {"type": "keyframe"})
+
     try:
         while True:
             message = await websocket.receive_json()

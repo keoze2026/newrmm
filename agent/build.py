@@ -118,6 +118,14 @@ def build(app_bundle: bool, windowed: bool) -> int:
 
     produced = ROOT / "dist" / (NAME + (".exe" if SYSTEM == "Windows" else ""))
     print(f"\nbuilt: {produced if produced.exists() else ROOT / 'dist'}")
+
+    # A platform-suffixed copy so all three builds can share one directory,
+    # which is what CI collects and what the relay hands to guests.
+    if produced.exists():
+        suffix = {"Windows": "windows.exe", "Darwin": "macos", "Linux": "linux"}[SYSTEM]
+        tagged = produced.parent / f"{NAME}-{suffix}"
+        shutil.copy2(produced, tagged)
+        print(f"also: {tagged}")
     if SYSTEM == "Darwin":
         print(
             "\nmacOS: the first run needs Screen Recording and Accessibility "

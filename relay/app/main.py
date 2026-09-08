@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import audit, auth, devices, health, sessions, ws
+from app.api import audit, auth, connector, devices, health, sessions, ws
 from app.core.config import settings
 
 app = FastAPI(
@@ -23,4 +23,5 @@ app.include_router(auth.router)
 app.include_router(sessions.router)
 app.include_router(devices.router)
 app.include_router(audit.router)
+app.include_router(connector.router)
 app.include_router(ws.router)
