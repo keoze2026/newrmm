@@ -28,6 +28,9 @@ class SessionOut(BaseModel):
     guest_last_seen_at: datetime | None
     system_info: dict[str, Any]
     monitors: list[Any]
+    agent_version: str | None
+    consent_state: str
+    consent_at: datetime | None
 
     model_config = {"from_attributes": True}
 

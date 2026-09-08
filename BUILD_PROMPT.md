@@ -11,6 +11,13 @@ testing that the system works at the end of every phase.
 
 ---
 
+## GROUND RULES (read first)
+
+- This is a **fresh, greenfield build** — a **better version** of an existing tool. Do NOT import from, copy files from, or depend on any previous codebase. Build clean.
+- **Keep the exact same UI** described in this prompt and in Appendix A of the specification — same layout, labels, order, and behaviour. Same look; better engineering underneath.
+- Every reference here is to *this new project's own* files (e.g. its own `PROJECT_STATUS.md`), never to any prior program.
+- Must work identically on **Windows, macOS, and Linux** endpoints.
+
 ## PROMPT
 
 Build a self-hosted, cross-platform **Remote Desktop & Support Platform**. Follow

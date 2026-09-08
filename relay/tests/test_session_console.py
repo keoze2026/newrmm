@@ -90,3 +90,50 @@ async def test_console_endpoints_reject_anonymous_callers(client, auth_headers):
     session = await _session(client, auth_headers)
     for path in (f"/sessions/{session['id']}/logs", f"/sessions/{session['id']}/history"):
         assert (await client.get(path)).status_code == 401
+
+
+async def test_presence_requires_consent_even_if_the_row_says_connected(client, auth_headers):
+    """The consent gate must not be defeatable by a stale or forged row.
+
+    A session row is put into the state a compromised agent would want -
+    guest_connected true - while consent is still pending. The API must still
+    report the guest as absent.
+    """
+    from sqlalchemy import select
+
+    from app.db.session import SessionLocal
+    from app.models import Session as SessionRow
+
+    created = await _session(client, auth_headers)
+
+    async with SessionLocal() as db:
+        row = await db.scalar(select(SessionRow).where(SessionRow.id == created["id"]))
+        row.guest_connected = True
+        row.consent_state = "pending"
+        await db.commit()
+
+    fetched = (await client.get(f"/sessions/{created['id']}", headers=auth_headers)).json()
+    assert fetched["consent_state"] == "pending"
+    assert fetched["guest_connected"] is False
+
+    listed = (await client.get(f"/sessions?q={created['code']}", headers=auth_headers)).json()
+    assert listed[0]["guest_connected"] is False
+
+
+async def test_presence_is_false_once_a_session_has_ended(client, auth_headers):
+    from sqlalchemy import select
+
+    from app.db.session import SessionLocal
+    from app.models import Session as SessionRow
+
+    created = await _session(client, auth_headers)
+    async with SessionLocal() as db:
+        row = await db.scalar(select(SessionRow).where(SessionRow.id == created["id"]))
+        row.guest_connected = True
+        row.consent_state = "granted"
+        await db.commit()
+
+    await client.delete(f"/sessions/{created['id']}", headers=auth_headers)
+    fetched = (await client.get(f"/sessions/{created['id']}", headers=auth_headers)).json()
+    assert fetched["state"] == "ended"
+    assert fetched["guest_connected"] is False

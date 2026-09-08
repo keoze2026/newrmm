@@ -6,8 +6,11 @@ fixes in Appendix A.
 
     python tests/e2e/console_appendix_a.py <screenshot-dir>
 
-Expects: relay on :8000, console on CONSOLE_URL, and a guest already streaming
-into the session whose code is in GUEST_CODE.
+Expects: relay on :8000, console on CONSOLE_URL, and the endpoint agent already
+streaming into the session whose code is in GUEST_CODE, started with:
+
+    python -m rmm_agent join --code <CODE> --synthetic --no-tray \
+        --no-input --auto-consent --verbose
 """
 import os
 import pathlib
@@ -20,6 +23,8 @@ EMAIL = os.environ.get("CONSOLE_EMAIL", "admin@example.com")
 PASSWORD = os.environ.get("CONSOLE_PASSWORD", "ChangeMe123!")
 GUEST_CODE = os.environ.get("GUEST_CODE", "")
 GUEST_LOG = os.environ.get("GUEST_LOG", "")
+# Unique per run, so repeated runs never collide in the session list.
+RENAMED = f"Desk-{GUEST_CODE}"
 SHOTS = sys.argv[1] if len(sys.argv) > 1 else "."
 
 results: list[tuple[bool, str]] = []
@@ -186,9 +191,9 @@ with sync_playwright() as p:
     def rename():
         page.get_by_test_id("rename-session").click()
         field = page.get_by_test_id("session-name-input")
-        field.fill("Reception Desk")
+        field.fill(RENAMED)
         field.press("Enter")
-        expect(page.get_by_test_id("session-name")).to_have_text("Reception Desk", timeout=10000)
+        expect(page.get_by_test_id("session-name")).to_have_text(RENAMED, timeout=10000)
         # The join code must be untouched by a rename.
         expect(page.get_by_test_id("join-code")).to_have_text(GUEST_CODE)
 
@@ -324,9 +329,9 @@ with sync_playwright() as p:
         page.wait_for_timeout(800)
 
         log = pathlib.Path(GUEST_LOG).read_text() if GUEST_LOG else ""
-        downs = [l for l in log.splitlines() if l.startswith("input mouse down")]
+        downs = [l for l in log.splitlines() if "input mouse down" in l]
         assert downs, "the guest received no mouse-down; input is not reaching it"
-        fields = dict(part.split("=") for part in downs[-1].split() if "=" in part)
+        fields = dict(part.split("=") for part in downs[-1].split() if part.count("=") == 1)
         x = float(fields["x"])
         # The click was aimed at the horizontal centre of the drawn image, so the
         # guest must be told x is the centre - this is what letterboxing breaks.
@@ -382,7 +387,7 @@ with sync_playwright() as p:
 
     # --------------------------------------------------------- list behaviour
     def search_filters():
-        page.get_by_placeholder("Search My Sessions").fill("Reception")
+        page.get_by_placeholder("Search My Sessions").fill(RENAMED)
         expect(page.locator('[data-testid="session-row"]')).to_have_count(1)
         page.get_by_placeholder("Search My Sessions").fill("")
 
@@ -402,7 +407,7 @@ with sync_playwright() as p:
         page.evaluate("window.__spaMarker = 'still-here'")
         page.get_by_test_id("tab-system").click()
         page.get_by_test_id("tab-session").click()
-        page.get_by_placeholder("Search My Sessions").fill("Rec")
+        page.get_by_placeholder("Search My Sessions").fill(RENAMED[:6])
         page.get_by_placeholder("Search My Sessions").fill("")
         assert page.evaluate("window.__spaMarker") == "still-here", "the page reloaded"
 

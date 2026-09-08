@@ -26,3 +26,4 @@ class Device(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    agent_version: Mapped[str | None] = mapped_column(String(32), nullable=True)

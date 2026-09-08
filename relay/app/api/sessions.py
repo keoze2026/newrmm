@@ -109,10 +109,17 @@ async def list_sessions(
             or needle in (s.host_name or "").lower()
         ]
 
-    # Presence is live socket state, not a stale database column.
     for session in sessions:
-        session.guest_connected = hub.guest_online(session.code) or session.guest_connected
+        session.guest_connected = _present(session)
     return sessions
+
+
+def _present(session: Session) -> bool:
+    """A guest counts as joined only once consent is granted and its socket is
+    live. Presence alone must never imply the endpoint agreed to share."""
+    if session.consent_state != "granted" or session.state == "ended":
+        return False
+    return hub.guest_online(session.code) or session.guest_connected
 
 
 @router.get("/{session_id}", response_model=SessionOut)
@@ -122,7 +129,7 @@ async def get_session(
     operator: Operator = Depends(current_operator),
 ) -> Session:
     session = await _get_or_404(db, session_id)
-    session.guest_connected = hub.guest_online(session.code) or session.guest_connected
+    session.guest_connected = _present(session)
     return session
 
 

@@ -90,7 +90,7 @@ Endpoints have outbound internet access to the relay.
 
 
 Appendix A — Exact UI & Functionality Specification
-The operator console must reproduce the following layout and behaviour exactly. It is a single-page application (no page reloads); selecting an item on the left fills the panels to the right. Light theme, corporate palette: primary blue #2F6FE4, deep navy #1F3A5F, near-white background #F7F9FC, subtle grey borders. System font (Inter/system-ui).
+This is a fresh, improved build. It does not reuse, import from, or depend on any prior codebase — but the operator console must REPRODUCE the following layout and behaviour EXACTLY. It is a single-page application (no page reloads); selecting an item on the left fills the panels to the right. Light theme, corporate palette: primary blue #2F6FE4, deep navy #1F3A5F, near-white background #F7F9FC, subtle grey borders. System font (Inter/system-ui).
 A.1 Login screen
 Centered card on a light background. Brand mark + 'RMM Console' title, subtitle 'Sign in to your monitoring server'.
 Fields: EMAIL, PASSWORD only. No server field (server is the site the console is served from).

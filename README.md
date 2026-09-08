@@ -8,7 +8,7 @@ Built phase by phase against `Remote_Desktop_Platform_Specification.docx`.
 | --- | --- | --- |
 | P1 | Relay, auth, session model, audit log, console shell | **Done — checkpoint passing** |
 | — | Operator console rebuilt to Appendix A, plus the session transport | **Done — 32/32 conformance checks** |
-| P2 | Core session on Windows: capture, control, tray/consent | Not started |
+| P2 | Core session on Windows: capture, control, tray/consent | **Code complete, verified on Linux — Windows checkpoint open** |
 | P3 | Same on macOS and Linux | Not started |
 | P4 | File transfer, terminal, clipboard, multi-monitor, screenshot/zoom/annotate | Not started |
 | P5 | Privacy blank screen | Not started |
@@ -21,7 +21,7 @@ Read `PROJECT_STATUS.md` for what actually works right now.
 ```
 relay/      FastAPI relay server (auth, sessions, audit, session transport)
 console/    React + TypeScript + Vite + Tailwind operator console (Appendix A)
-agent/      dev_guest.py development guest; the real agent is Phase 2
+agent/      endpoint agent: consent, tray, capture, input, enrolment
 infra/      docker-compose stack and the nginx config
 tests/e2e/  Browser conformance tests
 docs/       Screenshots from the passing runs
@@ -58,29 +58,47 @@ Sign in with the seeded account. The console proxies `/api` to the relay.
 
 ## See a live session
 
-Create a session in the console, copy its code, then join as a guest:
+Create a session in the console, copy its code, then join with the agent:
 
 ```bash
-# Streams a generated test image - no display needed
-.venv/bin/python agent/dev_guest.py --code <CODE> --synthetic
+cd agent
+python -m pip install -r requirements.txt
 
-# Or stream this machine's real screen
-.venv/bin/python agent/dev_guest.py --code <CODE>
+python -m rmm_agent status                       # what this machine supports
+python -m rmm_agent join --code <CODE>           # real screen, tray, consent
+python -m rmm_agent join --code <CODE> --synthetic --no-tray   # no display needed
 ```
 
-The connection indicator turns green, the waiting line flips to "Your guest has
-joined.", a LIVE preview appears, and Join opens the full viewer.
+The agent asks the person at the keyboard to allow the session. **Nothing is
+captured before they do** — and the relay enforces that too, dropping any frame
+that arrives before a decision is recorded.
+
+Once allowed, the connection indicator turns green, the waiting line flips to
+"Your guest has joined.", a LIVE preview appears, and Join opens the full viewer.
+
+To test from another machine, bind the relay to the network
+(`uvicorn app.main:app --host 0.0.0.0 --port 8000`) and point the agent at it
+with `--relay ws://<relay-host>:8000`.
 
 ## Tests
 
 ```bash
-cd relay && ../.venv/bin/python -m pytest        # 31 API and database tests
+cd relay && ../.venv/bin/python -m pytest        # 33 API and database tests
 
-# Appendix A conformance - needs the relay, the console and a guest running
-GUEST_CODE=<CODE> GUEST_LOG=/tmp/guest.log \
+# Phase 2 session flow: the consent gate and device authentication
+.venv/bin/python tests/e2e/p2_session_flow.py    # relay must be running
+
+# Appendix A conformance - needs the relay, the console and the agent running
+GUEST_CODE=<CODE> GUEST_LOG=/path/to/agent.log \
   .venv/bin/python tests/e2e/console_appendix_a.py docs/screenshots
 ```
 
-The browser suite drives the real console in Google Chrome against a live guest
-and checks Appendix A point by point, including that pointer input lands on the
-right guest coordinate when the canvas is letterboxed.
+The browser suite drives the real console in Google Chrome against the real
+agent and checks Appendix A point by point, including that pointer input lands
+on the right guest coordinate when the canvas is letterboxed.
+
+## Finishing Phase 2
+
+Phase 2's checkpoint requires a real Windows machine. Work through
+`docs/PHASE2_WINDOWS_CHECKLIST.md` there; `docs/PHASE2_STATUS.md` records
+exactly what is and is not proven.

@@ -1,9 +1,11 @@
-"""Session transport: the operator console and the endpoint guest meet here.
+"""Session transport: the operator console and the endpoint agent meet here.
 
-Guest  -> relay : binary JPEG frames, plus JSON status messages.
+Agent  -> relay : a JSON hello, then a consent decision, then binary JPEG frames.
 Operator -> relay: JSON control messages (mouse, keyboard, monitor, blank).
-The relay forwards between the two halves of a session and keeps the database
-in step with who is connected.
+
+Nothing is relayed to the operator until the endpoint user has granted consent
+(spec section 9). The relay drops any frame that arrives before that, so a
+misbehaving or modified agent still cannot stream without a decision on record.
 """
 import uuid
 from datetime import datetime, timezone
@@ -11,32 +13,66 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 
-from app.core.security import decode_access_token
+from app.core.security import decode_access_token, verify_secret
 from app.db.session import SessionLocal
-from app.models import Operator, Session
+from app.models import Device, Operator, Session
 from app.services import audit
 from app.services.hub import hub
 
 router = APIRouter(tags=["session-transport"])
 
+GUEST_ATTACHED = "session.guest_attached"
 GUEST_JOINED = "session.guest_joined"
 GUEST_LEFT = "session.guest_left"
+CONSENT_GRANTED = "session.consent_granted"
+CONSENT_DENIED = "session.consent_denied"
 OPERATOR_ATTACHED = "session.operator_attached"
+DEVICE_ONLINE = "device.online"
+DEVICE_OFFLINE = "device.offline"
 
 
-async def _load_session(code: str) -> Session | None:
+async def _authenticate_device(device_id: str, secret: str) -> Device | None:
+    """Unattended endpoints present the per-device secret issued at enrolment."""
+    if not device_id or not secret:
+        return None
+    try:
+        identifier = uuid.UUID(device_id)
+    except ValueError:
+        return None
     async with SessionLocal() as db:
-        return await db.scalar(select(Session).where(Session.code == code.upper()))
+        device = await db.scalar(select(Device).where(Device.id == identifier))
+        if device is None or not verify_secret(secret, device.secret_hash):
+            return None
+        return device
 
 
 @router.websocket("/ws/guest/{code}")
-async def guest_socket(websocket: WebSocket, code: str) -> None:
-    """The endpoint agent joins with the session code the user was given."""
+async def guest_socket(
+    websocket: WebSocket,
+    code: str,
+    device_id: str = "",
+    secret: str = "",
+) -> None:
+    """The endpoint agent joins with the session code the user was given.
+
+    An unattended endpoint additionally presents its device credentials; an
+    attended one joins with the code alone, which is what the user was told to
+    type in.
+    """
     code = code.upper()
-    session = await _load_session(code)
-    if session is None or session.state == "ended":
-        await websocket.close(code=4404, reason="Unknown or ended session")
-        return
+    async with SessionLocal() as db:
+        session = await db.scalar(select(Session).where(Session.code == code))
+        if session is None or session.state == "ended":
+            await websocket.close(code=4404, reason="Unknown or ended session")
+            return
+        needs_device = session.mode == "unattended"
+        expected_device_id = str(session.device_id) if session.device_id else None
+
+    if needs_device:
+        device = await _authenticate_device(device_id, secret)
+        if device is None or (expected_device_id and str(device.id) != expected_device_id):
+            await websocket.close(code=4401, reason="Device authentication failed")
+            return
 
     await websocket.accept()
     channel = hub.channel(code)
@@ -45,6 +81,7 @@ async def guest_socket(websocket: WebSocket, code: str) -> None:
         return
     channel.guest = websocket
 
+    consented = False
     try:
         hello = await websocket.receive_json()
         async with SessionLocal() as db:
@@ -55,20 +92,21 @@ async def guest_socket(websocket: WebSocket, code: str) -> None:
             live.host_name = str(hello.get("host_name", "unknown"))[:255]
             live.system_info = hello.get("system_info", {}) or {}
             live.monitors = hello.get("monitors", []) or []
-            live.guest_connected = True
-            live.guest_joined_at = datetime.now(timezone.utc)
-            live.guest_last_seen_at = live.guest_joined_at
-            if live.state == "pending":
-                live.state = "active"
-                live.started_at = live.guest_joined_at
+            live.agent_version = str(hello.get("agent_version", ""))[:32] or None
+            live.guest_last_seen_at = datetime.now(timezone.utc)
+            live.consent_state = "pending"
             await audit.record(
                 db,
-                action=GUEST_JOINED,
+                action=GUEST_ATTACHED,
                 actor_type="guest",
                 actor_label=live.host_name or "guest",
                 target_type="session",
                 target_id=str(live.id),
-                detail={"code": code, "os": (live.system_info or {}).get("os")},
+                detail={
+                    "code": code,
+                    "os": (live.system_info or {}).get("os"),
+                    "agent_version": live.agent_version,
+                },
             )
             await db.commit()
             snapshot = {
@@ -77,16 +115,74 @@ async def guest_socket(websocket: WebSocket, code: str) -> None:
                 "monitors": live.monitors,
             }
 
-        await hub.to_operator_json(code, {"type": "guest_joined", **snapshot})
+        # The operator sees the endpoint attach, but no screen until consent.
+        await hub.to_operator_json(
+            code, {"type": "guest_attached", "consent": "pending", **snapshot}
+        )
 
         while True:
             message = await websocket.receive()
             if message["type"] == "websocket.disconnect":
                 break
-            if (payload := message.get("bytes")) is not None:
-                await hub.to_operator_bytes(code, payload)
-            elif (text := message.get("text")) is not None:
-                await hub.to_operator_json(code, {"type": "guest_message", "raw": text})
+
+            if (text := message.get("text")) is not None:
+                import json
+
+                try:
+                    payload = json.loads(text)
+                except ValueError:
+                    continue
+
+                if payload.get("type") == "consent":
+                    granted = bool(payload.get("granted"))
+                    consented = granted
+                    now = datetime.now(timezone.utc)
+                    async with SessionLocal() as db:
+                        live = await db.scalar(select(Session).where(Session.code == code))
+                        if live is not None:
+                            live.consent_state = "granted" if granted else "denied"
+                            live.consent_at = now
+                            live.guest_connected = granted
+                            if granted:
+                                live.guest_joined_at = now
+                                if live.state == "pending":
+                                    live.state = "active"
+                                    live.started_at = now
+                            await audit.record(
+                                db,
+                                action=CONSENT_GRANTED if granted else CONSENT_DENIED,
+                                actor_type="guest",
+                                actor_label=live.host_name or "guest",
+                                target_type="session",
+                                target_id=str(live.id),
+                                detail={"code": code, "by": payload.get("by", "endpoint user")},
+                            )
+                            if granted:
+                                await audit.record(
+                                    db,
+                                    action=GUEST_JOINED,
+                                    actor_type="guest",
+                                    actor_label=live.host_name or "guest",
+                                    target_type="session",
+                                    target_id=str(live.id),
+                                    detail={"code": code},
+                                )
+                            await db.commit()
+
+                    if granted:
+                        await hub.to_operator_json(code, {"type": "guest_joined", **snapshot})
+                    else:
+                        await hub.to_operator_json(code, {"type": "consent_denied"})
+                        await websocket.close(code=4403, reason="Consent denied")
+                        break
+                else:
+                    await hub.to_operator_json(code, {"type": "guest_message", "raw": text})
+
+            elif (payload_bytes := message.get("bytes")) is not None:
+                # Defence in depth: frames before consent are discarded.
+                if consented:
+                    await hub.to_operator_bytes(code, payload_bytes)
+
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -106,10 +202,67 @@ async def guest_socket(websocket: WebSocket, code: str) -> None:
                     actor_label=live.host_name or "guest",
                     target_type="session",
                     target_id=str(live.id),
-                    detail={"code": code},
+                    detail={"code": code, "consented": consented},
                 )
                 await db.commit()
         await hub.to_operator_json(code, {"type": "guest_left"})
+
+
+@router.websocket("/ws/device/{device_id}")
+async def device_socket(websocket: WebSocket, device_id: str, secret: str = "") -> None:
+    """Unattended presence: an enrolled endpoint stays reachable here.
+
+    The agent holds this socket open so the console can see the device online.
+    Starting a session still goes through /ws/guest with the session code.
+    """
+    device = await _authenticate_device(device_id, secret)
+    if device is None:
+        await websocket.close(code=4401, reason="Device authentication failed")
+        return
+
+    await websocket.accept()
+    async with SessionLocal() as db:
+        live = await db.scalar(select(Device).where(Device.id == device.id))
+        if live is not None:
+            live.status = "online"
+            live.last_seen_at = datetime.now(timezone.utc)
+            await audit.record(
+                db,
+                action=DEVICE_ONLINE,
+                actor_type="device",
+                actor_label=live.name,
+                target_type="device",
+                target_id=str(live.id),
+            )
+            await db.commit()
+
+    try:
+        while True:
+            await websocket.receive_text()
+            async with SessionLocal() as db:
+                live = await db.scalar(select(Device).where(Device.id == device.id))
+                if live is not None:
+                    live.last_seen_at = datetime.now(timezone.utc)
+                    await db.commit()
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        async with SessionLocal() as db:
+            live = await db.scalar(select(Device).where(Device.id == device.id))
+            if live is not None:
+                live.status = "offline"
+                live.last_seen_at = datetime.now(timezone.utc)
+                await audit.record(
+                    db,
+                    action=DEVICE_OFFLINE,
+                    actor_type="device",
+                    actor_label=live.name,
+                    target_type="device",
+                    target_id=str(live.id),
+                )
+                await db.commit()
 
 
 @router.websocket("/ws/operator/{code}")
@@ -153,6 +306,7 @@ async def operator_socket(websocket: WebSocket, code: str, token: str = "") -> N
             "host_name": session.host_name,
             "system_info": session.system_info,
             "monitors": session.monitors,
+            "consent": session.consent_state,
         }
 
     await websocket.accept()
@@ -162,7 +316,7 @@ async def operator_socket(websocket: WebSocket, code: str, token: str = "") -> N
     await websocket.send_json(
         {
             "type": "attached",
-            "guest_connected": hub.guest_online(code),
+            "guest_connected": hub.guest_online(code) and guest_snapshot["consent"] == "granted",
             **guest_snapshot,
         }
     )

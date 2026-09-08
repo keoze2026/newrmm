@@ -10,6 +10,7 @@ from app.db.base import Base
 
 SESSION_MODE = ("attended", "unattended")
 SESSION_STATE = ("pending", "active", "ended")
+CONSENT_STATE = ("pending", "granted", "denied")
 
 
 class Session(Base):
@@ -43,3 +44,9 @@ class Session(Base):
     guest_last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     system_info: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     monitors: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    agent_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    # The endpoint user must allow the session before anything is captured
+    # (spec section 9).
+    consent_state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

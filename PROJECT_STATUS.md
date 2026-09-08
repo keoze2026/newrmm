@@ -4,13 +4,18 @@ Updated after every change. Read this before claiming anything works.
 
 ## Where the build is
 
-Phase 1 (Foundation) is complete. On top of it, the operator console has been
-rebuilt to **Appendix A** of the specification, and the session transport that
-Appendix A depends on is working: a guest can join a session, stream its screen,
-and be controlled from the console viewer.
+Phase 1 (Foundation) is complete. The operator console matches **Appendix A** of
+the specification. **Phase 2 is code-complete and fully verified on Linux, but
+its checkpoint is NOT passed**, because the checkpoint requires a real Windows
+machine and nothing here has run on Windows.
 
-The Phase 2 endpoint agent does **not** exist. What connects today is
-`agent/dev_guest.py`, a development guest that has only ever run on Linux.
+The endpoint agent now exists as a real package (`agent/rmm_agent/`) with a
+consent surface, tray presence, capture, input injection, reconnect and
+unattended enrolment. The old `dev_guest.py` stand-in has been removed; the
+tests drive the real agent.
+
+Work through `docs/PHASE2_WINDOWS_CHECKLIST.md` on the Windows machine to close
+Phase 2. `docs/PHASE2_STATUS.md` lists exactly what is and is not proven.
 
 ## What works, and how it was verified
 
@@ -39,24 +44,48 @@ The Phase 2 endpoint agent does **not** exist. What connects today is
 | Device enrolment; the secret is shown once and stored only as an Argon2 hash | `relay/tests/test_devices.py` (API only — see below) |
 | Audit log is append-only — the database rejects UPDATE and DELETE | `relay/tests/test_audit.py` |
 | Compose stack builds, migrates on start, serves console and API through nginx | Stack brought up and the browser suite re-run against it |
+| Endpoint agent attaches, reports host details, and asks for consent | `tests/e2e/p2_session_flow.py`, Appendix A suite run against the real agent |
+| **Nothing is captured or relayed before consent is granted** | `tests/e2e/p2_session_flow.py` — frames sent before consent are asserted never to reach the operator |
+| Granting consent joins the session; denying leaves it unjoined | `tests/e2e/p2_session_flow.py` |
+| Attach, consent granted, consent denied, join and leave are all audited | `tests/e2e/p2_session_flow.py` |
+| Presence cannot be faked by a forged row — consent is required | `relay/tests/test_session_console.py` |
+| Unattended sessions require per-device credentials; a wrong secret is refused | `tests/e2e/p2_session_flow.py` |
+| An enrolled device reports online, and offline when its socket drops | `tests/e2e/p2_session_flow.py` |
+| Agent capture, input injection and tray all available on Linux | `python -m rmm_agent status` |
+| Agent reconnects with exponential backoff after a drop | `agent/rmm_agent/session.py` (code path exercised; drop scenario is on the Windows checklist) |
 
-Last run: **31/31 pytest tests passed**, **32/32 Appendix A browser checks
-passed** against a live relay, PostgreSQL 17, Redis 8 and a connected guest.
+Last run: **33/33 pytest tests**, **13/13 Phase 2 session-flow checks**, and
+**32/32 Appendix A browser checks** — the browser suite now driven by the real
+endpoint agent, against a live relay, PostgreSQL 17 and Redis 8 on Linux.
 Screenshots in `docs/screenshots/`.
+
+Two real bugs surfaced while wiring Phase 2, both fixed:
+
+- The relay reported a guest as connected the moment its socket attached, before
+  consent was answered. Presence is now gated on consent, and a regression test
+  puts a session row into exactly the state a compromised agent would want and
+  asserts the API still reports the guest as absent.
+- The agent's CLI joined its worker thread with a 15-second timeout when run
+  with `--no-tray`, so the agent quit fifteen seconds after starting. It now
+  waits for the event loop properly.
 
 ## What does NOT work yet
 
-- **No production endpoint agent.** `agent/dev_guest.py` is a development guest.
-  It has no installer, no tray, no consent surface and no unattended enrolment,
-  and it has only ever been run on Linux.
-- **Only Linux has been exercised.** No claim is made about Windows or macOS —
-  no code has run there. The console is one web app, so it is expected to behave
-  identically, but that is untested until Phase 3.
+- **Phase 2's checkpoint is not passed.** The specification requires the core
+  session to be "end-to-end tested on a real Windows machine". No code in this
+  repository has run on Windows. Unverified there: that `mss` captures the
+  desktop, that `pynput` drives SendInput for clicks and keystrokes, that
+  `pystray` shows a tray icon, that the consent dialog appears above other
+  windows, and that PyInstaller produces a working `.exe`.
+- **macOS is untouched.** That is Phase 3.
+- The agent has no installer, no service or auto-start, and no code signing.
+  Phase 6. An `.exe` built with `agent/build_windows.py` is unsigned, so
+  SmartScreen will warn.
 - Terminal, Files, Download and Send/Get file are wired into the UI but have no
   implementation behind them; they say so on screen. They are Phase 4.
 - Chat, Tools and Locate are placeholders, labelled as such.
-- Privacy blank sends the message and the guest logs it, but no guest actually
-  blanks a screen yet. That is Phase 5.
+- Privacy blank sends the message and the agent logs it, but no screen is
+  blanked. That is Phase 5.
 - The relay hub is single-process and in-memory, so a deployment must run one
   relay process. Moving fan-out onto Redis pub/sub is Phase 6.
 - **The console no longer has Devices or Audit pages.** Appendix A's icon rail
@@ -80,6 +109,7 @@ Screenshots in `docs/screenshots/`.
 ## How to revert
 
 ```bash
+git checkout console-appendix-a # before the Phase 2 agent
 git checkout p1-foundation      # before the Appendix A console
 git checkout p0-docs            # before any code
 ```
@@ -91,6 +121,14 @@ cd relay && ../.venv/bin/python -m alembic downgrade 0001_initial
 ```
 
 ## Change log
+
+- **P2 — Endpoint agent (Linux-verified; Windows checkpoint open).** Real agent
+  package with `join`, `enrol` and `status` commands; consent dialog, tray
+  presence and notifications; capture with multi-monitor and adaptive quality;
+  input injection; reconnect with backoff; unattended enrolment and device
+  presence. Relay now enforces the consent gate itself and authenticates
+  unattended endpoints per device. Removed `dev_guest.py`; the tests drive the
+  real agent. Windows verification is `docs/PHASE2_WINDOWS_CHECKLIST.md`.
 
 - **Appendix A console.** Rebuilt the operator console to the exact layout,
   labels, order and behaviour of Appendix A: light theme on the specified
