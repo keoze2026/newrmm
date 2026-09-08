@@ -79,7 +79,7 @@ async def guest_socket(
     if channel.guest is not None:
         await websocket.close(code=4409, reason="A guest is already connected")
         return
-    channel.guest = websocket
+    await hub.attach_guest(code, websocket)
 
     consented = False
     try:
@@ -314,7 +314,7 @@ async def operator_socket(websocket: WebSocket, code: str, token: str = "") -> N
 
     await websocket.accept()
     channel = hub.channel(code)
-    channel.operator = websocket
+    await hub.attach_operator(code, websocket)
 
     await websocket.send_json(
         {

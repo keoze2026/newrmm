@@ -35,6 +35,13 @@ services:
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
       ENVIRONMENT: ${ENVIRONMENT:-production}
+      LOG_DIR: /var/log/rmm-relay
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      # Persistent operational logging (Phase 6): a restart must not lose it.
+      - relaylogs:/var/log/rmm-relay
+      # Connectors built by CI, served to guests at /api/connector.
+      - ../agent/dist:/agent/dist:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -62,3 +69,4 @@ services:
 volumes:
   pgdata:
   redisdata:
+  relaylogs:

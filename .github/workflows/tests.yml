@@ -1,0 +1,124 @@
+name: Tests
+
+# The relay and console suites, plus the agent's own unit tests. The end-to-end
+# suites that need a real display are not run here; they run on a real machine,
+# which is what the specification's phase checkpoints require.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  relay:
+    name: Relay
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: rdp
+          POSTGRES_PASSWORD: rdp_ci_pass
+          POSTGRES_DB: rdp
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U rdp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://rdp:rdp_ci_pass@127.0.0.1:5432/rdp_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      JWT_SECRET: ci-only-not-a-real-secret
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install
+        working-directory: relay
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Create the test database
+        run: |
+          PGPASSWORD=rdp_ci_pass psql -h 127.0.0.1 -U rdp -d rdp \
+            -c 'CREATE DATABASE rdp_test OWNER rdp;'
+
+      - name: Tests
+        working-directory: relay
+        run: python -m pytest -q
+
+  agent:
+    name: Agent unit tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3-tk xvfb libx11-dev libxext-dev libxrandr-dev
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r agent/requirements.txt pytest
+
+      - name: Build the native capture module
+        working-directory: agent/native/linux
+        run: python setup.py build_ext --inplace
+
+      - name: Tests
+        working-directory: agent
+        # A virtual display: the privacy blank and clipboard both need one, and
+        # blanking a headless X server disturbs nobody.
+        run: xvfb-run -a python -m pytest tests/ -q
+
+  console:
+    name: Console
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+
+      - name: Install
+        working-directory: console
+        run: npm ci --no-audit --no-fund
+
+      - name: Type check
+        working-directory: console
+        run: npx tsc -b --force
+
+      - name: Build
+        working-directory: console
+        run: npm run build

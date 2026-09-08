@@ -40,21 +40,54 @@ Console at `http://<host>/`, sign in, **Create +**, and give the endpoint:
 --relay ws://<host>/api
 ```
 
+## TLS
+
+Section 9 requires all traffic encrypted, and a session carries screen contents
+and keystrokes, so this is the one item that must not be skipped on a public
+address.
+
+Get a certificate for your domain:
+
+```bash
+sudo certbot certonly --standalone -d relay.example.com
+sudo mkdir -p infra/certs
+sudo cp /etc/letsencrypt/live/relay.example.com/fullchain.pem infra/certs/
+sudo cp /etc/letsencrypt/live/relay.example.com/privkey.pem  infra/certs/
+```
+
+Then bring the stack up with the TLS overlay:
+
+```bash
+cd infra
+JWT_SECRET="$(openssl rand -hex 32)" \
+POSTGRES_PASSWORD="$(openssl rand -hex 16)" \
+CORS_ORIGINS="https://relay.example.com" \
+docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d --build
+```
+
+That redirects port 80 to 443, serves TLS 1.2 and 1.3 only, and sets HSTS.
+Agents then connect with `wss://`:
+
+```bash
+python -m rmm_agent join --relay wss://relay.example.com/api --code ABCD1234
+```
+
+Renewal writes to `infra/certbot-webroot`, which nginx serves at
+`/.well-known/acme-challenge/`; copy the renewed files into `infra/certs` and
+reload nginx.
+
 ## Before it faces the internet
 
-The compose stack is plain HTTP. That is fine on a trusted LAN and **not** fine
-on a public address — sessions carry screen contents and keystrokes.
-
-- **TLS.** Put a certificate on nginx (or a proxy in front of it) and use
-  `wss://<host>/api` for agents. The spec requires encrypted transport; this is
-  the one item that must not be skipped.
+Beyond TLS:
 - **`JWT_SECRET`.** Set it to a real random value. The default is a placeholder
   and anyone holding it can mint operator tokens.
 - **Postgres password.** Same.
 - **`CORS_ORIGINS`.** Set it to the console's real origin.
-- **One relay process.** The session hub is in-memory, so sessions do not span
-  instances. Do not scale `relay` past one replica until the Redis pub/sub
-  fan-out lands in Phase 6.
+- **Scaling.** Sessions are relayed through Redis pub/sub when the two halves
+  land on different instances, so `relay` can run more than one replica. Every
+  instance must share the same Redis and the same database. Without Redis a
+  single instance still works: the local path is tried first and Redis is only
+  consulted when the peer is elsewhere.
 
 ## Reaching it without a server
 

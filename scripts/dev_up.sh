@@ -47,8 +47,8 @@ fi
 # Relay. setsid so it outlives the shell that started it.
 if ! alive http://127.0.0.1:8000/health; then
     echo "starting relay..."
-    (cd "$ROOT/relay" && setsid "$ROOT/.venv/bin/python" -m uvicorn app.main:app \
-        --host 0.0.0.0 --port 8000 > "$LOGS/relay.log" 2>&1 < /dev/null &)
+    (cd "$ROOT/relay" && LOG_DIR="$LOGS" setsid "$ROOT/.venv/bin/python" -m uvicorn app.main:app \
+        --host 0.0.0.0 --port 8000 > "$LOGS/uvicorn.log" 2>&1 < /dev/null &)
     for _ in $(seq 1 30); do
         alive http://127.0.0.1:8000/health && break
         sleep 1

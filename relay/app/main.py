@@ -3,12 +3,18 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import audit, auth, connector, devices, health, sessions, ws
 from app.core.config import settings
+from app.core.logging_setup import RequestLogMiddleware
+from app.core.logging_setup import configure as configure_logging
+
+configure_logging(settings.log_dir, settings.log_level)
 
 app = FastAPI(
     title="Remote Desktop & Support Platform - Relay",
     version="0.1.0",
     description="Operator auth, session model, audit log and the session transport.",
 )
+
+app.add_middleware(RequestLogMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

@@ -22,6 +22,11 @@ class Settings(BaseSettings):
 
     session_code_length: int = 8
 
+    # Persistent operational logging (Phase 6). An empty log_dir disables
+    # the file and leaves only console output.
+    log_dir: str = "/var/log/rmm-relay"
+    log_level: str = "INFO"
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
