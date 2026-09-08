@@ -86,6 +86,8 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
+          # Python 3.13 no longer bundles setuptools, and setup.py needs it.
+          pip install setuptools
           pip install -r agent/requirements.txt pytest
 
       - name: Build the native capture module

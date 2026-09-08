@@ -58,7 +58,12 @@ def native_binaries() -> list[str]:
 # the imports it needs to bundle.
 HIDDEN = {
     "Windows": ["pystray._win32", "pynput.keyboard._win32", "pynput.mouse._win32"],
-    "Darwin": ["pystray._darwin", "pynput.keyboard._darwin", "pynput.mouse._darwin"],
+    "Darwin": [
+        "pystray._darwin", "pynput.keyboard._darwin", "pynput.mouse._darwin",
+        # The privacy blank asks AppKit for NSWindowSharingNone at runtime, and
+        # imports it lazily - so PyInstaller cannot see it by itself.
+        "AppKit", "Foundation", "objc",
+    ],
     "Linux": [
         "pystray._xorg", "pystray._appindicator", "pystray._gtk",
         "pynput.keyboard._xorg", "pynput.mouse._xorg",
@@ -67,16 +72,18 @@ HIDDEN = {
 
 
 def check_dependencies() -> bool:
+    """Check the modules are installed without importing them.
+
+    Importing pystray on Linux opens an X display, and a build machine has no
+    display - so an import check would fail on exactly the machines that build
+    correctly.
+    """
+    import importlib.util
+
     missing = []
-    for module in ("websockets", "mss", "PIL", "pynput", "pystray"):
-        try:
-            __import__(module)
-        except ImportError:
-            missing.append(module)
-    try:
-        __import__("PyInstaller")
-    except ImportError:
-        missing.append("pyinstaller")
+    for module in ("websockets", "mss", "PIL", "pynput", "pystray", "PyInstaller"):
+        if importlib.util.find_spec(module) is None:
+            missing.append("pyinstaller" if module == "PyInstaller" else module)
     if missing:
         print("Missing: " + ", ".join(missing), file=sys.stderr)
         print(f"Install with: {sys.executable} -m pip install -r requirements.txt pyinstaller",
@@ -93,6 +100,12 @@ def build(app_bundle: bool, windowed: bool) -> int:
         "--collect-submodules", "pynput",
         "--collect-submodules", "pystray",
     ]
+
+    if app_bundle and SYSTEM == "Darwin" and not windowed:
+        # A .app bundle only exists in windowed mode, and without one macOS
+        # attributes the Screen Recording prompt to the terminal instead.
+        print("--app implies --windowed on macOS; enabling it")
+        windowed = True
 
     command.append("--windowed" if windowed else "--console")
     command.append("--onedir" if (app_bundle and SYSTEM == "Darwin") else "--onefile")
@@ -121,11 +134,23 @@ def build(app_bundle: bool, windowed: bool) -> int:
 
     # A platform-suffixed copy so all three builds can share one directory,
     # which is what CI collects and what the relay hands to guests.
-    if produced.exists():
+    dist = ROOT / "dist"
+    bundle = dist / f"{NAME}.app"
+
+    if SYSTEM == "Darwin" and bundle.is_dir():
+        # A .app is a directory tree, so it ships as an archive.
+        tagged = dist / f"{NAME}-macos.zip"
+        if tagged.exists():
+            tagged.unlink()
+        shutil.make_archive(str(tagged.with_suffix("")), "zip", root_dir=dist, base_dir=bundle.name)
+        print(f"also: {tagged}")
+    elif produced.exists() and produced.is_file():
         suffix = {"Windows": "windows.exe", "Darwin": "macos", "Linux": "linux"}[SYSTEM]
-        tagged = produced.parent / f"{NAME}-{suffix}"
+        tagged = dist / f"{NAME}-{suffix}"
         shutil.copy2(produced, tagged)
         print(f"also: {tagged}")
+    else:
+        print(f"WARNING: no single-file artefact at {produced}", file=sys.stderr)
     if SYSTEM == "Darwin":
         print(
             "\nmacOS: the first run needs Screen Recording and Accessibility "

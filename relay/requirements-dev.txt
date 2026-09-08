@@ -1,4 +1,6 @@
 -r requirements.txt
-pytest==8.3.4
+# pytest-asyncio 1.4 requires pytest >= 8.4; pinning 8.3.4 here made the
+# file unresolvable, which only showed up in a clean install.
+pytest==9.1.1
 pytest-asyncio==1.4.0
 anyio==4.7.0
