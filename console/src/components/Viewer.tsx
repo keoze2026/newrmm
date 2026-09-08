@@ -207,13 +207,27 @@ export default function Viewer({
     const modifiers = (e: KeyboardEvent) =>
       KEY_MODIFIERS.filter((m) => (e.getModifierState ? e.getModifierState(m) : false))
 
+    /** Keys typed into the terminal or a file field belong to that field, not
+     *  to the guest's screen. */
+    const isEditing = (target: EventTarget | null) => {
+      const node = target as HTMLElement | null
+      if (!node) return false
+      const tag = node.tagName
+      return (
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        tag === 'SELECT' ||
+        node.isContentEditable === true
+      )
+    }
+
     const down = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') return
+      if (event.key === 'Escape' || isEditing(event.target)) return
       event.preventDefault()
       stream.send({ type: 'input', kind: 'key', action: 'down', key: event.key, modifiers: modifiers(event) })
     }
     const up = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') return
+      if (event.key === 'Escape' || isEditing(event.target)) return
       event.preventDefault()
       stream.send({ type: 'input', kind: 'key', action: 'up', key: event.key, modifiers: modifiers(event) })
     }

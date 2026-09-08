@@ -113,14 +113,15 @@ def main() -> int:
 
         mouse = Controller()
         original = mouse.position
-        width, height = frames["size"]
+        geometry = capture.geometry
+        left, top, width, height = geometry
         try:
             injector.apply(
-                {"kind": "mouse", "action": "move", "x": 0.25, "y": 0.75}, (width, height)
+                {"kind": "mouse", "action": "move", "x": 0.25, "y": 0.75}, geometry
             )
             time.sleep(0.25)
             x, y = mouse.position
-            expected = (int(0.25 * width), int(0.75 * height))
+            expected = (left + int(0.25 * width), top + int(0.75 * height))
             assert abs(x - expected[0]) <= 4 and abs(y - expected[1]) <= 4, (
                 f"asked for {expected}, pointer went to {(x, y)}"
             )
@@ -138,16 +139,27 @@ def main() -> int:
         listener.start()
         time.sleep(0.4)
         try:
-            injector.apply({"kind": "key", "action": "down", "key": "Shift"}, frames["size"])
+            injector.apply({"kind": "key", "action": "down", "key": "Shift"}, capture.geometry)
             time.sleep(0.4)
         finally:
-            injector.apply({"kind": "key", "action": "up", "key": "Shift"}, frames["size"])
+            injector.apply({"kind": "key", "action": "up", "key": "Shift"}, capture.geometry)
             time.sleep(0.2)
             listener.stop()
         assert seen, "the injected keystroke was never delivered"
         assert any("shift" in str(k).lower() for k in seen), f"got {seen}"
 
     step("an injected keystroke is actually delivered to X", keyboard_events_are_delivered)
+
+    def geometry_matches_the_display():
+        left, top, width, height = capture.geometry
+        assert width > 0 and height > 0, capture.geometry
+        pixels = frames["size"]
+        # On this X11 machine there is no Retina doubling, so the captured
+        # pixels and the logical geometry should agree.
+        assert pixels == (width, height), f"captured {pixels}, geometry says {(width, height)}"
+        print(f"      geometry {width}x{height} at {left},{top}")
+
+    step("the reported geometry matches the captured frame", geometry_matches_the_display)
 
     def monitor_switch():
         assert capture.select(0) is True

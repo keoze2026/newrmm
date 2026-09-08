@@ -14,13 +14,13 @@ consent surface, tray presence, capture, input injection, reconnect and
 unattended enrolment. The old `dev_guest.py` stand-in has been removed; the
 tests drive the real agent.
 
-Phase 3's Linux half and Phase 4's tools are done and verified here: real screen
-capture, real input injection, a remote terminal, file transfer both ways, and
-clipboard sync.
+Phase 3 and Phase 4 are code-complete for all three platforms. Linux is verified
+end to end on this machine; the Windows and macOS support is written but has not
+run on that hardware, and will be tested once the relay is deployed and the
+agents are built on those machines.
 
-The one open item is the Windows run for Phase 2's checkpoint, and macOS for
-Phase 3. `docs/PHASE2_WINDOWS_CHECKLIST.md` covers the Windows pass when there
-is time for it; nothing else is waiting on it.
+`docs/BUILDING_AGENTS.md` covers building on each OS; `docs/DEPLOYMENT.md`
+covers standing the relay up somewhere the other machines can reach.
 
 ## What works, and how it was verified
 
@@ -57,6 +57,9 @@ is time for it; nothing else is waiting on it.
 | Unattended sessions require per-device credentials; a wrong secret is refused | `tests/e2e/p2_session_flow.py` |
 | An enrolled device reports online, and offline when its socket drops | `tests/e2e/p2_session_flow.py` |
 | Agent capture, input injection and tray all available on Linux | `python -m rmm_agent status` |
+| Operator coordinates map correctly on Retina, DPI-scaled and secondary displays | `agent/tests/test_input_mapping.py` — the cases this hardware cannot reproduce |
+| Reported display geometry matches the captured frame | `tests/e2e/p3_linux_endpoint.py` |
+| The build script produces a standalone binary that joins a session and streams | Built here: 23 MB `agent/dist/rmm-agent`, run and connected |
 | Agent reconnects with exponential backoff after a drop | `agent/rmm_agent/session.py` (code path exercised; drop scenario is on the Windows checklist) |
 | **Real** screen capture of the Linux desktop, sustaining 41 fps | `tests/e2e/p3_linux_endpoint.py` |
 | **Real** pointer injection lands on the right pixel of the real screen | `tests/e2e/p3_linux_endpoint.py` — the pointer is moved and read back |
@@ -100,7 +103,11 @@ Real bugs surfaced by these runs, all fixed:
   desktop, that `pynput` drives SendInput for clicks and keystrokes, that
   `pystray` shows a tray icon, that the consent dialog appears above other
   windows, and that PyInstaller produces a working `.exe`.
-- **macOS is untouched.** That is Phase 3.
+- **macOS has not been run.** The support is written — Screen Recording and
+  Accessibility checks, Retina coordinate mapping, a `.app` bundle build — but
+  no Mac has executed a line of it.
+- **Windows has not been run.** Same: DPI awareness, the per-OS hidden imports
+  and the `.exe` build are written, not executed there.
 - The agent has no installer, no service or auto-start, and no code signing.
   Phase 6. An `.exe` built with `agent/build_windows.py` is unsigned, so
   SmartScreen will warn.
@@ -147,6 +154,15 @@ cd relay && ../.venv/bin/python -m alembic downgrade 0001_initial
 ```
 
 ## Change log
+
+- **P3 — Cross-platform core.** Per-OS setup and capability checks: Windows DPI
+  awareness before capture, macOS Screen Recording and Accessibility checks,
+  Linux X11-versus-Wayland detection. Operator input now maps through the
+  display's logical geometry including its origin, so Retina, DPI-scaled and
+  secondary monitors all land correctly — previously it used raw frame pixels,
+  which is right only on an unscaled primary display. One `build.py` produces a
+  standalone binary on any of the three platforms; the Linux one is built and
+  proven. `status` reports monitors, permissions and session type.
 
 - **P2 — Endpoint agent (Linux-verified; Windows checkpoint open).** Real agent
   package with `join`, `enrol` and `status` commands; consent dialog, tray

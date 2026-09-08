@@ -9,7 +9,7 @@ Built phase by phase against `Remote_Desktop_Platform_Specification.docx`.
 | P1 | Relay, auth, session model, audit log, console shell | **Done — checkpoint passing** |
 | — | Operator console rebuilt to Appendix A, plus the session transport | **Done — 32/32 conformance checks** |
 | P2 | Core session on Windows: capture, control, tray/consent | Code complete, verified on Linux — **Windows checkpoint open** |
-| P3 | Cross-platform core: macOS and Linux | **Linux done — 10/10 real capture and input checks**; macOS not started |
+| P3 | Cross-platform core: macOS and Linux | **Linux verified (11/11)**; Windows and macOS support written, not yet run there |
 | P4 | Tools: file transfer, terminal, clipboard, multi-monitor, screenshot/zoom/annotate | **Done — 13/13 tool checks, 9/9 through the console** |
 | P5 | Privacy blank screen | Not started |
 | P6 | Hardening, signed installers, deployment | Not started |
@@ -21,7 +21,7 @@ Read `PROJECT_STATUS.md` for what actually works right now.
 ```
 relay/      FastAPI relay server (auth, sessions, audit, session transport)
 console/    React + TypeScript + Vite + Tailwind operator console (Appendix A)
-agent/      endpoint agent: consent, tray, capture, input, enrolment
+agent/      endpoint agent: consent, tray, capture, input, tools, per-OS build
 infra/      docker-compose stack and the nginx config
 tests/e2e/  Browser conformance tests
 docs/       Screenshots from the passing runs
@@ -104,8 +104,20 @@ The browser suite drives the real console in Google Chrome against the real
 agent and checks Appendix A point by point, including that pointer input lands
 on the right guest coordinate when the canvas is letterboxed.
 
-## Finishing Phase 2
+## Building the agent for Windows and macOS
 
-Phase 2's checkpoint requires a real Windows machine. Work through
-`docs/PHASE2_WINDOWS_CHECKLIST.md` there; `docs/PHASE2_STATUS.md` records
-exactly what is and is not proven.
+One `build.py` covers all three platforms, run on the machine it targets:
+
+```bash
+python -m pip install -r agent/requirements.txt pyinstaller
+cd agent && python build.py            # add --app on macOS
+```
+
+`docs/BUILDING_AGENTS.md` has the per-OS detail — Windows DPI awareness, the two
+macOS permissions and why Screen Recording needs a restart, and the Linux
+X11-only caveat. `docs/DEPLOYMENT.md` covers standing the relay up somewhere
+those machines can reach.
+
+Windows and macOS have not been run yet; that happens once the relay is
+deployed. `docs/PHASE2_WINDOWS_CHECKLIST.md` is the verification pass for
+Windows when it is reachable.

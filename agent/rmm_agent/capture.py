@@ -28,12 +28,18 @@ class ScreenCapture:
 
                 self._sct = mss.mss()
                 for i, m in enumerate(self._sct.monitors[1:]):
+                    # width/height/left/top from mss are in the OS's own
+                    # coordinate space - logical points, not captured pixels.
+                    # A Retina or DPI-scaled display grabs more pixels than
+                    # this, so input must be mapped against these numbers.
                     self._monitors.append(
                         {
                             "index": i,
                             "label": f"Monitor {i + 1}",
                             "width": m["width"],
                             "height": m["height"],
+                            "left": m["left"],
+                            "top": m["top"],
                         }
                     )
             except Exception as exc:
@@ -42,12 +48,32 @@ class ScreenCapture:
 
         if not self._monitors:
             self._monitors = [
-                {"index": 0, "label": "Primary", "width": self.size[0], "height": self.size[1]}
+                {
+                    "index": 0,
+                    "label": "Primary",
+                    "width": self.size[0],
+                    "height": self.size[1],
+                    "left": 0,
+                    "top": 0,
+                }
             ]
 
     @property
     def monitors(self) -> list[dict]:
         return self._monitors
+
+    @property
+    def geometry(self) -> tuple[int, int, int, int]:
+        """(left, top, width, height) of the captured display, in the OS's own
+        coordinate space. Input is mapped against this, never against the pixel
+        size of the frame, which differs on Retina and DPI-scaled displays."""
+        monitor = self._monitors[self.monitor_index]
+        return (
+            int(monitor.get("left", 0)),
+            int(monitor.get("top", 0)),
+            int(monitor["width"]),
+            int(monitor["height"]),
+        )
 
     def select(self, index: int) -> bool:
         if 0 <= index < len(self._monitors):

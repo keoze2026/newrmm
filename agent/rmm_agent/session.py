@@ -5,7 +5,7 @@ import logging
 
 import websockets
 
-from rmm_agent import __version__, clipboard, files, sysinfo
+from rmm_agent import __version__, clipboard, files, platform_support, sysinfo
 from rmm_agent.capture import RateController, ScreenCapture
 from rmm_agent.consent import ask as ask_consent
 from rmm_agent.remote_input import InputInjector
@@ -38,6 +38,7 @@ class AgentSession:
         self.relay_url = relay_url.rstrip("/")
         self.code = code.upper()
         self.tray = tray
+        platform_support.prepare()
         self.capture = ScreenCapture(synthetic=synthetic)
         self.injector = InputInjector(enabled=inject)
         self.rate = RateController(fps, quality)
@@ -46,7 +47,6 @@ class AgentSession:
         self.device_id = device_id
         self.device_secret = device_secret
         self._stop = asyncio.Event()
-        self._frame_size = (0, 0)
         self._consented = False
         self._terminal: RemoteTerminal | None = None
         self._uploads: dict[str, files.Upload] = {}
@@ -148,7 +148,6 @@ class AgentSession:
         while not self._stop.is_set():
             started = asyncio.get_running_loop().time()
             image = await asyncio.to_thread(self.capture.grab)
-            self._frame_size = image.size
             payload = await asyncio.to_thread(self.capture.encode, image, self.rate.quality)
             await socket.send(payload)
             self.rate.record(len(payload))
@@ -169,7 +168,7 @@ class AgentSession:
 
             kind = message.get("type")
             if kind == "input":
-                self.injector.apply(message, self._frame_size)
+                self.injector.apply(message, self.capture.geometry)
             elif kind == "monitor":
                 self.capture.select(int(message.get("index", 0)))
             elif kind == "blank":

@@ -48,7 +48,10 @@ class InputInjector:
             "F9": Key.f9, "F10": Key.f10, "F11": Key.f11, "F12": Key.f12,
         }.get(name)
 
-    def apply(self, message: dict, frame_size: tuple[int, int]) -> None:
+    def apply(self, message: dict, geometry: tuple[int, int, int, int]) -> None:
+        """`geometry` is (left, top, width, height) of the captured display in
+        the OS's own coordinate space, so a click maps correctly on a scaled or
+        secondary monitor."""
         kind = message.get("kind")
         if not self.available:
             # Echo mode is deliberate diagnostic output - either injection is
@@ -63,15 +66,15 @@ class InputInjector:
                 log.info("input key %s %r", message.get("action"), message.get("key"))
             return
 
-        width, height = frame_size
+        left, top, width, height = geometry
         try:
             if kind == "mouse":
                 if "x" in message and "y" in message and width and height:
                     # Coordinates arrive normalised, so letterboxing in the
                     # operator's viewer cannot shift where the click lands.
                     self._mouse.position = (
-                        int(message["x"] * width),
-                        int(message["y"] * height),
+                        left + int(message["x"] * width),
+                        top + int(message["y"] * height),
                     )
                 action = message.get("action")
                 if action in ("down", "up"):

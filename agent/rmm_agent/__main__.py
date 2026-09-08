@@ -11,7 +11,7 @@ import logging
 import sys
 import threading
 
-from rmm_agent import __version__, sysinfo
+from rmm_agent import __version__, platform_support, sysinfo
 from rmm_agent.config import Enrolment, state_dir
 from rmm_agent.device import hold_presence
 from rmm_agent.logging_setup import configure
@@ -108,6 +108,7 @@ def cmd_enrol(args) -> int:
 
 
 def cmd_status(_args) -> int:
+    platform_support.prepare()
     info = sysinfo.collect()
     enrolment = Enrolment.load()
     print(f"agent version : {__version__}")
@@ -123,18 +124,58 @@ def cmd_status(_args) -> int:
 
     capture = ScreenCapture()
     print(f"capture       : {'synthetic (no display)' if capture.synthetic else 'screen'}")
-    print(f"monitors      : {len(capture.monitors)}")
+    for monitor in capture.monitors:
+        print(f"  monitor {monitor['index']}   : {monitor['label']} "
+              f"{monitor['width']}x{monitor['height']} "
+              f"at {monitor.get('left', 0)},{monitor.get('top', 0)}")
     print(f"input         : {'available' if InputInjector().available else 'unavailable'}")
     print(f"tray          : {'available' if Tray(lambda: None).available else 'unavailable'}")
+    print(f"clipboard     : {'available' if _clipboard_available() else 'unavailable'}")
+
+    if platform_support.LINUX:
+        print(f"session type  : {platform_support.session_type()}")
+    if platform_support.MACOS:
+        print(f"screen record : {_permission(platform_support.screen_recording_permission())}")
+        print(f"accessibility : {_permission(platform_support.accessibility_permission())}")
+
+    notes = platform_support.warnings()
+    if notes:
+        print()
+        for note in notes:
+            print(f"  ! {note}")
     return 0
 
 
+def _permission(value) -> str:
+    if value is True:
+        return "granted"
+    if value is False:
+        return "NOT GRANTED"
+    return "unknown"
+
+
+def _clipboard_available() -> bool:
+    from rmm_agent import clipboard
+
+    return clipboard.available()
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="rmm_agent", description=__doc__)
-    parser.add_argument("--verbose", action="store_true")
+    # --verbose is accepted either before or after the subcommand, because
+    # argparse's default of "globals first" is a trap nobody expects.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "--verbose", action="store_true", default=argparse.SUPPRESS,
+        help="log at debug level",
+    )
+
+    parser = argparse.ArgumentParser(
+        prog="rmm_agent", description=__doc__, parents=[common]
+    )
+    parser.set_defaults(verbose=False)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    join = sub.add_parser("join", help="join a session with its code")
+    join = sub.add_parser("join", help="join a session with its code", parents=[common])
     join.add_argument("--relay", default="ws://localhost:8000", help="relay WebSocket base URL")
     join.add_argument("--code", required=True)
     join.add_argument("--fps", type=int, default=12)
@@ -157,7 +198,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     join.set_defaults(func=cmd_join)
 
-    enrol = sub.add_parser("enrol", help="store unattended credentials and stay reachable")
+    enrol = sub.add_parser(
+        "enrol", help="store unattended credentials and stay reachable", parents=[common]
+    )
     enrol.add_argument("--relay", default="ws://localhost:8000")
     enrol.add_argument("--device-id", required=True)
     enrol.add_argument("--secret", required=True)
@@ -165,7 +208,9 @@ def build_parser() -> argparse.ArgumentParser:
     enrol.add_argument("--no-connect", action="store_true", help="store credentials and exit")
     enrol.set_defaults(func=cmd_enrol)
 
-    status = sub.add_parser("status", help="report what this machine supports")
+    status = sub.add_parser(
+        "status", help="report what this machine supports", parents=[common]
+    )
     status.set_defaults(func=cmd_status)
     return parser
 
