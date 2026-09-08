@@ -14,6 +14,7 @@ streaming into the session whose code is in GUEST_CODE, started with:
 """
 import os
 import pathlib
+import re
 import sys
 
 from playwright.sync_api import expect, sync_playwright
@@ -372,7 +373,10 @@ with sync_playwright() as p:
 
     def monitor_switcher():
         page.get_by_test_id("monitor-switch").click()
-        expect(page.get_by_text("Primary", exact=False).first).to_be_visible()
+        # The label comes from the endpoint, so match whatever it reports rather
+        # than a fixed string: real capture says "Monitor 1", synthetic "Primary".
+        menu = page.locator("div", has_text=re.compile(r"Monitor \d+|Primary")).last
+        expect(menu).to_be_visible()
         page.keyboard.press("Escape")
         page.get_by_test_id("monitor-switch").click()
 

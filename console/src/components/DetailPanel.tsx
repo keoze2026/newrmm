@@ -84,7 +84,7 @@ export default function DetailPanel({
         {tab === 'tools' && (
           <NotImplementedTab
             title="Tools"
-            note="Endpoint tools are scheduled for Phase 4 of the delivery plan."
+            note="Endpoint utilities beyond the terminal and file browser are not built yet."
           />
         )}
         {tab === 'locate' && (

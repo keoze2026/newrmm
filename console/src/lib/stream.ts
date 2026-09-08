@@ -22,6 +22,7 @@ export interface StreamState {
 
 export type FrameHandler = (bitmap: ImageBitmap) => void
 export type StateHandler = (state: StreamState) => void
+export type MessageHandler = (message: Record<string, unknown>) => void
 
 export interface InputMessage {
   type: 'input'
@@ -42,6 +43,10 @@ export type ControlMessage =
   | { type: 'monitor'; index: number }
   | { type: 'blank'; on: boolean }
   | { type: 'quality'; level: number }
+  | { type: 'terminal'; action: 'open' | 'input' | 'resize' | 'close'; data?: string; cols?: number; rows?: number }
+  | { type: 'files'; action: 'list' | 'get' | 'put'; path?: string; data?: string; final?: boolean }
+  | { type: 'clipboard'; action: 'get' | 'set'; text?: string }
+  | { type: 'end' }
 
 export class SessionStream {
   private socket: WebSocket | null = null
@@ -49,6 +54,7 @@ export class SessionStream {
   private bytesWindow: { at: number; bytes: number }[] = []
   private statsTimer: number | null = null
   private closed = false
+  private listeners = new Set<MessageHandler>()
 
   state: StreamState = {
     connected: false,
@@ -78,7 +84,11 @@ export class SessionStream {
 
     socket.onmessage = async (event) => {
       if (typeof event.data === 'string') {
-        this.handleControl(JSON.parse(event.data))
+        const message = JSON.parse(event.data)
+        this.handleControl(message)
+        // Tool replies - terminal output, file chunks, clipboard - go to
+        // whichever panel is listening.
+        this.listeners.forEach((listener) => listener(message))
         return
       }
       const buffer = event.data as ArrayBuffer
@@ -136,6 +146,12 @@ export class SessionStream {
     this.onState(this.state)
   }
 
+  /** Listen for JSON messages from the endpoint. Returns an unsubscribe. */
+  subscribe(listener: MessageHandler): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
   send(message: ControlMessage) {
     if (this.socket?.readyState === WebSocket.OPEN) {
       this.socket.send(JSON.stringify(message))
@@ -147,5 +163,6 @@ export class SessionStream {
     if (this.statsTimer !== null) window.clearInterval(this.statsTimer)
     this.socket?.close()
     this.socket = null
+    this.listeners.clear()
   }
 }

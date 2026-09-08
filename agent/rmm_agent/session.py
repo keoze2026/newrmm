@@ -5,10 +5,11 @@ import logging
 
 import websockets
 
-from rmm_agent import __version__, sysinfo
+from rmm_agent import __version__, clipboard, files, sysinfo
 from rmm_agent.capture import RateController, ScreenCapture
 from rmm_agent.consent import ask as ask_consent
 from rmm_agent.remote_input import InputInjector
+from rmm_agent.terminal import RemoteTerminal, default_shell
 from rmm_agent.tray import CONNECTED, IDLE, SHARING, Tray
 
 log = logging.getLogger(__name__)
@@ -47,6 +48,9 @@ class AgentSession:
         self._stop = asyncio.Event()
         self._frame_size = (0, 0)
         self._consented = False
+        self._terminal: RemoteTerminal | None = None
+        self._uploads: dict[str, files.Upload] = {}
+        self._socket = None
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -88,6 +92,7 @@ class AgentSession:
     async def _run_once(self) -> None:
         log.info("connecting to %s", self.endpoint.split("?")[0])
         async with websockets.connect(self.endpoint, max_size=None, ping_interval=20) as socket:
+            self._socket = socket
             info = sysinfo.collect()
             await socket.send(
                 json.dumps(
@@ -134,6 +139,7 @@ class AgentSession:
                 await self._stream(socket)
             finally:
                 receiver.cancel()
+                self._close_tools()
                 if self.tray:
                     self.tray.set_state(IDLE, "Not in a session")
                     self.tray.notify("The remote session has ended.", "Session ended")
@@ -171,7 +177,105 @@ class AgentSession:
                 # here so the wiring is verifiable end to end.
                 log.info("privacy blank %s (not implemented until Phase 5)",
                          "on" if message.get("on") else "off")
+            elif kind == "terminal":
+                await self._handle_terminal(message)
+            elif kind == "files":
+                await self._handle_files(message)
+            elif kind == "clipboard":
+                await self._handle_clipboard(message)
             elif kind == "end":
                 log.info("the operator ended the session")
                 self._stop.set()
                 return
+
+    # ---------------------------------------------------------------- tools
+
+    async def _send(self, payload: dict) -> None:
+        if self._socket is not None:
+            try:
+                await self._socket.send(json.dumps(payload))
+            except Exception as exc:
+                log.debug("could not send %s: %s", payload.get("type"), exc)
+
+    def _close_tools(self) -> None:
+        if self._terminal is not None:
+            self._terminal.close()
+            self._terminal = None
+        for upload in self._uploads.values():
+            upload.abort()
+        self._uploads.clear()
+
+    async def _handle_terminal(self, message: dict) -> None:
+        action = message.get("action")
+        loop = asyncio.get_running_loop()
+
+        if action == "open":
+            if self._terminal is None:
+                def on_output(text: str) -> None:
+                    asyncio.run_coroutine_threadsafe(
+                        self._send({"type": "terminal", "action": "output", "data": text}), loop
+                    )
+
+                self._terminal = RemoteTerminal(on_output, loop)
+            self._terminal.open(int(message.get("cols", 100)), int(message.get("rows", 30)))
+            await self._send(
+                {"type": "terminal", "action": "opened", "shell": " ".join(default_shell())}
+            )
+        elif action == "input" and self._terminal is not None:
+            self._terminal.write(str(message.get("data", "")))
+        elif action == "resize" and self._terminal is not None:
+            self._terminal.resize(int(message.get("cols", 100)), int(message.get("rows", 30)))
+        elif action == "close":
+            if self._terminal is not None:
+                self._terminal.close()
+                self._terminal = None
+            await self._send({"type": "terminal", "action": "closed"})
+
+    async def _handle_files(self, message: dict) -> None:
+        action = message.get("action")
+
+        if action == "list":
+            result = await asyncio.to_thread(files.listing, message.get("path"))
+            await self._send({"type": "files", "action": "list", **result})
+
+        elif action == "get":
+            path = str(message.get("path", ""))
+            name = path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            try:
+                for chunk, final in files.read_chunks(path):
+                    await self._send({"type": "files", "action": "chunk", "name": name,
+                                      "data": chunk, "final": final})
+                    await asyncio.sleep(0)
+                log.info("sent %s to the operator", path)
+            except OSError as exc:
+                await self._send({"type": "files", "action": "error",
+                                  "path": path, "error": str(exc)})
+
+        elif action == "put":
+            path = str(message.get("path", ""))
+            try:
+                upload = self._uploads.get(path)
+                if upload is None:
+                    upload = files.Upload(path)
+                    self._uploads[path] = upload
+                if message.get("data"):
+                    upload.write(str(message["data"]))
+                if message.get("final"):
+                    done = upload.finish()
+                    self._uploads.pop(path, None)
+                    await self._send({"type": "files", "action": "received", **done})
+            except (OSError, ValueError) as exc:
+                stale = self._uploads.pop(path, None)
+                if stale is not None:
+                    stale.abort()
+                await self._send({"type": "files", "action": "error",
+                                  "path": path, "error": str(exc)})
+
+    async def _handle_clipboard(self, message: dict) -> None:
+        action = message.get("action")
+        if action == "get":
+            text = await asyncio.to_thread(clipboard.get_text)
+            await self._send({"type": "clipboard", "action": "text", "text": text or ""})
+        elif action == "set":
+            ok = await asyncio.to_thread(clipboard.set_text, str(message.get("text", "")))
+            await self._send({"type": "clipboard", "action": "set", "ok": ok})

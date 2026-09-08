@@ -85,9 +85,22 @@ It receives JSON control messages:
 Coordinates are normalised 0..1, so the guest lands on the right pixel no matter
 how the operator's canvas is scaled or letterboxed.
 
+## Tools
+
+The agent also serves the operator's tool panels:
+
+| Message | Effect |
+| --- | --- |
+| `{"type":"terminal","action":"open\|input\|resize\|close"}` | A shell on the endpoint - a real pty on POSIX, pipes around PowerShell on Windows |
+| `{"type":"files","action":"list\|get\|put"}` | Browse a directory, retrieve a file in chunks, or receive one |
+| `{"type":"clipboard","action":"get\|set"}` | Read or write the endpoint clipboard |
+
+The clipboard keeps one hidden Tk window alive for the life of the agent: on
+X11 the clipboard belongs to a live window, so a root created and destroyed per
+call would lose the contents immediately.
+
 ## What this is not
 
 - The privacy blank is **not** implemented (Phase 5). The message is received
   and logged; no screen is blanked.
-- File transfer, terminal and clipboard are **not** implemented (Phase 4).
 - There is no installer, service or auto-start yet, and no code signing (Phase 6).

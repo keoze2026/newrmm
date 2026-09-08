@@ -51,13 +51,16 @@ class InputInjector:
     def apply(self, message: dict, frame_size: tuple[int, int]) -> None:
         kind = message.get("kind")
         if not self.available:
+            # Echo mode is deliberate diagnostic output - either injection is
+            # unavailable, or --no-input asked for it - so log it at info level
+            # rather than hiding it behind --verbose.
             if kind == "mouse":
-                log.debug(
+                log.info(
                     "input mouse %s x=%.4f y=%.4f",
                     message.get("action"), message.get("x", -1), message.get("y", -1),
                 )
             elif kind == "key":
-                log.debug("input key %s %r", message.get("action"), message.get("key"))
+                log.info("input key %s %r", message.get("action"), message.get("key"))
             return
 
         width, height = frame_size

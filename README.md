@@ -8,9 +8,9 @@ Built phase by phase against `Remote_Desktop_Platform_Specification.docx`.
 | --- | --- | --- |
 | P1 | Relay, auth, session model, audit log, console shell | **Done — checkpoint passing** |
 | — | Operator console rebuilt to Appendix A, plus the session transport | **Done — 32/32 conformance checks** |
-| P2 | Core session on Windows: capture, control, tray/consent | **Code complete, verified on Linux — Windows checkpoint open** |
-| P3 | Same on macOS and Linux | Not started |
-| P4 | File transfer, terminal, clipboard, multi-monitor, screenshot/zoom/annotate | Not started |
+| P2 | Core session on Windows: capture, control, tray/consent | Code complete, verified on Linux — **Windows checkpoint open** |
+| P3 | Cross-platform core: macOS and Linux | **Linux done — 10/10 real capture and input checks**; macOS not started |
+| P4 | Tools: file transfer, terminal, clipboard, multi-monitor, screenshot/zoom/annotate | **Done — 13/13 tool checks, 9/9 through the console** |
 | P5 | Privacy blank screen | Not started |
 | P6 | Hardening, signed installers, deployment | Not started |
 
@@ -87,6 +87,13 @@ cd relay && ../.venv/bin/python -m pytest        # 33 API and database tests
 
 # Phase 2 session flow: the consent gate and device authentication
 .venv/bin/python tests/e2e/p2_session_flow.py    # relay must be running
+
+# Phase 3 Linux endpoint: real capture, real input injection
+.venv/bin/python tests/e2e/p3_linux_endpoint.py
+
+# Phase 4 tools: terminal, file transfer, clipboard
+.venv/bin/python tests/e2e/p4_tools.py           # relay must be running
+.venv/bin/python tests/e2e/p4_console_tools.py docs/screenshots   # + console
 
 # Appendix A conformance - needs the relay, the console and the agent running
 GUEST_CODE=<CODE> GUEST_LOG=/path/to/agent.log \

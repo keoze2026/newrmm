@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   AnnotateIcon,
   ClearIcon,
+  ClipboardIcon,
+  ClipboardPullIcon,
   CloseIcon,
   DownloadIcon,
   EyeSlashIcon,
@@ -15,6 +17,8 @@ import {
   ZoomInIcon,
   ZoomOutIcon,
 } from './icons'
+import FilesPanel from './viewer/FilesPanel'
+import TerminalPanel from './viewer/TerminalPanel'
 import type { Session } from '../lib/api'
 import type { SessionStream, StreamState } from '../lib/stream'
 
@@ -105,6 +109,13 @@ export default function Viewer({
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [paint])
+
+  // Close any shell the operator opened when the viewer itself closes.
+  useEffect(() => {
+    return () => {
+      stream.send({ type: 'terminal', action: 'close' })
+    }
+  }, [stream])
 
   /** Screen point -> guest point, 0..1. Correct even when letterboxed. */
   const toGuest = useCallback((clientX: number, clientY: number) => {
@@ -237,6 +248,31 @@ export default function Viewer({
     if (overlay && ctx) ctx.clearRect(0, 0, overlay.width, overlay.height)
   }
 
+  async function pushClipboard() {
+    try {
+      const text = await navigator.clipboard.readText()
+      stream.send({ type: 'clipboard', action: 'set', text })
+      flash('Clipboard sent to the endpoint.')
+    } catch {
+      flash('The browser would not share your clipboard.')
+    }
+  }
+
+  function pullClipboard() {
+    const unsubscribe = stream.subscribe(async (message) => {
+      if (message.type !== 'clipboard' || message.action !== 'text') return
+      unsubscribe()
+      const text = String(message.text ?? '')
+      try {
+        await navigator.clipboard.writeText(text)
+        flash(text ? 'Endpoint clipboard copied to yours.' : 'The endpoint clipboard is empty.')
+      } catch {
+        flash('Could not write to your clipboard.')
+      }
+    })
+    stream.send({ type: 'clipboard', action: 'get' })
+  }
+
   function toggleBlank() {
     const next = !blanked
     setBlanked(next)
@@ -347,11 +383,41 @@ export default function Viewer({
           <button type="button" onClick={clearAnnotations} className={tool} title="Clear annotations">
             <ClearIcon width={16} height={16} />
           </button>
-          <button type="button" onClick={() => flash('File transfer arrives in Phase 4.')} className={tool} title="Send file">
+          <button
+            type="button"
+            onClick={() => setPanel('files')}
+            className={tool}
+            title="Send file"
+            data-testid="send-file"
+          >
             <UploadIcon width={16} height={16} />
           </button>
-          <button type="button" onClick={() => flash('File transfer arrives in Phase 4.')} className={tool} title="Get file">
+          <button
+            type="button"
+            onClick={() => setPanel('files')}
+            className={tool}
+            title="Get file"
+            data-testid="get-file"
+          >
             <DownloadIcon width={16} height={16} />
+          </button>
+          <button
+            type="button"
+            onClick={pushClipboard}
+            className={tool}
+            title="Send clipboard to the endpoint"
+            data-testid="clipboard-push"
+          >
+            <ClipboardIcon width={16} height={16} />
+          </button>
+          <button
+            type="button"
+            onClick={pullClipboard}
+            className={tool}
+            title="Get clipboard from the endpoint"
+            data-testid="clipboard-pull"
+          >
+            <ClipboardPullIcon width={16} height={16} />
           </button>
           <button
             type="button"
@@ -401,15 +467,15 @@ export default function Viewer({
         </div>
 
         {panel !== 'none' && (
-          <aside className="absolute bottom-0 right-0 top-0 w-[380px] border-l border-white/10 bg-[#16233a] p-5 text-sm text-white/80">
-            <h3 className="text-sm font-semibold text-white">
-              {panel === 'terminal' ? 'Terminal' : 'Files'}
-            </h3>
-            <p className="mt-3 leading-relaxed text-white/60">
-              {panel === 'terminal'
-                ? 'A shell on the endpoint opens here. The remote terminal is Phase 4 of the delivery plan.'
-                : 'Browse, send and retrieve files on the endpoint here. File transfer is Phase 4 of the delivery plan.'}
-            </p>
+          <aside
+            data-testid={`viewer-panel-${panel}`}
+            className="absolute bottom-0 right-0 top-0 flex w-[420px] flex-col border-l border-white/10 bg-[#16233a] p-4 text-sm text-white/80"
+          >
+            {panel === 'terminal' ? (
+              <TerminalPanel stream={stream} />
+            ) : (
+              <FilesPanel stream={stream} />
+            )}
           </aside>
         )}
 

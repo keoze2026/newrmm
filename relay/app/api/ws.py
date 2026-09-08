@@ -175,8 +175,11 @@ async def guest_socket(
                         await hub.to_operator_json(code, {"type": "consent_denied"})
                         await websocket.close(code=4403, reason="Consent denied")
                         break
-                else:
-                    await hub.to_operator_json(code, {"type": "guest_message", "raw": text})
+                elif consented:
+                    # Terminal output, file chunks and clipboard replies travel
+                    # as JSON; forward them verbatim, but only once the session
+                    # is consented.
+                    await hub.to_operator_json(code, payload)
 
             elif (payload_bytes := message.get("bytes")) is not None:
                 # Defence in depth: frames before consent are discarded.

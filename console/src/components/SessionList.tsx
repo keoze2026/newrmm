@@ -78,7 +78,7 @@ export default function SessionList({
           {moreOpen && (
             <div className="absolute right-0 top-8 z-10 w-44 rounded-lg border border-line bg-white py-1 shadow-lg">
               <p className="px-3 py-2 text-xs text-muted">
-                Additional bulk actions arrive with the tools in Phase 4.
+                Additional bulk actions are not built yet.
               </p>
             </div>
           )}

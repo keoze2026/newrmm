@@ -249,3 +249,19 @@ export const PointerIcon = (p: IconProps) => (
     <path d="m6 3.5 12.5 7.7-5.4 1.3 2.6 5.6-2.3 1.1-2.6-5.6-4.8 2.6Z" />
   </Svg>
 )
+
+export const ClipboardIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="6" y="4.5" width="12" height="15" rx="1.6" />
+    <path d="M9.5 4.5V3.4h5v1.1" />
+    <path d="M12 9v6M9.5 12.5 12 15l2.5-2.5" />
+  </Svg>
+)
+
+export const ClipboardPullIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="6" y="4.5" width="12" height="15" rx="1.6" />
+    <path d="M9.5 4.5V3.4h5v1.1" />
+    <path d="M12 15V9M9.5 11.5 12 9l2.5 2.5" />
+  </Svg>
+)

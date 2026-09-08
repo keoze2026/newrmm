@@ -14,8 +14,13 @@ consent surface, tray presence, capture, input injection, reconnect and
 unattended enrolment. The old `dev_guest.py` stand-in has been removed; the
 tests drive the real agent.
 
-Work through `docs/PHASE2_WINDOWS_CHECKLIST.md` on the Windows machine to close
-Phase 2. `docs/PHASE2_STATUS.md` lists exactly what is and is not proven.
+Phase 3's Linux half and Phase 4's tools are done and verified here: real screen
+capture, real input injection, a remote terminal, file transfer both ways, and
+clipboard sync.
+
+The one open item is the Windows run for Phase 2's checkpoint, and macOS for
+Phase 3. `docs/PHASE2_WINDOWS_CHECKLIST.md` covers the Windows pass when there
+is time for it; nothing else is waiting on it.
 
 ## What works, and how it was verified
 
@@ -53,13 +58,22 @@ Phase 2. `docs/PHASE2_STATUS.md` lists exactly what is and is not proven.
 | An enrolled device reports online, and offline when its socket drops | `tests/e2e/p2_session_flow.py` |
 | Agent capture, input injection and tray all available on Linux | `python -m rmm_agent status` |
 | Agent reconnects with exponential backoff after a drop | `agent/rmm_agent/session.py` (code path exercised; drop scenario is on the Windows checklist) |
+| **Real** screen capture of the Linux desktop, sustaining 41 fps | `tests/e2e/p3_linux_endpoint.py` |
+| **Real** pointer injection lands on the right pixel of the real screen | `tests/e2e/p3_linux_endpoint.py` — the pointer is moved and read back |
+| **Real** keystroke injection is delivered to X | `tests/e2e/p3_linux_endpoint.py` — a listener receives the injected key |
+| Capture quality and frame rate adapt to a bandwidth budget | `tests/e2e/p3_linux_endpoint.py` |
+| Remote terminal: a real pty, output streamed back, state kept between commands | `tests/e2e/p4_tools.py`, `tests/e2e/p4_console_tools.py` |
+| File transfer both ways, byte-for-byte, chunked at 256 KB | `tests/e2e/p4_tools.py` |
+| Missing files and unreadable directories report errors instead of hanging | `tests/e2e/p4_tools.py` |
+| Clipboard sync round-trips text between operator and endpoint | `tests/e2e/p4_tools.py`, `tests/e2e/p4_console_tools.py` |
+| Terminal keystrokes do not leak to the guest screen | `tests/e2e/p4_console_tools.py` |
 
 Last run: **33/33 pytest tests**, **13/13 Phase 2 session-flow checks**, and
 **32/32 Appendix A browser checks** — the browser suite now driven by the real
 endpoint agent, against a live relay, PostgreSQL 17 and Redis 8 on Linux.
 Screenshots in `docs/screenshots/`.
 
-Two real bugs surfaced while wiring Phase 2, both fixed:
+Real bugs surfaced by these runs, all fixed:
 
 - The relay reported a guest as connected the moment its socket attached, before
   consent was answered. Presence is now gated on consent, and a regression test
@@ -68,6 +82,15 @@ Two real bugs surfaced while wiring Phase 2, both fixed:
 - The agent's CLI joined its worker thread with a 15-second timeout when run
   with `--no-tray`, so the agent quit fifteen seconds after starting. It now
   waits for the event loop properly.
+- The clipboard created and destroyed a Tk root per call. On X11 the clipboard
+  belongs to a live window, so the contents vanished the moment the root exited
+  and every read came back empty. One hidden root now lives for the life of the
+  agent.
+- The terminal renderer treated the trailing carriage return of a pty's CR LF
+  line ending as "return to column zero" and blanked every line. CR LF is
+  normalised before that logic runs.
+- Switching from the Terminal panel to Files killed the shell, because the panel
+  closed it on unmount. The viewer owns the shell's lifetime now.
 
 ## What does NOT work yet
 
@@ -81,9 +104,12 @@ Two real bugs surfaced while wiring Phase 2, both fixed:
 - The agent has no installer, no service or auto-start, and no code signing.
   Phase 6. An `.exe` built with `agent/build_windows.py` is unsigned, so
   SmartScreen will warn.
-- Terminal, Files, Download and Send/Get file are wired into the UI but have no
-  implementation behind them; they say so on screen. They are Phase 4.
-- Chat, Tools and Locate are placeholders, labelled as such.
+- Chat, Tools and Locate are placeholders, labelled as such on screen.
+- The Files panel browses from the endpoint user's home directory; there is no
+  path entry box yet, so reaching an arbitrary directory means clicking through.
+- The terminal renders colour and plain output, but is not a full terminal
+  emulator: cursor addressing means full-screen programs such as `vim` or `top`
+  will not display correctly.
 - Privacy blank sends the message and the agent logs it, but no screen is
   blanked. That is Phase 5.
 - The relay hub is single-process and in-memory, so a deployment must run one
