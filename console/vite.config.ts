@@ -6,6 +6,9 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     port: 5173,
+    // Listen on every interface so an endpoint on another machine (the Windows
+    // test box) can reach the console.
+    host: true,
     proxy: {
       // The console talks to the relay through /api so the browser sees one origin.
       '/api': {

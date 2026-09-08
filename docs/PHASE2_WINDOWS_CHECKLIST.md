@@ -8,35 +8,67 @@ The specification's P2 gate:
 Everything below has to pass **on the Windows machine**. Nothing in this
 repository can claim P2 until it does — the code has only ever run on Linux.
 
+## Which commands run where
+
+Everything in this document runs **on the Windows machine, in PowerShell** —
+except where a block is explicitly labelled *on the Linux machine*. `py` and
+`curl.exe` are Windows commands; they do not exist on Linux.
+
 ## Before you start
 
-The Windows machine and the relay machine must be on the same network.
+Both machines must be on the same network. The Linux machine's address changes
+with the network it joins — get the current one there:
+
+```bash
+# on the Linux machine
+ip route get 8.8.8.8 | sed -n 's/.*src \([0-9.]*\).*/\1/p'
+```
+
+At the time of writing it is **172.27.16.138**, so:
 
 | Thing | Value |
 | --- | --- |
-| Relay host | `192.168.1.49` (this Linux machine) |
-| Relay port | `8000` |
-| Console | `http://192.168.1.49:5173` |
+| Relay | `http://172.27.16.138:8000` / `ws://172.27.16.138:8000` |
+| Console | `http://172.27.16.138:5173` |
 
-Check the Windows box can reach the relay — in PowerShell:
+Substitute your own address if it has changed.
+
+Check the Windows box can reach the relay — **in PowerShell on Windows**:
 
 ```powershell
-curl.exe http://192.168.1.49:8000/health
+curl.exe http://172.27.16.138:8000/health
 ```
 
-Expect `{"status":"ok",...}`. If it hangs, the Linux firewall is blocking 8000:
+Expect `{"status":"ok",...}`. If it hangs or refuses:
 
 ```bash
-sudo ufw allow 8000/tcp     # on the Linux machine
+# on the Linux machine
+sudo ufw allow 8000/tcp
+sudo ufw allow 5173/tcp
 ```
 
-## 1. Install the agent on Windows
+Both services must be listening on all interfaces, not just localhost:
 
-Python 3.11+ from python.org (tick **Add python.exe to PATH**), then:
+```bash
+# on the Linux machine - both lines should show 0.0.0.0 or *
+ss -ltn | grep -E ':(8000|5173)'
+```
+
+## 1. Get the agent onto the Windows machine
+
+Pick whichever is easiest:
+
+- **Git:** clone this repository on Windows.
+- **Copy:** copy the whole `agent\` folder across on a USB stick or a share.
+- **Share from Linux:** run `python3 -m http.server 8081` in the project
+  directory on Linux, then on Windows browse to
+  `http://172.27.16.138:8081` and download the `agent` folder.
+
+Then install Python 3.11+ from python.org — **tick "Add python.exe to PATH"** —
+and in PowerShell:
 
 ```powershell
-git clone <this repo>            # or copy the agent\ folder across
-cd "new rmm"
+cd <wherever you put it>
 py -m pip install -r agent\requirements.txt
 ```
 
@@ -53,15 +85,26 @@ py -m rmm_agent status
 - [ ] `input` reads `available`
 - [ ] `tray` reads `available`
 
-## 3. Create a session in the console
+## 3. Create a session
 
-On any machine, open `http://192.168.1.49:5173`, sign in, click **Create +**,
-and note the 8-character code.
+Either open `http://172.27.16.138:5173` in a browser, sign in
+(`admin@example.com` / `ChangeMe123!`), and click **Create +** —
+
+or, faster, **on the Linux machine**:
+
+```bash
+./scripts/new_session.sh
+```
+
+which prints the code and the exact command to paste on Windows.
 
 ## 4. Join from Windows
 
+Replace `<CODE>` with the actual 8-character code — the angle brackets are not
+part of it:
+
 ```powershell
-py -m rmm_agent join --relay ws://192.168.1.49:8000 --code <CODE> --verbose
+py -m rmm_agent join --relay ws://172.27.16.138:8000 --code <CODE> --verbose
 ```
 
 - [ ] A tray icon appears in the Windows notification area
@@ -132,3 +175,6 @@ These are later phases and must **not** be treated as failures here:
 Tell me which boxes failed and paste the relevant lines from
 `%APPDATA%\RMMAgent\agent.log`. Anything that fails is a per-Windows fix and
 ships to Windows only.
+
+If `py -m rmm_agent` reports *No module named rmm_agent*, you are not in the
+folder that contains `rmm_agent\` — `cd` into `agent\` first.
