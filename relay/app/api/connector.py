@@ -36,17 +36,18 @@ BUILD_DIR = Path(__file__).resolve().parents[3] / "agent" / "dist"
 # is what a local build produces.
 PLATFORMS = {
     "windows": {
-        "files": ["rmm-agent-windows.exe", "rmm-agent.exe"],
+        "files": ["rmm-agent-setup.exe", "rmm-agent-windows.exe", "rmm-agent.exe"],
         "label": "Windows",
         "hint": "Windows 10 2004+ / 11",
     },
     "macos": {
-        "files": ["rmm-agent-macos", "rmm-agent-macos.zip"],
+        # An installer is preferred over the zipped .app when one was built.
+        "files": ["rmm-agent-macos.pkg", "rmm-agent-macos", "rmm-agent-macos.zip"],
         "label": "macOS",
         "hint": "macOS 12 or newer",
     },
     "linux": {
-        "files": ["rmm-agent-linux", "rmm-agent"],
+        "files": ["rmm-agent_*_amd64.deb", "rmm-agent-linux", "rmm-agent"],
         "label": "Linux",
         "hint": "X11 desktops",
     },
@@ -58,6 +59,16 @@ def _artefact(platform: str) -> Path | None:
     if entry is None:
         return None
     for name in entry["files"]:
+        if "*" in name:
+            # Versioned names (the .deb carries its version): newest wins.
+            matches = sorted(
+                (m for m in BUILD_DIR.glob(name) if m.is_file()),
+                key=lambda m: m.stat().st_mtime,
+                reverse=True,
+            )
+            if matches:
+                return matches[0]
+            continue
         path = BUILD_DIR / name
         if path.is_file():
             return path

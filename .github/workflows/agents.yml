@@ -166,6 +166,17 @@ jobs:
         working-directory: agent
         run: python build.py --app
 
+      - name: Installer (.pkg)
+        # Runs installers/macos/build_pkg.sh once that script exists. Until
+        # then the zipped .app is what ships, and this says so rather than
+        # failing the build.
+        run: |
+          if [ -x installers/macos/build_pkg.sh ]; then
+            ./installers/macos/build_pkg.sh "${GITHUB_REF_NAME#v}"
+          else
+            echo "::warning::installers/macos/build_pkg.sh is missing; shipping the zipped .app only."
+          fi
+
       - name: Sign and notarise
         # Needs a Developer ID certificate and an App Store Connect key.
         # Without them the build is unsigned and Gatekeeper will refuse it on
@@ -207,7 +218,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: rmm-agent-macos
-          path: agent/dist/rmm-agent-macos.zip
+          path: |
+            agent/dist/rmm-agent-macos.zip
+            agent/dist/*.pkg
           if-no-files-found: error
 
   release:
