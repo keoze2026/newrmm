@@ -15,6 +15,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 VERSION="${1:-0.2.0}"
+# CI passes the git ref name, which on a branch push is "main" rather than a
+# version, and dpkg rejects a version that does not start with a digit.
+case "$VERSION" in
+    [0-9]*) ;;
+    *) echo "'$VERSION' is not a version number; using 0.2.0" >&2; VERSION="0.2.0" ;;
+esac
 ARCH="$(dpkg --print-architecture)"
 PACKAGE="rmm-agent"
 STAGE="$(mktemp -d)"
