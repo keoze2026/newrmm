@@ -69,13 +69,13 @@ on a Windows, macOS and Linux runner. Both workflows are green.
   consent surface, tray indicator, capture, input injection and privacy blank
   are all unproven there, and all are security-relevant. This is P2's and P3's
   checkpoint and P5's Windows/macOS half.
-- **No Windows or macOS installer.** Section 8 says installers must "install
-  clean". Linux has a `.deb` (`installers/linux/build_deb.sh`, built in CI).
-  Windows ships as a bare `.exe` and macOS as a zipped `.app`. An MSI and a
-  `.pkg` were attempted and not completed: the tool calls writing those scripts
-  were stopped by an automated safety filter three times, mid-file, and the
-  truncated files were deleted. Windows is the most widely used target, so this
-  is the highest-priority open item.
+- **Windows installer is written but has never been built or run.**
+  `installers/windows/rmm-agent.iss` (Inno Setup) installs the agent under
+  Program Files and adds it to PATH; CI builds it as `rmm-agent-setup.exe`. It
+  has not yet run in CI, and nothing has installed it on a Windows machine.
+- **No macOS installer.** The macOS agent still ships as a zipped `.app`. A
+  `.pkg` script was attempted and the writes were stopped by an automated safety
+  filter, so none exists. Linux has a `.deb` (`installers/linux/build_deb.sh`).
 - **Builds are unsigned.** Section 11 assumes certificates can be procured; they
   have not been. SmartScreen warns, and Gatekeeper refuses outright.
 - **Never deployed.** The TLS config and compose overlay are written and
