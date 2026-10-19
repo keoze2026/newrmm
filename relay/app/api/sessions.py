@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
@@ -20,6 +20,7 @@ from app.schemas.session import (
 )
 from app.services import audit
 from app.services.hub import hub
+from app.services.sessions import is_expired
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -47,6 +48,12 @@ async def create_session(
         if device is None:
             raise HTTPException(status_code=404, detail="Device not found")
 
+    # A code is a credential, so it stops working after a while (security
+    # review finding: codes never expired).
+    expires_at = datetime.now(timezone.utc) + timedelta(
+        minutes=settings.session_code_ttl_minutes
+    )
+
     # The code is short and human-readable, so a collision is possible; retry.
     for _ in range(5):
         code = generate_session_code(settings.session_code_length)
@@ -57,6 +64,7 @@ async def create_session(
             state="pending",
             operator_id=operator.id,
             device_id=payload.device_id,
+            expires_at=expires_at,
         )
         db.add(session)
         try:
@@ -79,6 +87,7 @@ async def create_session(
             "mode": session.mode,
             "code": session.code,
             "device_id": str(payload.device_id) if payload.device_id else None,
+            "expires_at": expires_at.isoformat(),
         },
     )
     await db.commit()
@@ -118,6 +127,8 @@ def _present(session: Session) -> bool:
     """A guest counts as joined only once consent is granted and its socket is
     live. Presence alone must never imply the endpoint agreed to share."""
     if session.consent_state != "granted" or session.state == "ended":
+        return False
+    if is_expired(session):
         return False
     return hub.guest_online(session.code) or session.guest_connected
 

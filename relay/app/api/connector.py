@@ -21,6 +21,7 @@ from app.api.deps import client_ip
 from app.db.session import get_db
 from app.models import Session
 from app.services import audit, ratelimit
+from app.services.sessions import is_joinable
 
 router = APIRouter(prefix="/connector", tags=["connector"])
 
@@ -105,7 +106,7 @@ async def session_for_code(
     await ratelimit.enforce(request, "code-probe", limit=20, window=60)
 
     session = await db.scalar(select(Session).where(Session.code == code.upper()))
-    if session is None or session.state == "ended":
+    if not is_joinable(session):
         raise HTTPException(status_code=404, detail="That session code is not valid")
     return {
         "code": session.code,

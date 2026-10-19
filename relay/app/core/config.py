@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     session_code_length: int = 8
+    # How long an unused session code stays valid. A code is a credential, and
+    # one shared over chat should not still work weeks later.
+    session_code_ttl_minutes: int = 60
 
     # Persistent operational logging (Phase 6). An empty log_dir disables
     # the file and leaves only console output.

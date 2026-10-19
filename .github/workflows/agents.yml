@@ -57,10 +57,17 @@ jobs:
         working-directory: agent
         run: python build.py
 
+      - name: Package (.deb)
+        # Section 8: "installs without manual steps". A bare executable does
+        # not install; the package does.
+        run: ./installers/linux/build_deb.sh "${GITHUB_REF_NAME#v}"
+
       - uses: actions/upload-artifact@v4
         with:
           name: rmm-agent-linux
-          path: agent/dist/rmm-agent-linux
+          path: |
+            agent/dist/rmm-agent-linux
+            agent/dist/*.deb
           if-no-files-found: error
 
   windows:

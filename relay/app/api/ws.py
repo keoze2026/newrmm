@@ -18,6 +18,7 @@ from app.db.session import SessionLocal
 from app.models import Device, Operator, Session
 from app.services import audit, ratelimit
 from app.services.hub import hub
+from app.services.sessions import is_joinable
 
 router = APIRouter(tags=["session-transport"])
 
@@ -70,7 +71,10 @@ async def guest_socket(
 
     async with SessionLocal() as db:
         session = await db.scalar(select(Session).where(Session.code == code))
-        if session is None or session.state == "ended":
+        if not is_joinable(session):
+            # An expired code is reported the same way as an unknown one: the
+            # difference is not the guest's business and leaks whether a code
+            # was ever real.
             await websocket.close(code=4404, reason="Unknown or ended session")
             return
         needs_device = session.mode == "unattended"

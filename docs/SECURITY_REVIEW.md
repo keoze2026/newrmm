@@ -106,11 +106,22 @@ blank is released when its session ends.
 
 ## Open
 
-### Session codes never expire — MEDIUM
+### ~~Session codes never expire~~ — FIXED
 
-A pending session stays joinable indefinitely. A code shared over chat months
-ago still works. It should expire after a short window, and be single-use once a
-guest has joined.
+A pending session stayed joinable indefinitely: a code shared over chat months
+ago still worked.
+
+**Fixed.** A code now expires after `SESSION_CODE_TTL_MINUTES` (60 by default),
+and an expired code is refused by all three places that redeem one — the guest
+WebSocket, the connector lookup and the operator's session list. An expired code
+returns exactly what an unknown one returns, so the response does not reveal
+whether a code was ever real.
+
+Expiry governs *joining*, not staying: once a guest has consented the session
+runs as long as it needs to. Cutting someone off mid-support because a timer ran
+out would be worse than the risk the timer guards against.
+
+*Tests:* `relay/tests/test_session_expiry.py` (9).
 
 ### TLS is configured but has never been run — MEDIUM
 

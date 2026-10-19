@@ -36,6 +36,11 @@ class Session(Base):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # After this the code no longer joins. Cleared once a guest is in, so a
+    # live session is never cut off mid-support.
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
     # Reported by the guest when it joins.
     host_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
