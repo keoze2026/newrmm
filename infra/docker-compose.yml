@@ -64,7 +64,7 @@ services:
     depends_on:
       - relay
     ports:
-      - "${CONSOLE_PORT:-8080}:80"
+      - "${CONSOLE_BIND:-0.0.0.0}:${CONSOLE_PORT:-8080}:80"
 
 volumes:
   pgdata:
