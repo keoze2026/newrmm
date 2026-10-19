@@ -20,13 +20,13 @@ macOS, procuring signing certificates, and deploying.
 | P3 | Cross-platform core | Linux verified. Windows and macOS **compile in CI**, never executed |
 | P4 | Tools: file transfer, terminal, clipboard, multi-monitor, screenshot/zoom/annotate | **Done, verified** |
 | P5 | Privacy blank | Linux guest-lock verified. Windows/macOS capture-exclusion **untested** |
-| P6 | Hardening and release | CI, TLS, Redis fan-out, logging, security review done. **Installers and deployment open** |
+| P6 | Hardening and release | CI, TLS, Redis fan-out, logging, security review, session expiry done. Linux `.deb` done. **Windows and macOS installers, signing and deployment open** |
 
 ## Test counts
 
 | Suite | Count | What it covers |
 | --- | --- | --- |
-| `relay/tests` | 43 | API, database, consent gate, append-only audit, rate limiting |
+| `relay/tests` | 52 | API, database, consent gate, append-only audit, rate limiting, session expiry |
 | `agent/tests` | 29 | Coordinate mapping, privacy blank, input block, tile encoder |
 | `tests/e2e/console_appendix_a.py` | 32 | Appendix A conformance in a real browser |
 | `tests/e2e/p2_session_flow.py` | 13 | Consent gate and device authentication |
@@ -35,6 +35,7 @@ macOS, procuring signing certificates, and deploying.
 | `tests/e2e/p4_console_tools.py` | 9 | The same tools driven through the console |
 | `tests/e2e/p5_privacy_blank.py` | 15 | Blank on/off against real capture |
 | `tests/e2e/p6_low_bandwidth.py` | 7 | Section 8's ~1 Mbps acceptance criterion |
+| `tests/e2e/p6_reconnect.py` | 9 | Section 8's reconnect-after-drop criterion. Passing: the relay is killed under a running agent, which reconnects and streams again unaided |
 
 CI runs the relay, agent and console suites on every push, and builds an agent
 on a Windows, macOS and Linux runner. Both workflows are green.
@@ -68,13 +69,17 @@ on a Windows, macOS and Linux runner. Both workflows are green.
   consent surface, tray indicator, capture, input injection and privacy blank
   are all unproven there, and all are security-relevant. This is P2's and P3's
   checkpoint and P5's Windows/macOS half.
-- **No installers.** CI produces bare executables; section 8 says installers
-  must "install clean". No MSI, pkg or deb exists.
+- **No Windows or macOS installer.** Section 8 says installers must "install
+  clean". Linux has a `.deb` (`installers/linux/build_deb.sh`, built in CI).
+  Windows ships as a bare `.exe` and macOS as a zipped `.app`. An MSI and a
+  `.pkg` were attempted and not completed: the tool calls writing those scripts
+  were stopped by an automated safety filter three times, mid-file, and the
+  truncated files were deleted. Windows is the most widely used target, so this
+  is the highest-priority open item.
 - **Builds are unsigned.** Section 11 assumes certificates can be procured; they
   have not been. SmartScreen warns, and Gatekeeper refuses outright.
 - **Never deployed.** The TLS config and compose overlay are written and
   unexercised.
-- **Session codes never expire.** A code shared months ago still works.
 - Chat, Tools and Locate are placeholders, labelled as such on screen.
 - The terminal renders colour but is not a full emulator: `vim` and `top` will
   not display correctly.
@@ -105,6 +110,12 @@ Database migrations roll back with
 `cd relay && ../.venv/bin/python -m alembic downgrade <revision>`.
 
 ## Change log
+
+- **Session expiry, Linux package, reconnect test.** Codes expire after
+  `SESSION_CODE_TTL_MINUTES` (60); all three redemption paths share one rule and
+  an expired code looks identical to an unknown one. Expiry governs joining, not
+  staying, so a live session is never cut off. `.deb` installer added to CI.
+  Reconnect test passes 9/9 (relay killed under a running agent; it reconnects unaided).
 
 - **P6 security review.** `docs/SECURITY_REVIEW.md`. Two high findings fixed:
   nothing was rate limited on any route reachable without a credential, and the

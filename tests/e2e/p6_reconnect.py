@@ -43,8 +43,21 @@ def relay_pids() -> list[int]:
 
 
 def start_relay(log_dir: str) -> None:
-    subprocess.run([str(ROOT / "scripts" / "dev_up.sh")],
-                   capture_output=True, text=True, timeout=120)
+    """Start the relay detached, with its output going to a file.
+
+    Capturing a child's output through a pipe makes the caller wait until every
+    process holding that pipe exits - and a relay never does - so the relay is
+    given a file instead and left running on its own.
+    """
+    out = open(Path(log_dir) / "reconnect-relay.log", "ab")
+    subprocess.Popen(
+        [str(ROOT / ".venv" / "bin" / "python"), "-m", "uvicorn", "app.main:app",
+         "--host", "0.0.0.0", "--port", "8000"],
+        cwd=str(ROOT / "relay"),
+        env={**os.environ, "LOG_DIR": log_dir},
+        stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
 
 async def relay_healthy(timeout=60.0) -> bool:
