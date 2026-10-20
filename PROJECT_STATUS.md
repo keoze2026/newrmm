@@ -27,7 +27,7 @@ macOS, procuring signing certificates, and deploying.
 | Suite | Count | What it covers |
 | --- | --- | --- |
 | `relay/tests` | 59 | API, database, consent gate, append-only audit, rate limiting, session expiry |
-| `agent/tests` | 67 | Coordinate mapping, privacy blank, input block, tile encoder |
+| `agent/tests` | 71 | Coordinate mapping, privacy blank, input block, tile encoder |
 | `tests/e2e/console_appendix_a.py` | 32 | Appendix A conformance in a real browser |
 | `tests/e2e/p2_session_flow.py` | 13 | Consent gate and device authentication |
 | `tests/e2e/p3_linux_endpoint.py` | 12 | Real capture and real input injection |
@@ -141,8 +141,11 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 | 24 | The reinstall steps I gave did not stop the already-running old agent, so the user saw the old broken agent still running after "removing" it and could not tell old from new. I also gave a one-off line without checking what a running process does on package removal. | Any reinstall or upgrade instruction stops the running agent first. After a reinstall, show how to confirm the new build is the one running. |
 | 25 | I updated this file after changes but did not read it before acting or answering. Asked whether I had touched streaming speed, I answered from git history; the user caught it three times in one day. | The first action on any change OR question is reading the relevant part of this file, and saying what it says. Updating afterwards does not make up for skipping it. |
 | 26 | Asked whether I had updated this file, I waited to be told to, because the user had also said not to do unrequested work. | Updating this file after every change or finding is a standing rule and never needs asking. Do it in the same turn, before reporting. |
+| 27 | The agent retried forever on any failure except two close codes and reset its delay to 1 s after every clean close, so any persistent refusal became an endless connect loop. Nobody tested a refusal, only a dropped link. | Every retry loop needs a list of failures that stop it, a delay that grows, and a test for a connection that is turned away, not only one that drops. |
 
 ## Change log
+
+- **Reconnect loop fixed (three of the four defects from the findings entry below).** `session.py`: a rejected device login (4401) now stops the agent like 4403/4404; the retry delay only returns to 1 s after a connection that lasted 30 s or more, otherwise it keeps doubling to 30 s (`next_backoff`); 4409 (another agent already connected) is retried but logged by name. `consent.py`: with no window and no terminal to ask, consent is treated as refused instead of raising, so a windowed agent no longer loops. Not changed: a reconnect still asks for consent again (the spec makes consent per session). 4 new tests in `test_reconnect_policy.py`, agent suite 71 passed. **Not verified on Windows**: whether this was the cause of the loop there is unconfirmed until the Windows log is seen.
 
 - **Findings, no code changed (2026-10-20, evening).**
   *0 fps / 0 KB/s on the console after a while.* Measured through the public server: a real-capture stream held ~10 fps for 100 s with the connection open the whole time (79 frames/8 s earlier, 102 KB/s). Agent, relay and console streaming code are byte-identical to the first build that worked; the only differences since then are `background.py`, `dimmer.py`, `privacy.py`, `__main__.py` and the join page text. The console counters count messages that reach the browser, and the agent now sends only changed regions, so an idle screen sends nothing. That is the leading explanation, **not yet confirmed**: needs the user to change something on the agent PC while the console reads 0.

@@ -103,7 +103,10 @@ def ask(code: str, operator: str | None = None, timeout: float = 120.0, auto: bo
     print("=" * 60)
     try:
         reply = input("Allow this session? [y/N]: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, RuntimeError, OSError) as exc:
+        # No terminal to ask (a windowed or background agent has no stdin).
+        # Not answering is a refusal; failing here would be retried forever.
+        log.warning("no way to ask for consent (%s); treating it as refused", exc)
         reply = ""
     granted = reply in ("y", "yes")
     log.info("consent %s at the console", "granted" if granted else "denied")

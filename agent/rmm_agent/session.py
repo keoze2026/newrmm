@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import time
 
 import websockets
 
@@ -18,6 +19,20 @@ log = logging.getLogger(__name__)
 # Spec section 8: the agent reconnects automatically after drops.
 BACKOFF_START = 1.0
 BACKOFF_MAX = 30.0
+# A connection that lasted this long was a working one; a shorter one means the
+# relay or this machine is turning it away, so the delay must keep growing.
+HEALTHY_SECONDS = 30.0
+# Retrying cannot fix these: the session ended (4404), consent was refused
+# (4403), or the device credentials were rejected (4401).
+GIVE_UP_CODES = (4401, 4403, 4404)
+
+
+def next_backoff(current: float, lasted: float) -> float:
+    """The delay before the next attempt: back to the start only after a
+    connection that actually worked, otherwise longer."""
+    if lasted >= HEALTHY_SECONDS:
+        return BACKOFF_START
+    return min(BACKOFF_MAX, current * 2)
 
 
 class AgentSession:
@@ -74,18 +89,19 @@ class AgentSession:
     async def run_forever(self) -> None:
         backoff = BACKOFF_START
         while not self._stop.is_set():
+            started = time.monotonic()
             try:
                 await self._run_once()
-                backoff = BACKOFF_START
             except asyncio.CancelledError:
                 raise
             except websockets.ConnectionClosed as exc:
-                # 4404 means the relay ended the session, and 4403 that consent
-                # was refused. Neither is worth reconnecting for.
-                if exc.rcvd is not None and exc.rcvd.code in (4403, 4404):
-                    log.info("the session is over (%s); stopping", exc.rcvd.reason or exc.rcvd.code)
+                code = exc.rcvd.code if exc.rcvd is not None else None
+                if code in GIVE_UP_CODES:
+                    log.info("the session is over (%s); stopping", exc.rcvd.reason or code)
                     self._stop.set()
                     break
+                if code == 4409:
+                    log.warning("another agent is already connected to this session")
                 log.warning("session connection lost: %s", exc)
             except Exception as exc:
                 log.warning("session connection failed: %s", exc)
@@ -95,6 +111,7 @@ class AgentSession:
             if self._consented:
                 # Consent is per session; a reconnect asks again.
                 self._consented = False
+            backoff = next_backoff(backoff, time.monotonic() - started)
             log.info("reconnecting in %.0fs", backoff)
             if self.tray:
                 self.tray.set_state(IDLE, "Reconnecting…")
@@ -102,7 +119,6 @@ class AgentSession:
                 await asyncio.wait_for(self._stop.wait(), timeout=backoff)
             except asyncio.TimeoutError:
                 pass
-            backoff = min(BACKOFF_MAX, backoff * 2)
 
     async def _run_once(self) -> None:
         log.info("connecting to %s", self.endpoint.split("?")[0])
