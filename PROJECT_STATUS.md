@@ -27,7 +27,7 @@ macOS, procuring signing certificates, and deploying.
 | Suite | Count | What it covers |
 | --- | --- | --- |
 | `relay/tests` | 59 | API, database, consent gate, append-only audit, rate limiting, session expiry |
-| `agent/tests` | 66 | Coordinate mapping, privacy blank, input block, tile encoder |
+| `agent/tests` | 67 | Coordinate mapping, privacy blank, input block, tile encoder |
 | `tests/e2e/console_appendix_a.py` | 32 | Appendix A conformance in a real browser |
 | `tests/e2e/p2_session_flow.py` | 13 | Consent gate and device authentication |
 | `tests/e2e/p3_linux_endpoint.py` | 12 | Real capture and real input injection |
@@ -134,9 +134,12 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 | 16 | An agent started from a terminal was a child of it, so Ctrl+C or closing the terminal ended the session. | A started agent detaches (`rmm_agent/background.py`), has a pid file, and `rmm-agent stop` ends it. |
 | 18 | The Linux blank was a black window drawn over the desktop. The screen capture reads the desktop as composed, so the operator saw black too, defeating the point. The old e2e test even asserted the captured screen goes black, so it passed while the product was wrong. | Linux X11 now dims the monitor with `xrandr` (`rmm_agent/dimmer.py`), a safety net restores it if the agent dies, Escape x3 releases it. A test must assert what the operator sees, not only the endpoint. Tests force the overlay path so they never darken the real display. |
 | 19 | The join page's steps were written for Windows and shown to everyone; on Linux they described things that never happen. Found by the user reading his own screen, not by a test. | Read the page as each OS's user would; every platform needs its own true steps. |
+| 20 | I verified the background fix with a Python parent and a unit test, never with the packaged binary users run. The packaged agent's child died instantly, so the agent "was not connecting" after install. I also changed the join page when the user had asked for two things only. | Verify a fix with the artifact the user will install, started the way they start it. Stay within the stated scope; offer extra changes, do not slip them in. |
 | 17 | Several file writes were cut off mid-file by an automated safety filter (macOS `.pkg`, a Linux install-steps component, an earlier MSI draft). | After any write that ends oddly, check the file is whole; delete a truncated one rather than leave it. Do not retry content the filter has stopped. |
 
 ## Change log
+
+- **Background agent no longer dies at once (fix to my own earlier fix).** The installed one-file agent started its detached child, which inherited PyInstaller's environment, looked for its files in the parent's temporary folder, and died the moment the parent exited, writing nothing. `spawn_detached` now starts the child with `PYINSTALLER_RESET_ENVIRONMENT=1`. Verified with a real built binary run through a pseudo-terminal: stays alive and attaches to the session. Regression test added in `test_background.py`. Not yet rebuilt in CI/deployed.
 
 - **Join page shows real Linux steps.** The generic steps ("open the file, type the code when asked") do not happen on Linux, so a non-coder would be stuck. On Linux the page now shows: `cd ~/Downloads`, `sudo apt install ./<deb>`, `rmm-agent start --code <CODE>`, and how to stop. Other systems unchanged. Type-check and build pass; not yet viewed in a browser. File: `console/src/pages/JoinPage.tsx`.
 

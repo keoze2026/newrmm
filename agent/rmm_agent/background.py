@@ -51,7 +51,15 @@ def own_command(args: list[str]) -> list[str]:
 
 def spawn_detached(args: list[str]) -> int:
     """Start the agent again as a process that outlives this terminal."""
+    # A packaged one-file agent unpacks itself into a temporary folder that is
+    # deleted when it exits. A child that inherits the packaging environment
+    # looks for its files there and dies as soon as this process returns, so
+    # the child is told to start clean and unpack its own.
+    environment = dict(os.environ)
+    environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+
     options: dict = {
+        "env": environment,
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,

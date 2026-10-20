@@ -91,3 +91,20 @@ def test_a_detached_agent_outlives_its_parent_and_can_be_stopped():
 
 def test_stopping_when_nothing_runs_is_harmless():
     assert background.stop() is False
+
+
+def test_detached_child_starts_with_a_clean_packaging_environment(monkeypatch):
+    """A one-file build's child must unpack its own files, not borrow ones
+    that vanish when the starting process exits."""
+    seen = {}
+
+    class FakeProcess:
+        pid = 1
+
+    def fake_popen(command, **options):
+        seen.update(options)
+        return FakeProcess()
+
+    monkeypatch.setattr(background.subprocess, "Popen", fake_popen)
+    background.spawn_detached(["join"])
+    assert seen["env"]["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
