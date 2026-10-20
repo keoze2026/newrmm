@@ -26,8 +26,8 @@ macOS, procuring signing certificates, and deploying.
 
 | Suite | Count | What it covers |
 | --- | --- | --- |
-| `relay/tests` | 54 | API, database, consent gate, append-only audit, rate limiting, session expiry |
-| `agent/tests` | 29 | Coordinate mapping, privacy blank, input block, tile encoder |
+| `relay/tests` | 59 | API, database, consent gate, append-only audit, rate limiting, session expiry |
+| `agent/tests` | 45 | Coordinate mapping, privacy blank, input block, tile encoder |
 | `tests/e2e/console_appendix_a.py` | 32 | Appendix A conformance in a real browser |
 | `tests/e2e/p2_session_flow.py` | 13 | Consent gate and device authentication |
 | `tests/e2e/p3_linux_endpoint.py` | 12 | Real capture and real input injection |
@@ -110,6 +110,17 @@ Database migrations roll back with
 `cd relay && ../.venv/bin/python -m alembic downgrade <revision>`.
 
 ## Change log
+
+- **Built for people who cannot use a terminal.** The agent used to need a
+  command line. Now double-clicking it (no arguments) opens a small window that
+  asks for the code, checks it with the server and explains a bad one in plain
+  words, then shows the consent dialog. The server address is built into the
+  agent at build time (`RMM_DEFAULT_RELAY`, set in CI). The Windows installer is
+  per-user (no admin rights), has no pages to click through, and opens the agent
+  by itself when done. The relay serves it as `rmm-agent-setup-<CODE>.exe`, and
+  the installer reads that name to get the code, so the person downloads,
+  installs and is asked for consent with nothing to type. Not yet run on a
+  real Windows machine.
 
 - **Session expiry, Linux package, reconnect test.** Codes expire after
   `SESSION_CODE_TTL_MINUTES` (60); all three redemption paths share one rule and

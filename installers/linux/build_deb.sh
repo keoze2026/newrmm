@@ -69,9 +69,9 @@ cat > "$STAGE/usr/share/applications/rmm-agent.desktop" <<EOF
 Type=Application
 Name=Remote Support
 Comment=Join a remote support session
-Exec=/usr/bin/rmm-agent join --code %u
+Exec=/usr/bin/rmm-agent start
 Icon=preferences-desktop-remote-desktop
-Terminal=true
+Terminal=false
 Categories=Network;RemoteAccess;
 Keywords=remote;support;help;
 EOF

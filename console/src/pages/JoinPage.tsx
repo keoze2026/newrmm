@@ -39,7 +39,7 @@ function howTo(build: Build): string | null {
   const name = build.filename
   if (!name) return null
   if (name.endsWith('.deb')) return `Install: sudo apt install ./${name}`
-  if (name.endsWith('-setup.exe')) return 'Run the installer, then follow the steps.'
+  if (name.includes('-setup')) return 'Open it. It installs and starts by itself - nothing to type.'
   if (name.endsWith('.exe')) return 'Run it. If Windows warns, choose More info, then Run anyway.'
   if (name.endsWith('.pkg')) return 'Open it and follow the installer.'
   if (name.endsWith('.zip')) return 'Unzip it, then open the app.'
@@ -226,9 +226,10 @@ export default function JoinPage() {
             <div className="mt-6 rounded-lg bg-canvas px-4 py-3">
               <h3 className="text-xs font-semibold text-navy">What happens next</h3>
               <ol className="mt-2 space-y-1 text-xs leading-relaxed text-muted">
-                <li>1. Run the connector you downloaded.</li>
+                <li>1. Open the file you downloaded.</li>
                 <li>
-                  2. Enter the code <span className="font-mono text-navy">{session.code}</span>.
+                  2. If a window asks for a code, type{' '}
+                  <span className="font-mono text-navy">{session.code}</span>.
                 </li>
                 <li>3. It asks your permission. Nothing is shared until you allow it.</li>
                 <li>4. An icon stays in your system tray for as long as the session runs.</li>

@@ -20,6 +20,37 @@ def state_dir() -> Path:
     return path
 
 
+try:
+    # Written by build.py from RMM_DEFAULT_RELAY, so an agent built for a
+    # server already knows where that server is and nobody has to type it.
+    from rmm_agent import _baked  # type: ignore[attr-defined]
+
+    BAKED_RELAY: str = getattr(_baked, "DEFAULT_RELAY", "") or ""
+except ImportError:
+    BAKED_RELAY = ""
+
+
+def saved_relay() -> str:
+    """The server last used, for builds that were not given one."""
+    path = state_dir() / "last_relay.txt"
+    try:
+        return path.read_text().strip()
+    except OSError:
+        return ""
+
+
+def save_relay(relay: str) -> None:
+    try:
+        (state_dir() / "last_relay.txt").write_text(relay.strip())
+    except OSError:
+        pass
+
+
+def default_relay() -> str:
+    """Environment, then what was built in, then what was used last time."""
+    return os.environ.get("RMM_RELAY", "").strip() or BAKED_RELAY or saved_relay()
+
+
 @dataclass
 class Enrolment:
     """Credentials for an unattended device, issued by the console."""

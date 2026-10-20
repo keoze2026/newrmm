@@ -11,7 +11,8 @@ import logging
 import sys
 import threading
 
-from rmm_agent import __version__, platform_support, sysinfo
+from rmm_agent import __version__, launcher, platform_support, sysinfo
+from rmm_agent import config
 from rmm_agent.config import Enrolment, state_dir
 from rmm_agent.device import hold_presence
 from rmm_agent.logging_setup import configure
@@ -109,6 +110,32 @@ def cmd_enrol(args) -> int:
     return _run_with_tray(main, use_tray=args.tray)
 
 
+def cmd_start(args) -> int:
+    """The friendly path: a window if one is needed, otherwise straight to consent.
+
+    The people being helped are not going to open a terminal. A code that came
+    with the download is used as it is; with none, a small window asks.
+    """
+    launcher.hide_console_if_owned()
+    chosen = launcher.resolve(config.default_relay(), getattr(args, "code", "") or "")
+    if chosen is None:
+        return 0
+    code, relay = chosen
+    config.save_relay(relay)
+
+    joined = argparse.Namespace(
+        relay=relay, code=code, fps=12, quality=60, budget_kbps=0,
+        device_id="", secret="", synthetic=False, tray=True, inject=True,
+        auto_consent=False, blank_watchdog=0.0, blank_blocks_input=True,
+    )
+    try:
+        return cmd_join(joined)
+    except Exception as exc:
+        log.exception("the session failed")
+        launcher.show_error(f"Could not start the session.\n\n{exc}")
+        return 1
+
+
 def cmd_status(_args) -> int:
     platform_support.prepare()
     info = sysinfo.collect()
@@ -178,8 +205,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.set_defaults(verbose=False)
     sub = parser.add_subparsers(dest="command", required=True)
 
+    start = sub.add_parser(
+        "start", help="open the friendly window (what a double-click does)", parents=[common]
+    )
+    start.add_argument("--code", default="", help="a session code to use without asking")
+    start.set_defaults(func=cmd_start)
+
     join = sub.add_parser("join", help="join a session with its code", parents=[common])
-    join.add_argument("--relay", default="ws://localhost:8000", help="relay WebSocket base URL")
+    join.add_argument(
+        "--relay", default=config.default_relay() or "ws://localhost:8000",
+        help="relay WebSocket base URL (defaults to the server this agent was built for)",
+    )
     join.add_argument("--code", required=True)
     join.add_argument("--fps", type=int, default=12)
     join.add_argument("--quality", type=int, default=60)
@@ -228,6 +264,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    if len(sys.argv) == 1:
+        # A double-click: no arguments at all.
+        configure(False)
+        return cmd_start(argparse.Namespace(code=""))
     args = build_parser().parse_args()
     path = configure(args.verbose)
     log.debug("logging to %s", path)

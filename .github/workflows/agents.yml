@@ -55,6 +55,10 @@ jobs:
 
       - name: Build
         working-directory: agent
+        env:
+          # The server the agent talks to, built in so nobody has to type it.
+          # Override with a repository variable named RMM_DEFAULT_RELAY.
+          RMM_DEFAULT_RELAY: ${{ vars.RMM_DEFAULT_RELAY || 'wss://rmm.remotedesk247.com/api' }}
         run: python build.py
 
       - name: Package (.deb)
@@ -100,6 +104,10 @@ jobs:
 
       - name: Build
         working-directory: agent
+        env:
+          # The server the agent talks to, built in so nobody has to type it.
+          # Override with a repository variable named RMM_DEFAULT_RELAY.
+          RMM_DEFAULT_RELAY: ${{ vars.RMM_DEFAULT_RELAY || 'wss://rmm.remotedesk247.com/api' }}
         run: python build.py
 
       - name: Installer (Inno Setup)
@@ -167,6 +175,10 @@ jobs:
 
       - name: Build
         working-directory: agent
+        env:
+          # The server the agent talks to, built in so nobody has to type it.
+          # Override with a repository variable named RMM_DEFAULT_RELAY.
+          RMM_DEFAULT_RELAY: ${{ vars.RMM_DEFAULT_RELAY || 'wss://rmm.remotedesk247.com/api' }}
         run: python build.py --app
 
       - name: Installer (.pkg)

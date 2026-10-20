@@ -151,9 +151,19 @@ async def download_connector(
             ),
         )
 
+    download_name = path.name
+
     # Downloads are part of the session's story, so they belong in the trail.
     if code:
         session = await db.scalar(select(Session).where(Session.code == code.upper()))
+        if session is not None and is_joinable(session) and path.name.endswith("-setup.exe"):
+            # The Windows installer reads its own file name to learn the code,
+            # so a person downloads, installs, and is connected - with nothing
+            # to type. Only a code the server just confirmed goes in the name,
+            # so a made-up value can never become a file name. The bytes are
+            # unchanged, so the signature is unaffected.
+            safe = "".join(c for c in session.code if c.isalnum()).upper()
+            download_name = f"rmm-agent-setup-{safe}.exe"
         if session is not None:
             await audit.record(
                 db,
@@ -170,6 +180,6 @@ async def download_connector(
     return FileResponse(
         path,
         media_type="application/octet-stream",
-        filename=path.name,
+        filename=download_name,
         headers={"X-Connector-SHA256": _digest(path)},
     )

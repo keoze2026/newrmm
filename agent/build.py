@@ -15,6 +15,7 @@ These are unsigned. Windows SmartScreen will warn, and macOS Gatekeeper will
 refuse until the binary is signed and notarised - that is Phase 6.
 """
 import argparse
+import os
 import platform
 import shutil
 import subprocess
@@ -92,7 +93,28 @@ def check_dependencies() -> bool:
     return True
 
 
+def bake_defaults() -> None:
+    """Build the server address into the agent.
+
+    An agent built for a server should already know where that server is: the
+    people running it are not going to type an address. Set RMM_DEFAULT_RELAY
+    (for example wss://support.example.com/api) when building; without it the
+    agent asks once and remembers.
+    """
+    target = ROOT / "rmm_agent" / "_baked.py"
+    relay = os.environ.get("RMM_DEFAULT_RELAY", "").strip()
+    if relay:
+        target.write_text(f'DEFAULT_RELAY = "{relay}"\n')
+        print(f"built-in server: {relay}")
+    elif target.exists():
+        target.unlink()
+        print("no RMM_DEFAULT_RELAY set: the agent will ask for a server once")
+    else:
+        print("no RMM_DEFAULT_RELAY set: the agent will ask for a server once")
+
+
 def build(app_bundle: bool, windowed: bool) -> int:
+    bake_defaults()
     command = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--clean",
@@ -112,6 +134,8 @@ def build(app_bundle: bool, windowed: bool) -> int:
 
     for module in HIDDEN.get(SYSTEM, []):
         command += ["--hidden-import", module]
+    if (ROOT / "rmm_agent" / "_baked.py").exists():
+        command += ["--hidden-import", "rmm_agent._baked"]
 
     for binary in native_binaries():
         command += ["--add-binary", binary]
