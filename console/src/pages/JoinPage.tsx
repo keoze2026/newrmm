@@ -232,7 +232,7 @@ export default function JoinPage() {
                   <li>
                     2. Copy this one line, paste it, and press Enter:
                     <div className="mt-1 select-all break-all rounded bg-white px-2 py-1.5 font-mono text-navy">
-                      sudo apt install "$(ls -t ~/Downloads/rmm-agent*.deb | head -1)" &amp;&amp; rmm-agent start --code {session.code}
+                      pkill -x rmm-agent; sudo apt install "$(ls -t ~/Downloads/rmm-agent*.deb | head -1)" &amp;&amp; rmm-agent start --code {session.code}
                     </div>
                   </li>
                   <li>3. Type your computer password when asked. Nothing shows while you type; that is normal.</li>
