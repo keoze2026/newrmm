@@ -19,7 +19,7 @@ macOS, procuring signing certificates, and deploying.
 | P2 | Core session: enrol/connect, capture, control, tray, consent | Built and verified on Linux. **Windows checkpoint not run** |
 | P3 | Cross-platform core | Linux verified. Windows and macOS **compile in CI**, never executed |
 | P4 | Tools: file transfer, terminal, clipboard, multi-monitor, screenshot/zoom/annotate | **Done, verified** |
-| P5 | Privacy blank | Linux guest-lock verified. Windows/macOS capture-exclusion **untested** |
+| P5 | Privacy blank | Linux screen-dimming verified (operator keeps live view); guest-lock only on Wayland. Windows/macOS capture-exclusion **untested** |
 | P6 | Hardening and release | CI, TLS, Redis fan-out, logging, security review, session expiry done. Linux `.deb` done. **Windows and macOS installers, signing and deployment open** |
 
 ## Test counts
@@ -27,7 +27,7 @@ macOS, procuring signing certificates, and deploying.
 | Suite | Count | What it covers |
 | --- | --- | --- |
 | `relay/tests` | 59 | API, database, consent gate, append-only audit, rate limiting, session expiry |
-| `agent/tests` | 55 | Coordinate mapping, privacy blank, input block, tile encoder |
+| `agent/tests` | 66 | Coordinate mapping, privacy blank, input block, tile encoder |
 | `tests/e2e/console_appendix_a.py` | 32 | Appendix A conformance in a real browser |
 | `tests/e2e/p2_session_flow.py` | 13 | Consent gate and device authentication |
 | `tests/e2e/p3_linux_endpoint.py` | 12 | Real capture and real input injection |
@@ -56,7 +56,7 @@ on a Windows, macOS and Linux runner. Both workflows are green.
 | Real pointer and keystroke injection reach X | `p3_linux_endpoint.py` |
 | Coordinates map correctly on Retina, DPI-scaled and secondary displays | `agent/tests/test_input_mapping.py` |
 | Remote terminal, file transfer both ways, clipboard sync | `p4_tools.py`, `p4_console_tools.py` |
-| Privacy blank blacks the captured screen and restores it | `p5_privacy_blank.py` — luminance 143.8 → 0.1 → 143.1 |
+| Linux blank darkens the physical monitor but not the captured picture, then restores brightness | Measured on the real display: `xrandr` Brightness 1.0 → 0.0 → 1.0, captured luminance 31.1 → 31.1 → 31.1. `p5_privacy_blank.py` updated to expect this (not yet re-run) |
 | A blank never outlives its session; Escape always releases it | `agent/tests/test_privacy*.py` |
 | Changed-region streaming fits a 1 Mbps link | `p6_low_bandwidth.py` — 398 kbps, 9.3 fps |
 | Audit log is append-only, enforced by a database trigger | `relay/tests/test_audit.py` |
@@ -132,9 +132,12 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 | 14 | I said Linux could not be one-click, then fixed only the developer's own laptop's file association. | A fix that only works on the developer's machine is not a fix. Do not say "not possible" before checking what actually worked before. |
 | 15 | The guest lock's callbacks returned False. In pynput that stops the listener, so the lock released itself on the first mouse move, and on Python 3.13 it crashed with `'_thread._ThreadHandle' object is not callable`. The input-block test only checked that the block switched on and off, so it passed while the lock was broken. | Callbacks return None. A test must exercise the behaviour, not the switch. Regression: `agent/tests/test_privacy_callbacks.py`. |
 | 16 | An agent started from a terminal was a child of it, so Ctrl+C or closing the terminal ended the session. | A started agent detaches (`rmm_agent/background.py`), has a pid file, and `rmm-agent stop` ends it. |
+| 18 | The Linux blank was a black window drawn over the desktop. The screen capture reads the desktop as composed, so the operator saw black too, defeating the point. The old e2e test even asserted the captured screen goes black, so it passed while the product was wrong. | Linux X11 now dims the monitor with `xrandr` (`rmm_agent/dimmer.py`), a safety net restores it if the agent dies, Escape x3 releases it. A test must assert what the operator sees, not only the endpoint. Tests force the overlay path so they never darken the real display. |
 | 17 | Several file writes were cut off mid-file by an automated safety filter (macOS `.pkg`, a Linux install-steps component, an earlier MSI draft). | After any write that ends oddly, check the file is whole; delete a truncated one rather than leave it. Do not retry content the filter has stopped. |
 
 ## Change log
+
+- **Linux blank no longer blacks the operator's view.** Complaint from real use: blanking the agent also blanked the monitoring console. Linux X11 now sets monitor brightness to 0 via `xrandr` (`dimmer.py`, used by `privacy.py`); capture is untouched. Safety net restores brightness if the agent dies; Escape x3 releases; falls back to the old overlay on Wayland/no xrandr. `.deb` now depends on `x11-xserver-utils`. 15 new tests in `test_dimmer.py`. Revert: `git revert` this commit.
 
 - **Guest lock fixed, and the agent runs in the background.** Found from a log
   the user pasted from a real run. (1) The guest lock's callbacks returned

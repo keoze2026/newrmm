@@ -185,9 +185,9 @@ async def main() -> int:
                 step("the endpoint reports the blank is on", state is not None, str(state))
                 if state is None:
                     return 1
-                step("the endpoint reports guest-lock, not capture-exclusion",
-                     state.get("mode") == "guest-lock",
-                     f"mode={state.get('mode')} (Linux has no universal capture-exclusion)")
+                step("the endpoint reports capture-excluded (screen dimmed, operator view live)",
+                     state.get("mode") == "capture-excluded",
+                     f"mode={state.get('mode')}")
 
                 await asyncio.sleep(0.4)
                 await drain(op)
@@ -196,7 +196,8 @@ async def main() -> int:
                 step("the agent keeps streaming while blanked", len(blanked_frames) >= 1,
                      f"{len(blanked_frames)} whole frames")
                 blanked = brightness(blanked_frames[-1]) if blanked_frames else 255
-                step("the captured screen is black while blanked", blanked < 6,
+                step("the operator still sees the real desktop while blanked",
+                     blanked > 8 and abs(blanked - desktop) < 25,
                      f"mean luminance {blanked:.1f} (was {desktop:.1f})")
 
                 # ------------------------------------------------ blank off

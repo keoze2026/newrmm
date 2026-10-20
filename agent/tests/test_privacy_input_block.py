@@ -19,6 +19,9 @@ sys.path.insert(0, %r)
 from rmm_agent import privacy
 
 blank = privacy.PrivacyBlank(watchdog_seconds=3.0)
+# The overlay lock is what blocks local input; never darken the real display here.
+blank._dimmer = None
+blank.mode = privacy.MODE_GUEST_LOCK
 result = {}
 try:
     state = blank.enable(block_input=True)

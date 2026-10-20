@@ -109,7 +109,8 @@ so rather than implying something it cannot deliver.
 | --- | --- | --- |
 | Windows | `capture-excluded` | A black window marked `WDA_EXCLUDEFROMCAPTURE`. The guest sees black; the operator keeps a live view and control. |
 | macOS | `capture-excluded` | The same through `NSWindowSharingNone`. Needs pyobjc; without it the agent falls back to a guest lock. |
-| Linux | `guest-lock` | No universal capture-exclusion exists, so the screen is blacked **and local input is blocked**. The operator's view goes black too — it locks the machine rather than hiding the operator's work. |
+| Linux (X11) | `capture-excluded` | The monitor's brightness is set to 0 through `xrandr`, so the endpoint's screen goes dark while the operator keeps a live view and control. A safety net process restores brightness even if the agent dies; pressing Escape three times releases it. |
+| Linux (Wayland, or no `xrandr`) | `guest-lock` | The screen is blacked **and local input is blocked**; the operator's view goes black too. |
 
 If capture-exclusion is asked for and the OS refuses, the agent falls back to a
 guest lock rather than pretending the operator's work is hidden.

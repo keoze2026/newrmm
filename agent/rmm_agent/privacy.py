@@ -31,6 +31,8 @@ import queue
 import threading
 import time
 
+from rmm_agent import dimmer
+
 log = logging.getLogger(__name__)
 
 WINDOWS = platform.system() == "Windows"
@@ -39,6 +41,10 @@ MACOS = platform.system() == "Darwin"
 # What the endpoint is actually able to do, reported to the operator.
 MODE_EXCLUDED = "capture-excluded"  # operator keeps a live view
 MODE_GUEST_LOCK = "guest-lock"      # screen locked; the operator sees black too
+# On Linux the operator keeps a live view too, but by a different route: the
+# physical display is darkened (brightness 0) rather than a window being
+# excluded from capture. The mode name is the same because what the operator and
+# the console need to know is the same - the desktop stays visible.
 MODE_UNAVAILABLE = "unavailable"
 
 BANNER = "This screen is locked while a support session is in progress."
@@ -51,7 +57,9 @@ def supported_mode() -> str:
         return MODE_EXCLUDED
     if MACOS:
         return MODE_EXCLUDED if _has_pyobjc() else MODE_GUEST_LOCK
-    return MODE_GUEST_LOCK
+    # Linux on X11: darken the display and the operator keeps the real picture.
+    # Anywhere that is not possible, fall back to the overlay lock.
+    return MODE_EXCLUDED if dimmer.available() else MODE_GUEST_LOCK
 
 
 def _has_pyobjc() -> bool:
@@ -110,6 +118,9 @@ class PrivacyBlank:
             watchdog_seconds if watchdog_seconds > 0 else self.DEFAULT_WATCHDOG_SECONDS
         )
         self.mode = supported_mode()
+        # Only Linux darkens the display; Windows and macOS exclude a window.
+        self._dimmer = dimmer.Dimmer() if (self.mode == MODE_EXCLUDED and not WINDOWS and not MACOS) else None
+        self._escape_listener = None
         self.active = False
         self._thread: threading.Thread | None = None
         self._root = None
@@ -128,6 +139,23 @@ class PrivacyBlank:
             return self.state()
 
         self._stop.clear()
+
+        if self._dimmer is not None:
+            if self._dimmer.dim(guard_seconds=self.watchdog_seconds + 15):
+                self.active = True
+                self._started_at = time.monotonic()
+                self._watch_escape()
+                threading.Thread(
+                    target=self._watchdog, name="privacy-watchdog", daemon=True
+                ).start()
+                log.info("privacy blank on (%s, display darkened)", self.mode)
+                return self.state()
+            # Could not darken anything: lock the screen with an overlay rather
+            # than report a blank that is not there.
+            log.warning("could not darken the display; falling back to the overlay lock")
+            self.mode = MODE_GUEST_LOCK
+            self._dimmer = None
+
         self._thread = threading.Thread(target=self._run, name="privacy-blank", daemon=True)
         self._thread.start()
 
@@ -155,6 +183,9 @@ class PrivacyBlank:
     def disable(self) -> dict:
         if not self.active:
             return self.state()
+        if self._dimmer is not None:
+            self._dimmer.restore()
+        self._stop_watching_escape()
         self._release_local_input()
         # Tk is not thread-safe, so the overlay is never touched from here: the
         # thread that owns it polls this flag and tears itself down.
@@ -373,6 +404,36 @@ class PrivacyBlank:
         except Exception as exc:
             log.warning("could not block local input: %s", exc)
             self._suppressors = []
+
+    def _watch_escape(self) -> None:
+        """Escape, three times quickly, brings the screen back.
+
+        Nothing is drawn on a darkened display, so nothing says how to get out.
+        This listens without blocking anything: local input keeps working, as it
+        does on Windows and macOS, because the operator's own clicks and keys
+        arrive through the same channel.
+        """
+        try:
+            from pynput import keyboard
+
+            callback = dimmer.escape_counter(
+                escape_key=keyboard.Key.esc,
+                on_escape=lambda: threading.Thread(target=self.disable, daemon=True).start(),
+                clock=time.monotonic,
+            )
+            listener = keyboard.Listener(on_press=callback)
+            listener.start()
+            self._escape_listener = listener
+        except Exception as exc:
+            log.warning("could not watch for the Escape key: %s", exc)
+
+    def _stop_watching_escape(self) -> None:
+        listener, self._escape_listener = self._escape_listener, None
+        if listener is not None:
+            try:
+                listener.stop()
+            except Exception:
+                pass
 
     def _release_local_input(self) -> None:
         for listener in self._suppressors:

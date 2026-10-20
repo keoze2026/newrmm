@@ -16,9 +16,22 @@ import pytest  # noqa: E402
 from rmm_agent import privacy  # noqa: E402
 
 
+def overlay_only(instance):
+    """Force the overlay lock, whatever this machine could do.
+
+    On X11 the real blank darkens the physical display, and a unit test must
+    never do that to whoever is at the keyboard. These tests are about the
+    overlay path, so they use it; the darkening path is tested against a fake
+    display in test_dimmer.py.
+    """
+    instance._dimmer = None
+    instance.mode = privacy.MODE_GUEST_LOCK
+    return instance
+
+
 @pytest.fixture
 def blank():
-    instance = privacy.PrivacyBlank()
+    instance = overlay_only(privacy.PrivacyBlank())
     yield instance
     # Never leave a blank up, whatever the test did.
     instance.disable()
@@ -29,11 +42,15 @@ def test_this_platform_reports_a_mode():
     assert mode in (privacy.MODE_EXCLUDED, privacy.MODE_GUEST_LOCK)
 
 
-def test_linux_is_honest_that_it_can_only_guest_lock():
-    """No universal capture-exclusion exists on Linux, so the agent must not
-    claim it can hide the operator's work."""
+def test_linux_only_claims_a_live_view_when_it_can_darken_the_display():
+    """The operator keeps the real picture only if the physical display can be
+    darkened (X11 with xrandr). Anywhere else Linux falls back to the overlay
+    lock, and must say so rather than claim a live view it cannot deliver."""
     if sys.platform.startswith("linux"):
-        assert privacy.supported_mode() == privacy.MODE_GUEST_LOCK
+        from rmm_agent import dimmer
+
+        expected = privacy.MODE_EXCLUDED if dimmer.available() else privacy.MODE_GUEST_LOCK
+        assert privacy.supported_mode() == expected
 
 
 def test_starts_inactive(blank):
@@ -87,7 +104,7 @@ def test_the_overlay_covers_the_whole_screen(blank):
 def test_the_watchdog_releases_the_blank_on_its_own():
     """A blank that outlives its session would strand the person at the
     keyboard, so the watchdog is the last line of defence."""
-    instance = privacy.PrivacyBlank(watchdog_seconds=1.0)
+    instance = overlay_only(privacy.PrivacyBlank(watchdog_seconds=1.0))
     try:
         assert instance.enable(block_input=False)["active"] is True
         deadline = time.monotonic() + 8

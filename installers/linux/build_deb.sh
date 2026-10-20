@@ -48,7 +48,7 @@ Section: net
 Priority: optional
 Architecture: $ARCH
 Maintainer: Remote Desktop & Support Platform
-Depends: libx11-6, libxext6, libxrandr2
+Depends: libx11-6, libxext6, libxrandr2, x11-xserver-utils
 Recommends: python3-tk, gir1.2-appindicator3-0.1
 Description: Remote support endpoint agent
  Joins a support session, asks the person at the keyboard for consent, then
