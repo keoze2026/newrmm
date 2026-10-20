@@ -27,7 +27,7 @@ macOS, procuring signing certificates, and deploying.
 | Suite | Count | What it covers |
 | --- | --- | --- |
 | `relay/tests` | 59 | API, database, consent gate, append-only audit, rate limiting, session expiry |
-| `agent/tests` | 71 | Coordinate mapping, privacy blank, input block, tile encoder |
+| `agent/tests` | 73 | Coordinate mapping, privacy blank, input block, tile encoder |
 | `tests/e2e/console_appendix_a.py` | 32 | Appendix A conformance in a real browser |
 | `tests/e2e/p2_session_flow.py` | 13 | Consent gate and device authentication |
 | `tests/e2e/p3_linux_endpoint.py` | 12 | Real capture and real input injection |
@@ -142,8 +142,11 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 | 25 | I updated this file after changes but did not read it before acting or answering. Asked whether I had touched streaming speed, I answered from git history; the user caught it three times in one day. | The first action on any change OR question is reading the relevant part of this file, and saying what it says. Updating afterwards does not make up for skipping it. |
 | 26 | Asked whether I had updated this file, I waited to be told to, because the user had also said not to do unrequested work. | Updating this file after every change or finding is a standing rule and never needs asking. Do it in the same turn, before reporting. |
 | 27 | The agent retried forever on any failure except two close codes and reset its delay to 1 s after every clean close, so any persistent refusal became an endless connect loop. Nobody tested a refusal, only a dropped link. | Every retry loop needs a list of failures that stop it, a delay that grows, and a test for a connection that is turned away, not only one that drops. |
+| 28 | I left "every reconnect asks for consent again" in place because it looked like a security rule. It was my own design, not the spec's, and it took the agent offline for good the first time the link blipped while nobody was at the screen. | When a flow can end the agent, ask what happens if nobody answers. Check the spec text before treating a design choice as a requirement. |
 
 ## Change log
+
+- **Agent no longer goes offline after a network blip.** Found from the agent log on the user's laptop: at 23:11:07 the link dropped (`keepalive ping timeout`) after ~38 min of a live session; the agent reconnected in 1 s, then asked for consent again; nobody was at the screen, the window timed out after 120 s, the timeout counted as a refusal, and a refusal ends the agent. The spec (section 8) says the agent "stays connected across long sessions and reconnects automatically after drops". Now a reconnect within 300 s of a consented stream continues without asking (`can_resume`, `RESUME_SECONDS` in `session.py`); a fresh session, a refusal, or a gap longer than 5 minutes still asks. This was defect #4 from the findings entry, which I had left alone. 2 new tests, agent suite 73 passed. Cause of the drop itself (network, laptop sleep or the server path) is **not known**.
 
 - **Reconnect loop fixed (three of the four defects from the findings entry below).** `session.py`: a rejected device login (4401) now stops the agent like 4403/4404; the retry delay only returns to 1 s after a connection that lasted 30 s or more, otherwise it keeps doubling to 30 s (`next_backoff`); 4409 (another agent already connected) is retried but logged by name. `consent.py`: with no window and no terminal to ask, consent is treated as refused instead of raising, so a windowed agent no longer loops. Not changed: a reconnect still asks for consent again (the spec makes consent per session). 4 new tests in `test_reconnect_policy.py`, agent suite 71 passed. **Not verified on Windows**: whether this was the cause of the loop there is unconfirmed until the Windows log is seen.
 

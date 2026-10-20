@@ -35,3 +35,12 @@ def test_consent_without_a_terminal_is_a_refusal_not_a_crash(monkeypatch):
 
     monkeypatch.setattr("builtins.input", no_stdin)
     assert consent.ask("CODE1234") is False
+
+
+def test_a_short_drop_during_a_consented_session_carries_on_without_asking():
+    assert session.can_resume(streamed_until=100.0, now=130.0) is True
+
+
+def test_a_long_gap_a_fresh_session_or_a_refusal_asks_again():
+    assert session.can_resume(None, now=500.0) is False
+    assert session.can_resume(100.0, now=100.0 + session.RESUME_SECONDS + 1) is False

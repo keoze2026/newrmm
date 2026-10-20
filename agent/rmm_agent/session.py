@@ -25,6 +25,15 @@ HEALTHY_SECONDS = 30.0
 # Retrying cannot fix these: the session ended (4404), consent was refused
 # (4403), or the device credentials were rejected (4401).
 GIVE_UP_CODES = (4401, 4403, 4404)
+# A link that drops during a consented session and comes back within this long
+# is the same session carrying on. Asking again would put a window in front of
+# someone who is not there, and an unanswered window ends the agent for good.
+RESUME_SECONDS = 300.0
+
+
+def can_resume(streamed_until: float | None, now: float) -> bool:
+    """Whether a reconnect continues a session the endpoint user already allowed."""
+    return streamed_until is not None and 0 <= now - streamed_until <= RESUME_SECONDS
 
 
 def next_backoff(current: float, lasted: float) -> float:
@@ -66,6 +75,7 @@ class AgentSession:
         self.device_secret = device_secret
         self._stop = asyncio.Event()
         self._consented = False
+        self._streamed_until: float | None = None
         self._terminal: RemoteTerminal | None = None
         self._privacy = privacy.PrivacyBlank(watchdog_seconds=blank_watchdog)
         # Changed-region streaming (specification section 10).
@@ -144,13 +154,18 @@ class AgentSession:
                     "Session requested",
                 )
 
-            granted = await asyncio.to_thread(
-                ask_consent, self.code, None, 120.0, self.auto_consent
-            )
+            if can_resume(self._streamed_until, time.monotonic()):
+                log.info("reconnected during a consented session; continuing without asking again")
+                granted = True
+            else:
+                granted = await asyncio.to_thread(
+                    ask_consent, self.code, None, 120.0, self.auto_consent
+                )
             await socket.send(json.dumps({"type": "consent", "granted": granted}))
 
             if not granted:
                 log.info("consent denied; nothing will be captured")
+                self._streamed_until = None
                 if self.tray:
                     self.tray.set_state(IDLE, "Session denied")
                     self.tray.notify("You denied the session. Nothing was shared.", "Session denied")
@@ -171,6 +186,7 @@ class AgentSession:
             try:
                 await self._stream(socket)
             finally:
+                self._streamed_until = time.monotonic()
                 receiver.cancel()
                 self._close_tools()
                 if self.tray:
