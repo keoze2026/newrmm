@@ -50,7 +50,14 @@ def _run_with_tray(coroutine_factory, use_tray: bool) -> int:
     thread.start()
 
     try:
-        signal.signal(signal.SIGTERM, lambda *_: stop_everything())
+        def on_terminate(*_):
+            # Between connection attempts there is no session to ask to stop,
+            # so the request would be lost and `rmm-agent stop` would hang.
+            if session_holder.get("session") is None:
+                raise SystemExit(0)
+            stop_everything()
+
+        signal.signal(signal.SIGTERM, on_terminate)
     except (ValueError, OSError):
         pass  # not the main thread, or not supported here
 

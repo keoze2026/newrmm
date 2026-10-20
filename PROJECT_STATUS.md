@@ -139,6 +139,8 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **`rmm-agent stop` could hang.** CI failed `test_a_detached_agent_outlives_its_parent_and_can_be_stopped`: an agent between connection attempts has no session, so the SIGTERM request was dropped and the process ignored it for 8 seconds. SIGTERM now exits at once when there is no session (`__main__.py`). The test passed on the fast dev laptop and only failed on the slower CI runner.
+
 - **Background agent no longer dies at once (fix to my own earlier fix).** The installed one-file agent started its detached child, which inherited PyInstaller's environment, looked for its files in the parent's temporary folder, and died the moment the parent exited, writing nothing. `spawn_detached` now starts the child with `PYINSTALLER_RESET_ENVIRONMENT=1`. Verified with a real built binary run through a pseudo-terminal: stays alive and attaches to the session. Regression test added in `test_background.py`. Not yet rebuilt in CI/deployed.
 
 - **Join page shows real Linux steps.** The generic steps ("open the file, type the code when asked") do not happen on Linux, so a non-coder would be stuck. On Linux the page now shows: `cd ~/Downloads`, `sudo apt install ./<deb>`, `rmm-agent start --code <CODE>`, and how to stop. Other systems unchanged. Type-check and build pass; not yet viewed in a browser. File: `console/src/pages/JoinPage.tsx`.
