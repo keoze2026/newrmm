@@ -38,7 +38,7 @@ function detectPlatform(): Build['platform'] {
 function howTo(build: Build): string | null {
   const name = build.filename
   if (!name) return null
-  if (name.endsWith('.deb')) return `Install: sudo apt install ./${name}`
+  if (name.endsWith('.deb')) return 'Install it with the one line in the steps below.'
   if (name.includes('-setup')) return 'Open it. It installs and starts by itself - nothing to type.'
   if (name.endsWith('.exe')) return 'Run it. If Windows warns, choose More info, then Run anyway.'
   if (name.endsWith('.pkg')) return 'Open it and follow the installer.'
@@ -228,17 +228,14 @@ export default function JoinPage() {
               <h3 className="text-xs font-semibold text-navy">What happens next</h3>
               {mine === 'linux' ? (
                 <ol data-testid="linux-steps" className="mt-2 space-y-1 text-xs leading-relaxed text-muted">
-                  <li>1. Open a terminal in the folder you downloaded to: <span className="font-mono text-navy">cd ~/Downloads</span></li>
+                  <li>1. Open a terminal. Any folder is fine.</li>
                   <li>
-                    2. Install it:{' '}
-                    <span className="break-all font-mono text-navy">
-                      sudo apt install ./{ordered.find((b) => b.platform === 'linux')?.filename ?? 'rmm-agent.deb'}
-                    </span>
+                    2. Copy this one line, paste it, and press Enter:
+                    <div className="mt-1 select-all break-all rounded bg-white px-2 py-1.5 font-mono text-navy">
+                      sudo apt install "$(ls -t ~/Downloads/rmm-agent*.deb | head -1)" &amp;&amp; rmm-agent start --code {session.code}
+                    </div>
                   </li>
-                  <li>
-                    3. Start it:{' '}
-                    <span className="font-mono text-navy">rmm-agent start --code {session.code}</span>
-                  </li>
+                  <li>3. Type your computer password when asked. Nothing shows while you type; that is normal.</li>
                   <li>4. It asks your permission. Nothing is shared until you allow it.</li>
                   <li>5. It keeps running if you close the terminal. To end the session run <span className="font-mono text-navy">rmm-agent stop</span>.</li>
                 </ol>
