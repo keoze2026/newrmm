@@ -101,11 +101,17 @@ async def list_sessions(
     operator: Operator = Depends(current_operator),
     state: str | None = Query(default=None),
     q: str | None = Query(default=None, description="Filter by session name or code"),
+    include_ended: bool = Query(default=False, description="Also list ended sessions"),
     limit: int = Query(default=200, le=500),
 ) -> list[Session]:
     stmt = select(Session).order_by(Session.created_at.desc()).limit(limit)
     if state:
         stmt = stmt.where(Session.state == state)
+    elif not include_ended:
+        # Deleting a session ends it rather than erasing it, so the audit trail
+        # stays whole. The list must hide ended sessions, or Delete appears to
+        # do nothing: the row stays put and is simply marked ended.
+        stmt = stmt.where(Session.state != "ended")
     sessions = list((await db.scalars(stmt)).all())
 
     if q:

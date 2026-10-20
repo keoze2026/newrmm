@@ -174,3 +174,28 @@ async def test_deleting_a_session_also_hangs_up(client, auth_headers, monkeypatc
     session = await _session(client, auth_headers)
     await client.delete(f"/sessions/{session['id']}", headers=auth_headers)
     assert closed == [session["code"]]
+
+
+async def test_a_deleted_session_leaves_the_list(client, auth_headers):
+    """Delete ends a session rather than erasing it. If the list kept showing it
+    the button would look broken, because the row would never go."""
+    created = await _session(client, auth_headers)
+    listed = (await client.get("/sessions", headers=auth_headers)).json()
+    assert created["id"] in [s["id"] for s in listed]
+
+    assert (await client.delete(f"/sessions/{created['id']}", headers=auth_headers)).status_code == 204
+
+    after = (await client.get("/sessions", headers=auth_headers)).json()
+    assert created["id"] not in [s["id"] for s in after]
+
+    # The record is kept, and can still be asked for.
+    everything = (await client.get("/sessions?include_ended=true", headers=auth_headers)).json()
+    assert created["id"] in [s["id"] for s in everything]
+    assert (await client.get(f"/sessions/{created['id']}", headers=auth_headers)).json()["state"] == "ended"
+
+
+async def test_the_connector_list_names_the_file_it_serves(client):
+    body = (await client.get("/connector")).json()
+    for build in body["builds"]:
+        assert "filename" in build
+        assert (build["filename"] is None) == (not build["available"])

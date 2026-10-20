@@ -15,6 +15,7 @@ interface Build {
   label: string
   requirements: string
   available: boolean
+  filename: string | null
   size: number | null
   sha256: string | null
 }
@@ -31,6 +32,18 @@ function detectPlatform(): Build['platform'] {
   if (/Windows/i.test(agent)) return 'windows'
   if (/Mac OS X|Macintosh/i.test(agent)) return 'macos'
   return 'linux'
+}
+
+/** What to do with the file, from what it is. A .deb is installed, never opened. */
+function howTo(build: Build): string | null {
+  const name = build.filename
+  if (!name) return null
+  if (name.endsWith('.deb')) return `Install: sudo apt install ./${name}`
+  if (name.endsWith('-setup.exe')) return 'Run the installer, then follow the steps.'
+  if (name.endsWith('.exe')) return 'Run it. If Windows warns, choose More info, then Run anyway.'
+  if (name.endsWith('.pkg')) return 'Open it and follow the installer.'
+  if (name.endsWith('.zip')) return 'Unzip it, then open the app.'
+  return `Make it executable, then run it: chmod +x ${name}`
 }
 
 function formatSize(bytes: number | null): string {
@@ -190,6 +203,11 @@ export default function JoinPage() {
                       {build.requirements}
                       {build.available && build.size ? ` · ${formatSize(build.size)}` : ''}
                     </div>
+                    {build.available && howTo(build) && (
+                      <div className="mt-1 break-all font-mono text-[11px] text-navy">
+                        {howTo(build)}
+                      </div>
+                    )}
                   </div>
                   {build.available ? (
                     <a

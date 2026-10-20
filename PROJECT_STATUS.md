@@ -26,7 +26,7 @@ macOS, procuring signing certificates, and deploying.
 
 | Suite | Count | What it covers |
 | --- | --- | --- |
-| `relay/tests` | 52 | API, database, consent gate, append-only audit, rate limiting, session expiry |
+| `relay/tests` | 54 | API, database, consent gate, append-only audit, rate limiting, session expiry |
 | `agent/tests` | 29 | Coordinate mapping, privacy blank, input block, tile encoder |
 | `tests/e2e/console_appendix_a.py` | 32 | Appendix A conformance in a real browser |
 | `tests/e2e/p2_session_flow.py` | 13 | Consent gate and device authentication |

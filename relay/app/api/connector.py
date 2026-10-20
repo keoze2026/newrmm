@@ -96,6 +96,7 @@ async def list_connectors() -> dict:
                 "label": entry["label"],
                 "requirements": entry["hint"],
                 "available": path is not None,
+                "filename": path.name if path else None,
                 "size": path.stat().st_size if path else None,
                 "sha256": _digest(path) if path else None,
             }
