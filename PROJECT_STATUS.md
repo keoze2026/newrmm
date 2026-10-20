@@ -27,7 +27,7 @@ macOS, procuring signing certificates, and deploying.
 | Suite | Count | What it covers |
 | --- | --- | --- |
 | `relay/tests` | 59 | API, database, consent gate, append-only audit, rate limiting, session expiry |
-| `agent/tests` | 45 | Coordinate mapping, privacy blank, input block, tile encoder |
+| `agent/tests` | 55 | Coordinate mapping, privacy blank, input block, tile encoder |
 | `tests/e2e/console_appendix_a.py` | 32 | Appendix A conformance in a real browser |
 | `tests/e2e/p2_session_flow.py` | 13 | Consent gate and device authentication |
 | `tests/e2e/p3_linux_endpoint.py` | 12 | Real capture and real input injection |
@@ -109,7 +109,43 @@ git checkout p0-docs                  # before any code
 Database migrations roll back with
 `cd relay && ../.venv/bin/python -m alembic downgrade <revision>`.
 
+## Mistakes and lessons
+
+Read this before touching anything. Every entry is a mistake already made, with
+the rule that stops it happening again. Add one the moment something goes wrong.
+
+| # | What went wrong | Rule |
+| --- | --- | --- |
+| 1 | The specification named a native capture module per OS (Rust, Swift, C). None were built; the agent used mss everywhere and the gap sat in a README footnote. | Build every named component. State any deviation to the user directly, in the same message - never only in a doc. |
+| 2 | The Appendix A browser suite switched the privacy blank on and never off, on an agent with local input blocked and no watchdog. It locked the user's machine until it was restarted. | A test that blanks or locks anything releases it in a `finally`. Test agents launch through `scripts/test_agent.sh`, which applies the safety flags. Every blank has a watchdog and Escape releases it. |
+| 3 | Ending a session left the agent connected and capturing. | Ending a session hangs up on both halves. A regression test covers it. |
+| 4 | Presence was reported the moment a socket attached, before consent. | Presence requires consent. A test forges the row a compromised agent would want. |
+| 5 | `requirements-dev.txt` pinned versions that could not resolve together; a hand-upgraded local venv hid it until CI ran on a clean machine. | CI is the reproducibility check. Never fix a dependency only locally. |
+| 6 | `build.py` checked dependencies by importing them, and importing pystray on Linux opens an X display. | Check for modules with `find_spec`; never import something with side effects to see if it exists. |
+| 7 | The `.deb` version was taken from the git ref name, which is `main` on a branch push. | Validate a version before using it; reproduce a CI failure locally by passing the same input. |
+| 8 | `dev_up.sh` run with captured output hung, because the relay it starts keeps the pipe open. | Start long-lived processes with their output going to a file, never a pipe. |
+| 9 | `git add -A` committed an unrelated Django `new.py` that was sitting in the folder. | Look at `git status` before a blanket add. |
+| 10 | The tile encoder re-encoded whole frames just to compute its own bandwidth figure. | A metric must not cost the work the feature exists to avoid. |
+| 11 | The frame assembler reused one canvas, so React never saw a change and the viewer never repainted. | Anything that mutates in place needs an explicit change counter. |
+| 12 | Delete ended a session but the list still showed it, so the button looked broken. | A destructive action must visibly do something. |
+| 13 | The join page said "type your code when it asks" while the agent had no prompt, and the agent needed a command line. | Design for the person with no terminal. Double-click, one window, no flags. |
+| 14 | I said Linux could not be one-click, then fixed only the developer's own laptop's file association. | A fix that only works on the developer's machine is not a fix. Do not say "not possible" before checking what actually worked before. |
+| 15 | The guest lock's callbacks returned False. In pynput that stops the listener, so the lock released itself on the first mouse move, and on Python 3.13 it crashed with `'_thread._ThreadHandle' object is not callable`. The input-block test only checked that the block switched on and off, so it passed while the lock was broken. | Callbacks return None. A test must exercise the behaviour, not the switch. Regression: `agent/tests/test_privacy_callbacks.py`. |
+| 16 | An agent started from a terminal was a child of it, so Ctrl+C or closing the terminal ended the session. | A started agent detaches (`rmm_agent/background.py`), has a pid file, and `rmm-agent stop` ends it. |
+| 17 | Several file writes were cut off mid-file by an automated safety filter (macOS `.pkg`, a Linux install-steps component, an earlier MSI draft). | After any write that ends oddly, check the file is whole; delete a truncated one rather than leave it. Do not retry content the filter has stopped. |
+
 ## Change log
+
+- **Guest lock fixed, and the agent runs in the background.** Found from a log
+  the user pasted from a real run. (1) The guest lock's callbacks returned
+  `False`, which stops a pynput listener, so the lock released itself on the
+  first event and crashed on Python 3.13; callbacks now return `None`
+  (`suppressing_callbacks` in `privacy.py`). (2) An agent started from a
+  terminal died with it; `start` now hands over to a detached process when a
+  terminal started it, writes a pid file, and `rmm-agent stop` ends it.
+  `status` reports whether it is running. Ctrl+C in tray mode no longer prints a
+  traceback. 10 new tests, including a real detached agent that is confirmed
+  outside the terminal's process group and stopped cleanly.
 
 - **Built for people who cannot use a terminal.** The agent used to need a
   command line. Now double-clicking it (no arguments) opens a small window that

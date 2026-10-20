@@ -8,10 +8,11 @@
 import argparse
 import asyncio
 import logging
+import signal
 import sys
 import threading
 
-from rmm_agent import __version__, launcher, platform_support, sysinfo
+from rmm_agent import __version__, background, launcher, platform_support, sysinfo
 from rmm_agent import config
 from rmm_agent.config import Enrolment, state_dir
 from rmm_agent.device import hold_presence
@@ -48,8 +49,16 @@ def _run_with_tray(coroutine_factory, use_tray: bool) -> int:
     thread = threading.Thread(target=worker, name="agent-loop", daemon=True)
     thread.start()
 
+    try:
+        signal.signal(signal.SIGTERM, lambda *_: stop_everything())
+    except (ValueError, OSError):
+        pass  # not the main thread, or not supported here
+
     if tray is not None and tray.available:
-        tray.run()  # blocks until the tray quits
+        try:
+            tray.run()  # blocks until the tray quits
+        except KeyboardInterrupt:
+            pass
         stop_everything()
         thread.join(timeout=15)
     else:
@@ -70,6 +79,14 @@ def _run_with_tray(coroutine_factory, use_tray: bool) -> int:
 
 
 def cmd_join(args) -> int:
+    background.write_pid()
+    try:
+        return _join(args)
+    finally:
+        background.clear_pid()
+
+
+def _join(args) -> int:
     async def main(tray, holder):
         session = AgentSession(
             args.relay,
@@ -123,9 +140,23 @@ def cmd_start(args) -> int:
     code, relay = chosen
     config.save_relay(relay)
 
+    no_tray = bool(getattr(args, "no_tray", False))
+
+    # Started from a terminal: hand over to a process that does not belong to
+    # it, so closing the terminal or pressing Ctrl+C there does not end the
+    # session. A double-click has no terminal, so it just carries on.
+    if not getattr(args, "foreground", False) and background.launched_from_terminal():
+        extra = ["join", "--relay", relay, "--code", code]
+        if no_tray:
+            extra.append("--no-tray")
+        pid = background.spawn_detached(extra)
+        print(f"RMM Agent is running in the background (process {pid}).")
+        print("You can close this window. To stop it later: rmm-agent stop")
+        return 0
+
     joined = argparse.Namespace(
         relay=relay, code=code, fps=12, quality=60, budget_kbps=0,
-        device_id="", secret="", synthetic=False, tray=True, inject=True,
+        device_id="", secret="", synthetic=False, tray=not no_tray, inject=True,
         auto_consent=False, blank_watchdog=0.0, blank_blocks_input=True,
     )
     try:
@@ -134,6 +165,14 @@ def cmd_start(args) -> int:
         log.exception("the session failed")
         launcher.show_error(f"Could not start the session.\n\n{exc}")
         return 1
+
+
+def cmd_stop(_args) -> int:
+    if background.stop():
+        print("RMM Agent stopped.")
+        return 0
+    print("RMM Agent is not running.")
+    return 0
 
 
 def cmd_status(_args) -> int:
@@ -147,6 +186,8 @@ def cmd_status(_args) -> int:
     print(f"ip            : {info['ip']}")
     print(f"state dir     : {state_dir()}")
     print(f"enrolled      : {'yes, device ' + enrolment.device_id if enrolment else 'no'}")
+    running = background.running_pid()
+    print(f"running       : {'yes, process ' + str(running) if running else 'no'}")
 
     from rmm_agent.capture import ScreenCapture
     from rmm_agent.remote_input import InputInjector
@@ -209,7 +250,17 @@ def build_parser() -> argparse.ArgumentParser:
         "start", help="open the friendly window (what a double-click does)", parents=[common]
     )
     start.add_argument("--code", default="", help="a session code to use without asking")
+    start.add_argument(
+        "--foreground", action="store_true",
+        help="stay in this terminal instead of running in the background",
+    )
+    start.add_argument("--no-tray", dest="no_tray", action="store_true")
     start.set_defaults(func=cmd_start)
+
+    stop = sub.add_parser(
+        "stop", help="stop the agent running in the background", parents=[common]
+    )
+    stop.set_defaults(func=cmd_stop)
 
     join = sub.add_parser("join", help="join a session with its code", parents=[common])
     join.add_argument(

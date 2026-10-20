@@ -63,6 +63,40 @@ def _has_pyobjc() -> bool:
         return False
 
 
+def suppressing_callbacks(escape_key, on_escape) -> dict:
+    """The callbacks that keep local input blocked.
+
+    A pynput callback that returns False STOPS its listener. Returning False
+    here once made the lock release itself on the first mouse move or key press
+    - and on Python 3.13 stopping a listener from inside its own callback raises
+    "'_thread._ThreadHandle' object is not callable" - so these must always
+    return None. Escape is the one key that is never swallowed: it releases the
+    lock, because a lock with no way out means a power cycle.
+    """
+
+    def on_press(key):
+        if key == escape_key:
+            log.warning("Escape pressed at the endpoint; releasing the lock")
+            on_escape()
+        return None
+
+    def on_release(key):
+        return None
+
+    def on_click(*_args):
+        return None
+
+    def on_scroll(*_args):
+        return None
+
+    return {
+        "on_press": on_press,
+        "on_release": on_release,
+        "on_click": on_click,
+        "on_scroll": on_scroll,
+    }
+
+
 class PrivacyBlank:
     """Owns the black overlay and, on the guest-lock path, the input block."""
 
@@ -318,20 +352,19 @@ class PrivacyBlank:
         try:
             from pynput import keyboard, mouse
 
-            def on_press(key):
-                # Escape is the one key that is never swallowed: it releases
-                # the lock. Without an escape hatch a failure here means a
-                # power cycle.
-                if key == keyboard.Key.esc:
-                    log.warning("Escape pressed at the endpoint; releasing the lock")
-                    threading.Thread(target=self.disable, daemon=True).start()
-                return False
-
+            callbacks = suppressing_callbacks(
+                escape_key=keyboard.Key.esc,
+                on_escape=lambda: threading.Thread(target=self.disable, daemon=True).start(),
+            )
             key_listener = keyboard.Listener(
-                on_press=on_press, on_release=lambda key: False, suppress=True
+                on_press=callbacks["on_press"],
+                on_release=callbacks["on_release"],
+                suppress=True,
             )
             mouse_listener = mouse.Listener(
-                on_click=lambda *a: False, on_scroll=lambda *a: False, suppress=True
+                on_click=callbacks["on_click"],
+                on_scroll=callbacks["on_scroll"],
+                suppress=True,
             )
             key_listener.start()
             mouse_listener.start()
