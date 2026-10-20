@@ -179,8 +179,9 @@ export default function JoinPage() {
           <div className="mt-6 rounded-xl border border-line bg-white p-7">
             <h2 className="text-sm font-semibold text-navy">Download the connector</h2>
             <p className="mt-1 text-sm text-muted">
-              Run it, then type your code when it asks. It will ask your permission before
-              anything is shared.
+              {mine === 'linux'
+                ? 'Follow the steps below. It will ask your permission before anything is shared.'
+                : 'Run it, then type your code when it asks. It will ask your permission before anything is shared.'}
             </p>
 
             <div className="mt-4 space-y-2">
@@ -225,6 +226,23 @@ export default function JoinPage() {
 
             <div className="mt-6 rounded-lg bg-canvas px-4 py-3">
               <h3 className="text-xs font-semibold text-navy">What happens next</h3>
+              {mine === 'linux' ? (
+                <ol data-testid="linux-steps" className="mt-2 space-y-1 text-xs leading-relaxed text-muted">
+                  <li>1. Open a terminal in the folder you downloaded to: <span className="font-mono text-navy">cd ~/Downloads</span></li>
+                  <li>
+                    2. Install it:{' '}
+                    <span className="break-all font-mono text-navy">
+                      sudo apt install ./{ordered.find((b) => b.platform === 'linux')?.filename ?? 'rmm-agent.deb'}
+                    </span>
+                  </li>
+                  <li>
+                    3. Start it:{' '}
+                    <span className="font-mono text-navy">rmm-agent start --code {session.code}</span>
+                  </li>
+                  <li>4. It asks your permission. Nothing is shared until you allow it.</li>
+                  <li>5. It keeps running if you close the terminal. To end the session run <span className="font-mono text-navy">rmm-agent stop</span>.</li>
+                </ol>
+              ) : (
               <ol className="mt-2 space-y-1 text-xs leading-relaxed text-muted">
                 <li>1. Open the file you downloaded.</li>
                 <li>
@@ -235,6 +253,7 @@ export default function JoinPage() {
                 <li>4. An icon stays in your system tray for as long as the session runs.</li>
                 <li>5. Close the connector, or use its tray menu, to end the session.</li>
               </ol>
+              )}
             </div>
           </div>
         )}
