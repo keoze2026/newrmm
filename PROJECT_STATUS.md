@@ -78,8 +78,7 @@ on a Windows, macOS and Linux runner. Both workflows are green.
   filter, so none exists. Linux has a `.deb` (`installers/linux/build_deb.sh`).
 - **Builds are unsigned.** Section 11 assumes certificates can be procured; they
   have not been. SmartScreen warns, and Gatekeeper refuses outright.
-- **Never deployed.** The TLS config and compose overlay are written and
-  unexercised.
+- **Deployed** to `rmm.remotedesk247.com` behind the host nginx (earlier note "never deployed" was stale). Streaming has only been measured through that path with a synthetic and a real-capture test agent, not with a real operator browser.
 - Chat, Tools and Locate are placeholders, labelled as such on screen.
 - The terminal renders colour but is not a full emulator: `vim` and `top` will
   not display correctly.
@@ -141,8 +140,14 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 | 23 | Fixed builds shared one version number, so apt silently kept the old build installed. I then chased "agent not connecting" for several rounds before comparing the installed binary with the new one. | When something that was just fixed still fails on the user's machine, first check the installed binary is the new one (size, date, version). Every shipped build gets a unique version. |
 | 24 | The reinstall steps I gave did not stop the already-running old agent, so the user saw the old broken agent still running after "removing" it and could not tell old from new. I also gave a one-off line without checking what a running process does on package removal. | Any reinstall or upgrade instruction stops the running agent first. After a reinstall, show how to confirm the new build is the one running. |
 | 25 | I updated this file after changes but did not read it before acting or answering. Asked whether I had touched streaming speed, I answered from git history; the user caught it three times in one day. | The first action on any change OR question is reading the relevant part of this file, and saying what it says. Updating afterwards does not make up for skipping it. |
+| 26 | Asked whether I had updated this file, I waited to be told to, because the user had also said not to do unrequested work. | Updating this file after every change or finding is a standing rule and never needs asking. Do it in the same turn, before reporting. |
 
 ## Change log
+
+- **Findings, no code changed (2026-10-20, evening).**
+  *0 fps / 0 KB/s on the console after a while.* Measured through the public server: a real-capture stream held ~10 fps for 100 s with the connection open the whole time (79 frames/8 s earlier, 102 KB/s). Agent, relay and console streaming code are byte-identical to the first build that worked; the only differences since then are `background.py`, `dimmer.py`, `privacy.py`, `__main__.py` and the join page text. The console counters count messages that reach the browser, and the agent now sends only changed regions, so an idle screen sends nothing. That is the leading explanation, **not yet confirmed**: needs the user to change something on the agent PC while the console reads 0.
+  *Windows agent connecting and reconnecting in a loop.* Cause unknown until the Windows log (`%APPDATA%\RMMAgent\agent.log`) and the relay log are seen. Defects found by reading `session.py` and `consent.py`, **unfixed**: (1) only close codes 4403/4404 stop the retry, so 4409 (guest already connected), 4401 and 4429 loop forever; (2) the retry delay resets to 1 s after any clean close; (3) if no consent window can open, `consent.ask` falls back to `input()`, which raises in a windowed exe with no stdin, is not caught, and is retried as a lost connection; (4) every reconnect asks for consent again.
+  Also checked: the Linux blank goes on and off cleanly and restores brightness 1.0 (agent log, 22:42-22:45).
 
 - **Linux line stops any running agent first.** Removing or upgrading the package does not stop an agent that is already running, so after reinstalling, the old broken build kept running in memory. The join page line now starts with `pkill -x rmm-agent;`. Confirmed on the user's laptop that the fixed build (21:58) connects and the operator's request reaches it; the session then ended because consent was answered Deny. Takes effect once CI is green and the console is rebuilt on the server.
 
