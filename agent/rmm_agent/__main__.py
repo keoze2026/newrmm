@@ -17,7 +17,7 @@ from rmm_agent import config
 from rmm_agent.config import Enrolment, state_dir
 from rmm_agent.device import hold_presence
 from rmm_agent.logging_setup import configure
-from rmm_agent import autostart
+from rmm_agent import autostart, diagnostics
 from rmm_agent.session import AgentSession
 from rmm_agent.tray import Tray
 
@@ -101,6 +101,7 @@ def cmd_join(args) -> int:
 
 
 def _join(args) -> int:
+    diagnostics.heartbeat()
     async def main(tray, holder):
         session = AgentSession(
             args.relay,
@@ -360,9 +361,11 @@ def main() -> int:
     if len(sys.argv) == 1:
         # A double-click: no arguments at all.
         configure(False)
+        diagnostics.install()
         return cmd_start(argparse.Namespace(code=""))
     args = build_parser().parse_args()
     path = configure(args.verbose)
+    diagnostics.install()
     log.debug("logging to %s", path)
     try:
         return args.func(args)
