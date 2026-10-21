@@ -25,7 +25,12 @@ on:
 jobs:
   linux:
     name: Linux agent
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: the agent bundles the build machine's own
+    # libraries, so a newer machine makes an agent that older systems cannot
+    # run. ubuntu-latest became 26.04 (glibc 2.42) and the bundled Tcl library
+    # then failed on a glibc 2.41 laptop: no consent window, so the agent
+    # refused its own session and exited straight after install.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
