@@ -57,6 +57,7 @@ class AgentSession:
         synthetic: bool = False,
         inject: bool = True,
         auto_consent: bool = False,
+        on_over=None,
         device_id: str = "",
         device_secret: str = "",
         blank_watchdog: float = 0.0,
@@ -74,6 +75,7 @@ class AgentSession:
         self.device_id = device_id
         self.device_secret = device_secret
         self._stop = asyncio.Event()
+        self.on_over = on_over
         self._consented = False
         self._streamed_until: float | None = None
         self._terminal: RemoteTerminal | None = None
@@ -83,6 +85,14 @@ class AgentSession:
         self._blank_blocks_input = blank_blocks_input
         self._uploads: dict[str, files.Upload] = {}
         self._socket = None
+
+    def _over(self) -> None:
+        """The session ended for good, or consent was refused: nothing to rejoin."""
+        if self.on_over is not None:
+            try:
+                self.on_over()
+            except Exception as exc:
+                log.warning("could not clean up after the session: %s", exc)
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -108,6 +118,7 @@ class AgentSession:
                 code = exc.rcvd.code if exc.rcvd is not None else None
                 if code in GIVE_UP_CODES:
                     log.info("the session is over (%s); stopping", exc.rcvd.reason or code)
+                    self._over()
                     self._stop.set()
                     break
                 if code == 4409:
@@ -166,6 +177,7 @@ class AgentSession:
             if not granted:
                 log.info("consent denied; nothing will be captured")
                 self._streamed_until = None
+                self._over()
                 if self.tray:
                     self.tray.set_state(IDLE, "Session denied")
                     self.tray.notify("You denied the session. Nothing was shared.", "Session denied")

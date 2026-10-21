@@ -17,13 +17,14 @@ from rmm_agent import config
 from rmm_agent.config import Enrolment, state_dir
 from rmm_agent.device import hold_presence
 from rmm_agent.logging_setup import configure
+from rmm_agent import autostart
 from rmm_agent.session import AgentSession
 from rmm_agent.tray import Tray
 
 log = logging.getLogger("rmm_agent")
 
 
-def _run_with_tray(coroutine_factory, use_tray: bool) -> int:
+def _run_with_tray(coroutine_factory, use_tray: bool, on_user_quit=None) -> int:
     """The tray owns the main thread, so the event loop runs beside it."""
     loop = asyncio.new_event_loop()
     result: dict[str, BaseException | None] = {"error": None}
@@ -34,7 +35,13 @@ def _run_with_tray(coroutine_factory, use_tray: bool) -> int:
         if session is not None:
             loop.call_soon_threadsafe(session.request_stop)  # type: ignore[union-attr]
 
-    tray = Tray(on_quit=stop_everything) if use_tray else None
+    def user_quit() -> None:
+        # The person chose to end it, as opposed to the computer shutting down.
+        if on_user_quit is not None:
+            on_user_quit()
+        stop_everything()
+
+    tray = Tray(on_quit=user_quit) if use_tray else None
 
     def worker() -> None:
         asyncio.set_event_loop(loop)
@@ -105,6 +112,7 @@ def _join(args) -> int:
             synthetic=args.synthetic,
             inject=args.inject,
             auto_consent=args.auto_consent,
+            on_over=lambda: autostart.forget(args.code),
             device_id=args.device_id,
             device_secret=args.secret,
             blank_watchdog=args.blank_watchdog,
@@ -113,7 +121,9 @@ def _join(args) -> int:
         holder["session"] = session
         await session.run_forever()
 
-    return _run_with_tray(main, use_tray=args.tray)
+    return _run_with_tray(
+        main, use_tray=args.tray, on_user_quit=lambda: autostart.forget(args.code)
+    )
 
 
 def cmd_enrol(args) -> int:
@@ -146,6 +156,7 @@ def cmd_start(args) -> int:
         return 0
     code, relay = chosen
     config.save_relay(relay)
+    remembered = autostart.remember(relay, code)
 
     no_tray = bool(getattr(args, "no_tray", False))
 
@@ -159,6 +170,8 @@ def cmd_start(args) -> int:
         pid = background.spawn_detached(extra)
         print(f"RMM Agent is running in the background (process {pid}).")
         print("You can close this window. To stop it later: rmm-agent stop")
+        if remembered:
+            print("It will start again after you restart this computer, until you stop it.")
         return 0
 
     joined = argparse.Namespace(
@@ -175,11 +188,26 @@ def cmd_start(args) -> int:
 
 
 def cmd_stop(_args) -> int:
+    autostart.forget()  # stopping on purpose also means: do not start again
     if background.stop():
         print("RMM Agent stopped.")
         return 0
     print("RMM Agent is not running.")
     return 0
+
+
+def cmd_resume(_args) -> int:
+    """Rejoin the session remembered before the computer restarted."""
+    remembered = autostart.saved()
+    if remembered is None:
+        return 0
+    relay, code = remembered
+    joined = argparse.Namespace(
+        relay=relay, code=code, fps=12, quality=60, budget_kbps=0,
+        device_id="", secret="", synthetic=False, tray=True, inject=True,
+        auto_consent=False, blank_watchdog=0.0, blank_blocks_input=True,
+    )
+    return cmd_join(joined)
 
 
 def cmd_status(_args) -> int:
@@ -268,6 +296,13 @@ def build_parser() -> argparse.ArgumentParser:
         "stop", help="stop the agent running in the background", parents=[common]
     )
     stop.set_defaults(func=cmd_stop)
+
+    resume = sub.add_parser(
+        "resume",
+        help="rejoin the session remembered before a restart (used at login)",
+        parents=[common],
+    )
+    resume.set_defaults(func=cmd_resume)
 
     join = sub.add_parser("join", help="join a session with its code", parents=[common])
     join.add_argument(

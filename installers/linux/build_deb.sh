@@ -95,6 +95,25 @@ RestartSec=10
 WantedBy=graphical-session.target
 EOF
 
+# Starting again after a restart (specification section 5, "Auto-start"). Not
+# enabled by the package: the agent enables it for itself when someone starts
+# it with a session code, and disables it when they stop it.
+cat > "$STAGE/usr/lib/systemd/user/rmm-agent-resume.service" <<'EOF'
+[Unit]
+Description=Remote support agent (rejoins the session it was started with)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/rmm-agent resume
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=graphical-session.target
+EOF
+
 cat > "$STAGE/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
@@ -118,7 +137,7 @@ if [ "$1" = "remove" ] || [ "$1" = "upgrade" ]; then
     for user_bus in /run/user/*/bus; do
         [ -S "$user_bus" ] || continue
         uid="$(basename "$(dirname "$user_bus")")"
-        su -s /bin/sh -c "XDG_RUNTIME_DIR=/run/user/$uid systemctl --user stop rmm-agent" \
+        su -s /bin/sh -c "XDG_RUNTIME_DIR=/run/user/$uid systemctl --user stop rmm-agent rmm-agent-resume" \
             "$(id -nu "$uid" 2>/dev/null || echo root)" 2>/dev/null || true
     done
 fi
