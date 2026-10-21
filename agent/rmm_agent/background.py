@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 
+from rmm_agent import durable
 from rmm_agent.config import state_dir
 
 log = logging.getLogger(__name__)
@@ -120,7 +121,7 @@ def spawn_detached(args: list[str]) -> int:
 
 def write_pid() -> None:
     try:
-        pid_file().write_text(str(os.getpid()))
+        durable.write_text(pid_file(), str(os.getpid()))
     except OSError as exc:
         log.debug("could not record the process id: %s", exc)
 

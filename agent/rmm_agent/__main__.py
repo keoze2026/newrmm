@@ -203,8 +203,10 @@ def cmd_resume(_args) -> int:
     launcher.hide_console_if_owned()
     remembered = autostart.saved()
     if remembered is None:
+        log.info("nothing to resume: no saved session")
         return 0
     relay, code = remembered
+    log.info("resuming session %s", code)
     joined = argparse.Namespace(
         relay=relay, code=code, fps=12, quality=60, budget_kbps=0,
         device_id="", secret="", synthetic=False, tray=True, inject=True,

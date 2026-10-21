@@ -26,7 +26,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from rmm_agent import background
+from rmm_agent import background, durable
 from rmm_agent.config import state_dir
 from rmm_agent.environment import system_environment
 
@@ -142,16 +142,24 @@ def _disable_here() -> bool:
 def saved() -> tuple[str, str] | None:
     """The (relay, code) to rejoin, or None."""
     try:
-        data = json.loads(session_file().read_text())
+        text = session_file().read_text()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        log.warning("could not read the saved session: %s", exc)
+        return None
+    try:
+        data = json.loads(text)
         return data["relay"], data["code"]
-    except (OSError, ValueError, KeyError):
+    except (ValueError, KeyError):
+        log.warning("the saved session file is empty or damaged (%d bytes); nothing to rejoin", len(text))
         return None
 
 
 def remember(relay: str, code: str, enable=None) -> bool:
     """Remember this session and start again at login. False if it cannot."""
     try:
-        session_file().write_text(json.dumps({"relay": relay, "code": code}))
+        durable.write_text(session_file(), json.dumps({"relay": relay, "code": code}))
     except OSError as exc:
         log.warning("could not remember the session: %s", exc)
         return False

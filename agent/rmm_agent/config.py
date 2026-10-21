@@ -5,6 +5,8 @@ import platform
 from dataclasses import dataclass
 from pathlib import Path
 
+from rmm_agent import durable
+
 
 def state_dir() -> Path:
     """Per-user state, in the place each OS expects."""
@@ -41,7 +43,7 @@ def saved_relay() -> str:
 
 def save_relay(relay: str) -> None:
     try:
-        (state_dir() / "last_relay.txt").write_text(relay.strip())
+        durable.write_text(state_dir() / "last_relay.txt", relay.strip())
     except OSError:
         pass
 
@@ -72,7 +74,7 @@ class Enrolment:
 
     def save(self) -> Path:
         path = state_dir() / "enrolment.json"
-        path.write_text(json.dumps(self.__dict__, indent=2))
+        durable.write_text(path, json.dumps(self.__dict__, indent=2))
         try:
             os.chmod(path, 0o600)
         except OSError:
