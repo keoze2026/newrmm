@@ -66,14 +66,16 @@ on a Windows, macOS and Linux runner. Both workflows are green.
 
 ## What does NOT work yet
 
-- **Windows and macOS have never run the agent.** Both compile in CI. The
-  consent surface, tray indicator, capture, input injection and privacy blank
-  are all unproven there, and all are security-relevant. This is P2's and P3's
-  checkpoint and P5's Windows/macOS half.
-- **Windows installer is written but has never been built or run.**
-  `installers/windows/rmm-agent.iss` (Inno Setup) installs the agent under
-  Program Files and adds it to PATH; CI builds it as `rmm-agent-setup.exe`. It
-  has not yet run in CI, and nothing has installed it on a Windows machine.
+- **macOS has never run the agent.** It compiles in CI and a CI step now checks
+  that the built agent carries the Swift capture module. The consent surface,
+  tray indicator, capture, input injection, privacy blank and restart auto-start
+  are all unproven there, and all are security-relevant.
+- **Windows has run on one real laptop and is not yet clean.** The installer
+  (`rmm-agent-setup.exe`) was built in CI and installed there. That run found and
+  fixed: the mss thread failure, the missing Rust module, the console-window
+  kill, and a leftover old connector. Still unverified on Windows: a run that
+  stays up for several minutes with the newest build, the privacy blank, input
+  injection, and auto-start after a restart.
 - **No macOS installer.** The macOS agent still ships as a zipped `.app`. A
   `.pkg` script was attempted and the writes were stopped by an automated safety
   filter, so none exists. Linux has a `.deb` (`installers/linux/build_deb.sh`).
@@ -155,8 +157,11 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 | 37 | I stopped reading this file between problems and wrote entries only after a fix was done, so a whole stretch of findings and edits was unrecorded and I did not notice that other edits had appeared in the working tree. | Read the file first, record each finding the moment it is found, and run `git status` before committing so nothing in the tree is a surprise. |
 | 38 | The user said the status-file rule applies to "any prompt, old or new" and I read it as "any project" and saved a wrong rule about the old RMM project to memory. | Ask what a surprising instruction means before saving it as a rule. The rule is: every prompt, of any kind, starts by reading this file and ends by updating it. Memory corrected the same turn. |
 | 39 | After the user said the rule covers every prompt, I still answered two prompts (a yes/no question and a complaint) without reading this file first, and once said I had read it when I had not. | The first tool call on EVERY prompt, including a one-line question, is reading this file. Say what it showed. Never claim a read that did not happen on that prompt. |
+| 40 | The "What does NOT work yet" section went stale: it kept saying the Windows agent had never run after it had, so anyone reading it would have been told something false. | When a test on a real machine changes what is known, update that section in the same entry, not only the change log. |
 
 ## Change log
+
+- **macOS build now checked for its native module; stale status lines corrected.** Follow-up to lesson #33. New CI step in the macOS job runs the built `rmm-agent.app` binary with `status` (killed after 120 s if it hangs on a permission prompt) and fails the build if `agent.log` says `no native capture module`; it also fails if the agent wrote no log. This is the first time the step runs, so a red macOS job may mean the step, not the agent. Also corrected "What does NOT work yet": it still said the Windows agent had never run and the installer had never been built, both untrue since the Windows laptop test. Nothing was run locally for this change; CI is the check.
 
 - **Rate-limit window and restart auto-start for all three agents (done; tests pass, nothing verified on Windows or macOS).** (Recorded late: lesson #37.)
   *1. "Too many attempts" window on the Windows agent.* Cause: the guest join page asked the server about its own code every 4 s (15 a minute), the server allowed 20 code checks a minute per address, and the agent's own check pushed it over. Server fix (mine): `ratelimit.hit_distinct` / `enforce_distinct` count **different** codes tried, so repeats of one code are no longer the hunt the limit exists to stop (20 different codes a minute; repeats of one code capped at 120); `connector.py` uses it; `relay/tests/conftest.py` also clears the new counters. 2 new tests in `test_security.py`, relay suite 61 passed. **Found in the working tree, not made by this session:** `launcher.py` + `test_launcher.py` (the agent waits out a rate-limit refusal up to 4 times, 15 s apart, before showing the window) and `JoinPage.tsx` (poll every 10 s, skip when the tab is hidden or once connected). Reviewed: consistent with the server fix, complete, with tests. Authorship unknown; the user should say if they came from another session.

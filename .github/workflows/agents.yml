@@ -198,6 +198,22 @@ jobs:
           RMM_DEFAULT_RELAY: ${{ vars.RMM_DEFAULT_RELAY || 'wss://rmm.remotedesk247.com/api' }}
         run: python build.py --app
 
+      - name: The Swift capture module is inside the built agent
+        # Lesson #33: a named component is not delivered until the finished
+        # agent is checked for it. The agent falls back to mss without saying
+        # so loudly, so a build that ships without the native module fails here.
+        run: |
+          APP="agent/dist/rmm-agent.app/Contents/MacOS/rmm-agent"
+          "$APP" status & pid=$!
+          ( sleep 120; kill -9 $pid 2>/dev/null ) &
+          wait $pid || true
+          LOG="$HOME/Library/Application Support/RMMAgent/agent.log"
+          test -f "$LOG" || { echo "::error::the agent wrote no log at $LOG"; exit 1; }
+          grep -i "native\|capturing" "$LOG" || true
+          if grep -q "no native capture module" "$LOG"; then
+            echo "::error::the built agent has no native capture module"; exit 1
+          fi
+
       - name: Installer (.pkg)
         # Runs installers/macos/build_pkg.sh once that script exists. Until
         # then the zipped .app is what ships, and this says so rather than
