@@ -95,14 +95,18 @@ export default function JoinPage() {
   }, [initialCode, check])
 
   // Once the code is known, poll so the page notices the operator connecting.
+  // The server allows 20 code checks a minute per address, and the agent makes
+  // one of its own, so this must stay well under that: slow, only while the tab
+  // is visible, and not at all once connected.
   useEffect(() => {
-    if (!session) return
+    if (!session || session.connected) return
     const timer = window.setInterval(() => {
+      if (document.hidden) return
       fetch(`/api/connector/session/${encodeURIComponent(session.code)}`)
         .then((r) => (r.ok ? r.json() : null))
         .then((body) => body && setSession(body))
         .catch(() => undefined)
-    }, 4000)
+    }, 10000)
     return () => window.clearInterval(timer)
   }, [session])
 

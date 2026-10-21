@@ -125,3 +125,31 @@ def test_with_no_code_it_just_asks(monkeypatch):
     monkeypatch.setattr(launcher, "ask", lambda *a, **k: seen.update(k=k, a=a) or None)
     launcher.resolve("wss://x.example.com/api", "")
     assert seen["k"].get("prefill") == ""
+
+
+def test_a_rate_limit_refusal_is_waited_out_instead_of_shown(monkeypatch):
+    answers = iter([(False, launcher.RATE_LIMITED), (False, launcher.RATE_LIMITED), (True, "")])
+    waits = []
+    monkeypatch.setattr(launcher, "check_code", lambda relay, code: next(answers))
+    monkeypatch.setattr(launcher.time, "sleep", waits.append)
+    monkeypatch.setattr(launcher, "ask", lambda *a, **k: (_ for _ in ()).throw(AssertionError("asked the user")))
+    assert launcher.resolve("wss://relay/api", "ABCD1234") == ("ABCD1234", "wss://relay/api")
+    assert waits == [launcher.RATE_LIMIT_WAIT, launcher.RATE_LIMIT_WAIT]
+
+
+def test_a_refusal_that_never_clears_falls_back_to_the_window_with_the_reason(monkeypatch):
+    monkeypatch.setattr(launcher, "check_code", lambda relay, code: (False, launcher.RATE_LIMITED))
+    monkeypatch.setattr(launcher.time, "sleep", lambda _s: None)
+    seen = {}
+    monkeypatch.setattr(launcher, "ask", lambda relay, prefill="", notice="": seen.update(notice=notice) or None)
+    launcher.resolve("wss://relay/api", "ABCD1234")
+    assert seen["notice"] == launcher.RATE_LIMITED
+
+
+def test_an_invalid_code_is_not_retried(monkeypatch):
+    calls = []
+    monkeypatch.setattr(launcher, "check_code", lambda relay, code: calls.append(1) or (False, "That code is not valid"))
+    monkeypatch.setattr(launcher.time, "sleep", lambda _s: calls.append("slept"))
+    monkeypatch.setattr(launcher, "ask", lambda *a, **k: None)
+    launcher.resolve("wss://relay/api", "ABCD1234")
+    assert calls == [1]

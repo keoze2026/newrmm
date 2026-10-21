@@ -12,6 +12,7 @@ tested; the window itself is a thin layer on top.
 import logging
 import re
 import sys
+import time
 import threading
 import urllib.error
 import urllib.request
@@ -58,6 +59,13 @@ def to_ws(server: str) -> str:
     return value
 
 
+RATE_LIMITED = "Too many attempts. Wait a minute and try again."
+# A refusal for asking too often passes by itself, so wait it out quietly rather
+# than put an error in front of someone who has done nothing wrong.
+RATE_LIMIT_TRIES = 4
+RATE_LIMIT_WAIT = 15.0
+
+
 def check_code(relay: str, code: str, timeout: float = 8.0) -> tuple[bool, str]:
     """Ask the server whether a code is real, in words a person can act on."""
     if len(code) < 4:
@@ -71,7 +79,7 @@ def check_code(relay: str, code: str, timeout: float = 8.0) -> tuple[bool, str]:
         if exc.code == 404:
             return False, "That code is not valid, or it has expired. Ask your technician for a new one."
         if exc.code == 429:
-            return False, "Too many attempts. Wait a minute and try again."
+            return False, RATE_LIMITED
         return False, f"The support server had a problem ({exc.code}). Try again in a moment."
     except (urllib.error.URLError, OSError, TimeoutError):
         return False, "Cannot reach the support server. Check your internet connection."
@@ -115,9 +123,13 @@ def resolve(default_relay: str | None, code: str = "") -> tuple[str, str] | None
     code = normalise_code(code)
     notice = ""
     if code and default_relay:
-        ok, notice = check_code(default_relay, code)
-        if ok:
-            return code, default_relay
+        for attempt in range(RATE_LIMIT_TRIES):
+            ok, notice = check_code(default_relay, code)
+            if ok:
+                return code, default_relay
+            if notice != RATE_LIMITED or attempt == RATE_LIMIT_TRIES - 1:
+                break
+            time.sleep(RATE_LIMIT_WAIT)
     return ask(default_relay, prefill=code, notice=notice)
 
 
