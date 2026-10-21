@@ -7,7 +7,7 @@ export default function IconRail() {
   const initial = (operator?.full_name || operator?.email || '?').trim().charAt(0).toUpperCase()
 
   return (
-    <nav className="flex w-[74px] shrink-0 flex-col items-center border-r border-line bg-white py-3">
+    <nav className="hidden w-[74px] shrink-0 flex-col items-center md:flex border-r border-line bg-white py-3">
       <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary text-lg font-bold text-white">
         R
       </div>

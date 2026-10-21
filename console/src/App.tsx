@@ -31,6 +31,7 @@ export default function App() {
   const [sessions, setSessions] = useState<Session[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [tab, setTab] = useState<TabKey>('session')
+  const [mobilePane, setMobilePane] = useState<'list' | 'detail'>('list')
   const [search, setSearch] = useState('')
   const [checked, setChecked] = useState<Set<string>>(new Set())
   const [creating, setCreating] = useState(false)
@@ -156,16 +157,45 @@ export default function App() {
     setViewerOpen(true)
   }
 
+  // Wide screens show every column at once (Appendix A). A phone has room for
+  // one, so it shows the list or the selected session, with a bar to switch.
+  const showDetail = mobilePane === 'detail' && Boolean(selected)
+
   return (
-    <div className="flex h-full">
+    <div className="flex h-full flex-col md:flex-row">
       <IconRail />
       <SectionPanel sessionCount={sessions.length} onCreate={createSession} creating={creating} />
+      <div className="flex shrink-0 items-center gap-3 border-b border-line bg-white px-4 py-3 md:hidden">
+        {showDetail ? (
+          <button
+            type="button"
+            onClick={() => setMobilePane('list')}
+            className="rounded-lg px-2 py-1.5 text-sm font-semibold text-primary"
+          >
+            ‹ Sessions
+          </button>
+        ) : (
+          <>
+            <h1 className="flex-1 text-lg font-semibold text-navy">Support</h1>
+            <button
+              type="button"
+              onClick={createSession}
+              disabled={creating}
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+            >
+              {creating ? 'Creating…' : 'Create +'}
+            </button>
+          </>
+        )}
+      </div>
+      <div className={`${showDetail ? 'hidden' : 'flex'} min-h-0 min-w-0 flex-1 md:contents`}>
       <SessionList
         sessions={visible}
         selectedId={selectedId}
         onSelect={(session) => {
           setSelectedId(session.id)
           setTab('session')
+          setMobilePane('detail')
         }}
         onJoin={openViewer}
         onEdit={() => {
@@ -186,6 +216,8 @@ export default function App() {
         }
         onToggleAll={(on) => setChecked(on ? new Set(visible.map((s) => s.id)) : new Set())}
       />
+      </div>
+      <div className={`${showDetail ? 'flex' : 'hidden'} min-h-0 min-w-0 flex-1 md:contents`}>
       <DetailPanel
         session={selected}
         tab={tab}
@@ -196,6 +228,7 @@ export default function App() {
         previewSeq={frameSeq}
         editRequest={renameRequest}
       />
+      </div>
 
       {error && (
         <div

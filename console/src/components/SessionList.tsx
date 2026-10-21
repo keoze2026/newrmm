@@ -41,7 +41,7 @@ export default function SessionList({
     'flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-xs text-navy transition hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-40'
 
   return (
-    <section className="flex w-[392px] shrink-0 flex-col border-r border-line bg-white">
+    <section className="flex w-full min-w-0 shrink-0 flex-col md:w-[392px] border-r border-line bg-white">
       <header className="flex items-center justify-between gap-2 border-b border-line px-4 py-3">
         <h2 className="shrink-0 whitespace-nowrap text-sm font-semibold text-navy">My Sessions</h2>
         <div className="relative flex items-center gap-0.5">

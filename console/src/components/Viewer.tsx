@@ -320,21 +320,23 @@ export default function Viewer({
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-[#0d1726]">
-      <header data-testid="viewer-toolbar" className="flex h-12 shrink-0 items-center gap-3 border-b border-white/10 px-3">
-        <span className="flex items-center gap-2 text-sm font-semibold text-white">
+      <header data-testid="viewer-toolbar" className="flex min-h-12 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-white/10 px-3 py-1 md:h-12 md:flex-nowrap md:gap-3 md:py-0">
+        <span className="flex min-w-0 items-center gap-2 text-sm font-semibold text-white">
           <span
             className={`h-2 w-2 rounded-full ${state.guestConnected ? 'bg-online' : 'bg-white/40'}`}
             data-testid="viewer-status-dot"
           />
-          {state.hostName ?? session.host_name ?? session.name}
+          <span className="max-w-[26vw] truncate md:max-w-none">
+            {state.hostName ?? session.host_name ?? session.name}
+          </span>
         </span>
-        <span data-testid="viewer-stats" className="font-mono text-xs text-white/60">
+        <span data-testid="viewer-stats" className="hidden whitespace-nowrap font-mono text-xs text-white/60 sm:inline">
           {state.stats.fps} fps · {state.stats.kbps} kbps
         </span>
 
         <div className="flex-1" />
 
-        <div className="flex items-center gap-0.5">
+        <div className="flex flex-wrap items-center gap-0.5 md:shrink-0 md:flex-nowrap">
           <button
             type="button"
             data-testid="toggle-control"
@@ -343,7 +345,7 @@ export default function Viewer({
             title={controlling ? 'Controlling — click for view only' : 'View only — click to control'}
           >
             <PointerIcon width={16} height={16} />
-            {controlling ? 'Controlling' : 'View'}
+            <span className="hidden sm:inline">{controlling ? 'Controlling' : 'View'}</span>
           </button>
           <button
             type="button"

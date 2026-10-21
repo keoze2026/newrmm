@@ -39,7 +39,7 @@ export default function DetailPanel({
   }
 
   return (
-    <section className="flex flex-1 overflow-hidden bg-canvas">
+    <section className="flex min-w-0 flex-1 overflow-hidden bg-canvas">
       <TabStrip active={tab} onChange={onTab} />
       <div className="flex-1 overflow-y-auto">
         {tab === 'session' && (
