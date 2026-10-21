@@ -25,17 +25,51 @@ def pid_file():
     return state_dir() / "agent.pid"
 
 
+def own_processes() -> int:
+    """How many processes make up this agent. A packaged one-file build is a
+    small launcher plus the program it unpacks, and both sit on the console."""
+    return 2 if getattr(sys, "frozen", False) else 1
+
+
+def console_count() -> int | None:
+    """How many processes are attached to this console, or None if unknown."""
+    if not WINDOWS:
+        return None
+    try:
+        import ctypes
+
+        attached = (ctypes.c_uint * 8)()
+        return int(ctypes.windll.kernel32.GetConsoleProcessList(attached, 8))
+    except Exception:
+        return None
+
+
+def sole_console_owner(count: int | None, own: int) -> bool:
+    """Nothing but the agent is on its console: a double-click or an installer."""
+    return count is not None and 0 < count <= own
+
+
+def shares_console(count: int | None, own: int) -> bool:
+    """Something else, a shell, is on the console too."""
+    return count is not None and count > own
+
+
+def free_console() -> None:
+    """Let go of the console, so closing its window cannot end the agent."""
+    if not WINDOWS:
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.kernel32.FreeConsole()
+    except Exception as exc:
+        log.debug("could not release the console: %s", exc)
+
+
 def launched_from_terminal() -> bool:
     """Whether a terminal started this, so there is one for it to be tied to."""
     if WINDOWS:
-        try:
-            import ctypes
-
-            attached = (ctypes.c_uint * 4)()
-            # More than one process on the console means a shell is sharing it.
-            return ctypes.windll.kernel32.GetConsoleProcessList(attached, 4) > 1
-        except Exception:
-            return False
+        return shares_console(console_count(), own_processes())
     try:
         return bool(sys.stdin and sys.stdin.isatty())
     except Exception:
@@ -57,6 +91,8 @@ def spawn_detached(args: list[str]) -> int:
     # the child is told to start clean and unpack its own.
     environment = dict(os.environ)
     environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    # The background copy has no business with any console.
+    environment["RMM_BACKGROUND"] = "1"
 
     options: dict = {
         "env": environment,

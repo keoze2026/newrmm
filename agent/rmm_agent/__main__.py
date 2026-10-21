@@ -8,6 +8,7 @@
 import argparse
 import asyncio
 import logging
+import os
 import signal
 import sys
 import threading
@@ -358,6 +359,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    if os.environ.get("RMM_BACKGROUND"):
+        background.free_console()
     if len(sys.argv) == 1:
         # A double-click: no arguments at all.
         configure(False)

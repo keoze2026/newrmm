@@ -90,12 +90,16 @@ def hide_console_if_owned() -> None:
     try:
         import ctypes
 
-        attached = (ctypes.c_uint * 4)()
-        count = ctypes.windll.kernel32.GetConsoleProcessList(attached, 4)
-        if count == 1:
+        from rmm_agent import background
+
+        count = background.console_count()
+        if background.sole_console_owner(count, background.own_processes()):
             window = ctypes.windll.kernel32.GetConsoleWindow()
             if window:
                 ctypes.windll.user32.ShowWindow(window, 0)
+            # Hidden is not enough: closing it, or Windows closing it, would
+            # still end the agent. A background agent needs no console at all.
+            background.free_console()
     except Exception as exc:
         log.debug("could not hide the console: %s", exc)
 
