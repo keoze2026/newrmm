@@ -27,7 +27,7 @@ macOS, procuring signing certificates, and deploying.
 | Suite | Count | What it covers |
 | --- | --- | --- |
 | `relay/tests` | 59 | API, database, consent gate, append-only audit, rate limiting, session expiry |
-| `agent/tests` | 81 | Coordinate mapping, privacy blank, input block, tile encoder |
+| `agent/tests` | 84 | Coordinate mapping, privacy blank, input block, tile encoder |
 | `tests/e2e/console_appendix_a.py` | 32 | Appendix A conformance in a real browser |
 | `tests/e2e/console_phone.py` | 23 | Login, join page and console at five phone sizes (portrait and sideways): no overflow, no clipped control; create, open, leave, viewer controls on screen |
 | `tests/e2e/p2_session_flow.py` | 13 | Consent gate and device authentication |
@@ -147,8 +147,11 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 | 29 | The console was built as a fixed desktop layout with no responsive rules and no test at a small width, so on a phone the detail panel had no room and the viewer's close button was unreachable. The user found it. | Test every screen at a phone width as well as desktop, and check that the control that gets you out of a screen is reachable. Add layout changes for small screens without touching the desktop rules. |
 | 30 | I called the phone layout done after testing one size of one screen, and reported it without looking at the guest join page, the page phones actually open. The user reported it still broken. | A responsiveness claim needs every screen at several sizes, portrait and sideways, measured for overflow and clipped controls. Say which sizes and screens were checked. |
 | 31 | The specification's capability table lists auto-start per OS. I shipped a systemd unit for unattended enrolment, left it off, and never connected it to the session-code path users actually run, so every restart ended the agent. I then spent a while on reconnect logic before checking whether the machine had simply restarted. | When an agent "goes offline", compare the log's last line with the machine's boot time first. Walk the specification's capability table row by row and mark each row built, partly built or missing. |
+| 32 | The agent grabbed frames on pool threads while the Windows capture library only works on the thread that made it. Every test ran on Linux with the native module, so the mss path was never exercised from a thread, and Windows had never run the agent. | Test every capture path the way the agent really calls it (from worker threads), with a fake that fails like the real library. A path that only runs as a fallback still needs a test. |
 
 ## Change log
+
+- **Windows agent connect/disconnect loop: found and fixed.** The Windows `agent.log` (pasted by the user, 17:52-17:54) shows the same cycle every 30 s: attach, consent, "streaming starts now", then `session connection failed: '_thread._local' object has no attribute 'srcdc'`, then reconnect. That is mss's Windows behaviour: its capture object belongs to the thread that made it, but `session.py` grabs frames with `asyncio.to_thread`, which runs on pool threads, so the first frame always failed. Linux never showed it because it uses the native module. `ScreenCapture` now keeps one mss object per thread (`_thread_sct` in `capture.py`). New `test_capture_threads.py` (3 tests) uses a fake mss that fails off its own thread, and reproduced the failure before the fix; agent suite 84 passed. **Not verified on Windows yet.** Still open: Windows is capturing with mss, not the Rust native module the spec requires, and the reason it did not load is unknown (needs the "native" lines of the Windows log). Also seen: `session.json` and `agent.pid` are written on Windows, harmless but unused there.
 
 - **User report: the Linux machine is working (build 0.2.0.31, commit 7507f21).** After a fresh install of the `.deb` on the user's laptop the user reported "it looks like the Linux machine is working". What exactly was exercised, in particular whether the laptop was restarted to check auto-start, was not stated and is **not yet confirmed**. Windows and macOS remain untested on real machines.
 

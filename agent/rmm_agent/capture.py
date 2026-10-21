@@ -11,6 +11,7 @@ Two paths, in the order the documentation sets out:
 import io
 import logging
 import math
+import threading
 import time
 
 from PIL import Image, ImageDraw
@@ -26,6 +27,9 @@ class ScreenCapture:
         self.size = size
         self.monitor_index = 0
         self._sct = None
+        # mss keeps its device context per thread on Windows, and frames are
+        # grabbed on pool threads, so each thread needs its own capture object.
+        self._local = threading.local()
         self._native = None
         self._monitors: list[dict] = []
         self.backend = "synthetic"
@@ -38,6 +42,7 @@ class ScreenCapture:
                 import mss
 
                 self._sct = mss.mss()
+                self._local.sct = self._sct
                 self.backend = "mss"
                 for i, m in enumerate(self._sct.monitors[1:]):
                     # width/height/left/top from mss are in the OS's own
@@ -124,9 +129,20 @@ class ScreenCapture:
             return Image.frombytes("RGB", (width, height), data)
         if self.synthetic or self._sct is None:
             return self._generated()
-        monitor = self._sct.monitors[1:][self.monitor_index]
-        shot = self._sct.grab(monitor)
+        sct = self._thread_sct()
+        monitor = sct.monitors[1:][self.monitor_index]
+        shot = sct.grab(monitor)
         return Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+
+    def _thread_sct(self):
+        """The mss capture object that belongs to the calling thread."""
+        sct = getattr(self._local, "sct", None)
+        if sct is None:
+            import mss
+
+            sct = mss.mss()
+            self._local.sct = sct
+        return sct
 
     def close(self) -> None:
         if self._native is not None:
