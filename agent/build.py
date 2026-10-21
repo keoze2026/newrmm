@@ -30,7 +30,7 @@ SYSTEM = platform.system()
 # separately (see agent/native/<os>/) and bundled here when present.
 NATIVE_ARTEFACTS = {
     "Linux": ("native/linux", ["rmm_capture_linux*.so"]),
-    "Windows": ("native/windows", ["rmm_capture_windows*.pyd", "target/release/*.dll"]),
+    "Windows": ("native/windows", ["rmm_capture_windows*.pyd"]),
     "Darwin": ("native/macos", ["libRMMCapture.dylib", "rmm_capture_macos.py"]),
 }
 
@@ -58,7 +58,13 @@ def native_binaries() -> list[str]:
 # pystray and pynput pick their backend at runtime, so PyInstaller cannot see
 # the imports it needs to bundle.
 HIDDEN = {
-    "Windows": ["pystray._win32", "pynput.keyboard._win32", "pynput.mouse._win32"],
+    "Windows": [
+        "pystray._win32", "pynput.keyboard._win32", "pynput.mouse._win32",
+        # The Rust capture module is installed from its wheel and loaded by name
+        # at runtime, so PyInstaller cannot see it. Without this the built agent
+        # has no native capture and silently falls back to mss.
+        "rmm_capture_windows",
+    ],
     "Darwin": [
         "pystray._darwin", "pynput.keyboard._darwin", "pynput.mouse._darwin",
         # The privacy blank asks AppKit for NSWindowSharingNone at runtime, and

@@ -112,6 +112,21 @@ jobs:
           RMM_DEFAULT_RELAY: ${{ vars.RMM_DEFAULT_RELAY || 'wss://rmm.remotedesk247.com/api' }}
         run: python build.py
 
+      - name: The Rust capture module is inside the built agent
+        # The agent falls back to mss without saying so loudly; a build that
+        # ships without the native module must fail here, not on a customer.
+        shell: pwsh
+        run: |
+          $agent = (Resolve-Path "agent\dist\rmm-agent.exe").Path
+          $p = Start-Process -FilePath $agent -ArgumentList "status" -PassThru -NoNewWindow
+          if (-not $p.WaitForExit(120000)) { $p.Kill(); Write-Error "status did not finish"; exit 1 }
+          $log = Join-Path $env:APPDATA "RMMAgent\agent.log"
+          if (-not (Test-Path $log)) { Write-Error "the agent wrote no log at $log"; exit 1 }
+          Select-String -Path $log -Pattern "native|capturing" | ForEach-Object { $_.Line }
+          if (Select-String -Path $log -Pattern "no native capture module" -Quiet) {
+            Write-Error "the built agent has no native capture module"; exit 1
+          }
+
       - name: Installer (Inno Setup)
         # Section 8: "installs without manual steps". Produces
         # agent\dist\rmm-agent-setup.exe, which installs the agent and puts it
