@@ -200,6 +200,7 @@ def cmd_stop(_args) -> int:
 
 def cmd_resume(_args) -> int:
     """Rejoin the session remembered before the computer restarted."""
+    launcher.hide_console_if_owned()
     remembered = autostart.saved()
     if remembered is None:
         return 0

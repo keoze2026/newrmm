@@ -102,3 +102,24 @@ async def test_the_audit_trail_cannot_be_altered_through_the_api(client, auth_he
     for method in ("post", "put", "patch", "delete"):
         response = await getattr(client, method)("/audit", headers=auth_headers)
         assert response.status_code in (404, 405), f"{method} /audit was accepted"
+
+
+async def test_asking_about_the_same_code_repeatedly_is_not_probing(client):
+    """The join page asks about its own code every 4 seconds, and the agent
+    checks it too. That is one code, not a hunt, and must never be throttled
+    at the rate that guessing is."""
+    for _ in range(60):
+        response = await client.get("/connector/session/SAMECODE")
+        assert response.status_code == 404, "a guest's own repeat checks were throttled"
+
+
+async def test_hunting_many_different_codes_is_still_throttled_after_repeats(client):
+    for _ in range(30):
+        await client.get("/connector/session/SAMECODE")
+    seen_429 = False
+    for i in range(40):
+        response = await client.get(f"/connector/session/HUNT{i:04d}")
+        if response.status_code == 429:
+            seen_429 = True
+            break
+    assert seen_429, "different codes could be tried without limit"

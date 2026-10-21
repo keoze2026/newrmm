@@ -86,10 +86,15 @@ async def reset_rate_limits():
 
     async def clear():
         ratelimit._memory.clear()
+        ratelimit._distinct.clear()
         client = await ratelimit._client()
         if client is None:
             return
-        keys = [key async for key in client.scan_iter("rmm:rate:*")]
+        keys = [
+            key
+            for pattern in ("rmm:rate:*", "rmm:distinct:*")
+            async for key in client.scan_iter(pattern)
+        ]
         if keys:
             await client.delete(*keys)
 

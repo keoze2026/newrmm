@@ -31,6 +31,8 @@ _redis_failed = False
 
 # Fallback when Redis is unreachable: caller -> times of recent attempts.
 _memory: dict[str, deque] = defaultdict(deque)
+# Fallback for distinct-member counting: caller -> {member: first seen}.
+_distinct: dict[str, dict[str, float]] = defaultdict(dict)
 
 
 async def _client() -> Redis | None:
@@ -79,6 +81,53 @@ async def hit(key: str, limit: int, window: int) -> tuple[bool, int]:
     if len(_memory) > 10_000:
         _memory.clear()
     return len(attempts) <= limit, len(attempts)
+
+
+async def hit_distinct(key: str, member: str, limit: int, window: int) -> tuple[bool, int]:
+    """Record that `member` was tried. Trying the same one again is free; only a
+    new one counts. Returns (allowed, distinct members so far in the window).
+
+    Guessing session codes means trying many different ones. A guest's own page
+    asking about the same code every few seconds is not guessing, and it must
+    not use up the allowance their own agent needs.
+    """
+    client = await _client()
+
+    if client is not None:
+        try:
+            bucket = f"rmm:distinct:{key}:{int(time.time()) // window}"
+            await client.sadd(bucket, member)
+            await client.expire(bucket, window * 2)
+            count = int(await client.scard(bucket))
+            return count <= limit, count
+        except Exception as exc:
+            log.debug("rate limit check failed, allowing: %s", exc)
+            return True, 0
+
+    now = time.monotonic()
+    seen = _distinct[key]
+    for old in [m for m, first in seen.items() if now - first > window]:
+        del seen[old]
+    seen.setdefault(member, now)
+    if len(_distinct) > 10_000:
+        _distinct.clear()
+    return len(seen) <= limit, len(seen)
+
+
+async def enforce_distinct(request: Request, bucket: str, member: str, limit: int, window: int) -> None:
+    """Raise 429 when a caller has tried more than `limit` different members."""
+    key = f"{bucket}:{caller(request)}"
+    allowed, count = await hit_distinct(key, member, limit, window)
+    if not allowed:
+        log.warning(
+            "rate limit hit: %s from %s (%d different values in %ds)",
+            bucket, caller(request), count, window,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many attempts. Wait a minute and try again.",
+            headers={"Retry-After": str(window)},
+        )
 
 
 async def enforce(request: Request, bucket: str, limit: int, window: int) -> None:

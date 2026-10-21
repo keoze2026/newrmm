@@ -20,6 +20,8 @@ import shlex
 import shutil
 import subprocess
 
+from rmm_agent.environment import system_environment
+
 log = logging.getLogger(__name__)
 
 _OUTPUT = re.compile(r"^(\S+) connected\b")
@@ -58,7 +60,9 @@ def parse_outputs(verbose_query: str) -> dict[str, float]:
 
 
 def _run(command: list[str]) -> str:
-    result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+    result = subprocess.run(
+        command, capture_output=True, text=True, timeout=10, env=system_environment()
+    )
     return result.stdout
 
 
@@ -70,6 +74,7 @@ def _spawn_guard(command: str) -> "subprocess.Popen | None":
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=system_environment(),
             start_new_session=True,
         )
     except OSError as exc:

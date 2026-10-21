@@ -114,8 +114,12 @@ async def session_for_code(
     anything about other sessions.
     """
     # This route answers "is this code real?", so it is the cheapest way to
-    # hunt for live sessions. A guest types their code once; a script does not.
-    await ratelimit.enforce(request, "code-probe", limit=20, window=60)
+    # hunt for live sessions. Hunting means trying many different codes, so it
+    # is different codes that are limited: a guest's join page asks about its
+    # own code every few seconds, and that must leave room for their agent's
+    # check. Repeats of one code get a generous cap of their own.
+    await ratelimit.enforce_distinct(request, "code-probe", code.upper(), limit=20, window=60)
+    await ratelimit.enforce(request, f"code-repeat-{code.upper()}", limit=120, window=60)
 
     session = await db.scalar(select(Session).where(Session.code == code.upper()))
     if not is_joinable(session):

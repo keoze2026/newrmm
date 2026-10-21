@@ -12,6 +12,8 @@ import subprocess
 import sys
 import threading
 
+from rmm_agent.environment import system_environment
+
 log = logging.getLogger(__name__)
 
 IS_WINDOWS = platform.system() == "Windows"
@@ -53,6 +55,7 @@ class RemoteTerminal:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 bufsize=0,
+                env=system_environment(),
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             self._reader = threading.Thread(target=self._pump_pipe, daemon=True)
@@ -62,8 +65,9 @@ class RemoteTerminal:
             pid, fd = pty.fork()
             if pid == 0:  # child
                 try:
-                    os.environ["TERM"] = "xterm-256color"
-                    os.execvp(command[0], command)
+                    shell_env = system_environment()
+                    shell_env["TERM"] = "xterm-256color"
+                    os.execvpe(command[0], command, shell_env)
                 finally:
                     os._exit(1)
             self._fd = fd

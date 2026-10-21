@@ -4,8 +4,13 @@ An agent started with a session code used to end when the computer restarted,
 and nothing brought it back. The specification lists auto-start for every
 platform (section 5, "Auto-start"); on Linux it is a systemd user service.
 
-The agent remembers the session it joined and turns the packaged
-`rmm-agent-resume` user service on. At the next login the service runs
+Every platform has its own mechanism, as the specification lists:
+
+  Linux    the packaged `rmm-agent-resume` systemd user service
+  Windows  a per-user Run entry (no administrator needed)
+  macOS    a LaunchAgent in ~/Library/LaunchAgents
+
+The agent remembers the session it joined and turns that on. At the next login the service runs
 `rmm-agent resume`, which rejoins that session. Consent is still asked each
 time, because it is a new boot and nobody has agreed to this one yet.
 
@@ -15,15 +20,22 @@ is none of those, so it does not.
 """
 import json
 import logging
+import plistlib
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
+from rmm_agent import background
 from rmm_agent.config import state_dir
+from rmm_agent.environment import system_environment
 
 log = logging.getLogger(__name__)
 
 UNIT = "rmm-agent-resume.service"
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+RUN_NAME = "RMMAgentResume"
+MAC_LABEL = "com.rmm.agent.resume"
 
 
 def session_file():
@@ -37,6 +49,7 @@ def _systemctl(*arguments: str) -> bool:
         result = subprocess.run(
             ["systemctl", "--user", *arguments],
             capture_output=True, text=True, timeout=15,
+            env=system_environment(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         log.warning("could not run systemctl: %s", exc)
@@ -44,6 +57,86 @@ def _systemctl(*arguments: str) -> bool:
     if result.returncode != 0:
         log.warning("systemctl %s failed: %s", " ".join(arguments), result.stderr.strip())
     return result.returncode == 0
+
+
+def _resume_command() -> list[str]:
+    return background.own_command(["resume"])
+
+
+def _windows_enable() -> bool:
+    try:
+        import winreg
+
+        command = subprocess.list2cmdline(_resume_command())
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, RUN_NAME, 0, winreg.REG_SZ, command)
+        return True
+    except Exception as exc:
+        log.warning("could not turn on starting at login: %s", exc)
+        return False
+
+
+def _windows_disable() -> bool:
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.DeleteValue(key, RUN_NAME)
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        log.warning("could not turn off starting at login: %s", exc)
+        return False
+    return True
+
+
+def _mac_plist() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{MAC_LABEL}.plist"
+
+
+def _mac_enable() -> bool:
+    try:
+        path = _mac_plist()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(
+            plistlib.dumps(
+                {
+                    "Label": MAC_LABEL,
+                    "ProgramArguments": _resume_command(),
+                    "RunAtLoad": True,
+                    "LimitLoadToSessionType": "Aqua",
+                }
+            )
+        )
+        return True
+    except Exception as exc:
+        log.warning("could not turn on starting at login: %s", exc)
+        return False
+
+
+def _mac_disable() -> bool:
+    try:
+        _mac_plist().unlink(missing_ok=True)
+    except Exception as exc:
+        log.warning("could not turn off starting at login: %s", exc)
+        return False
+    return True
+
+
+def _enable_here() -> bool:
+    if sys.platform == "win32":
+        return _windows_enable()
+    if sys.platform == "darwin":
+        return _mac_enable()
+    return _systemctl("enable", UNIT)
+
+
+def _disable_here() -> bool:
+    if sys.platform == "win32":
+        return _windows_disable()
+    if sys.platform == "darwin":
+        return _mac_disable()
+    return _systemctl("disable", UNIT)
 
 
 def saved() -> tuple[str, str] | None:
@@ -55,17 +148,17 @@ def saved() -> tuple[str, str] | None:
         return None
 
 
-def remember(relay: str, code: str, enable=_systemctl) -> bool:
+def remember(relay: str, code: str, enable=None) -> bool:
     """Remember this session and start again at login. False if it cannot."""
     try:
         session_file().write_text(json.dumps({"relay": relay, "code": code}))
     except OSError as exc:
         log.warning("could not remember the session: %s", exc)
         return False
-    return enable("enable", UNIT)
+    return enable("enable", UNIT) if enable else _enable_here()
 
 
-def forget(code: str | None = None, disable=_systemctl) -> None:
+def forget(code: str | None = None, disable=None) -> None:
     """Stop starting at login. With a code, only if it is the remembered one."""
     current = saved()
     if current is None:
@@ -76,4 +169,7 @@ def forget(code: str | None = None, disable=_systemctl) -> None:
         session_file().unlink()
     except OSError:
         pass
-    disable("disable", UNIT)
+    if disable:
+        disable("disable", UNIT)
+    else:
+        _disable_here()
