@@ -9,7 +9,7 @@ export default function SectionPanel({
   creating: boolean
 }) {
   return (
-    <section className="hidden w-[300px] shrink-0 flex-col md:flex border-r border-line bg-white px-6 py-6">
+    <section className="hidden w-[300px] shrink-0 flex-col min-[1100px]:flex border-r border-line bg-white px-6 py-6">
       <h1 className="text-2xl font-semibold tracking-tight text-navy">Support</h1>
       <p className="mt-2 text-sm leading-relaxed text-muted">
         Provide on-demand support for any device on the internet.

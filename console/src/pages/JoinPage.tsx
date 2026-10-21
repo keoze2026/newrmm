@@ -128,7 +128,7 @@ export default function JoinPage() {
 
         <form
           onSubmit={onSubmit}
-          className="mt-7 rounded-xl border border-line bg-white p-7 shadow-[0_2px_18px_rgba(31,58,95,0.08)]"
+          className="mt-7 rounded-xl border border-line bg-white p-5 shadow-[0_2px_18px_rgba(31,58,95,0.08)] sm:p-7"
         >
           <label className="block text-[11px] font-semibold tracking-wide text-muted" htmlFor="code">
             SESSION CODE
@@ -141,12 +141,12 @@ export default function JoinPage() {
               onChange={(e) => setCode(e.target.value.toUpperCase())}
               placeholder="ABCD1234"
               autoComplete="off"
-              className="flex-1 rounded-lg border border-line-strong bg-white px-3 py-2.5 font-mono text-lg tracking-[0.2em] text-navy outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+              className="min-w-0 flex-1 rounded-lg border border-line-strong bg-white px-3 py-2.5 font-mono text-lg tracking-[0.2em] text-navy outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             />
             <button
               type="submit"
               disabled={checking}
-              className="rounded-lg bg-primary px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-dark disabled:opacity-60"
+              className="shrink-0 rounded-lg bg-primary px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-dark disabled:opacity-60"
             >
               {checking ? 'Checking…' : 'Continue'}
             </button>
@@ -195,7 +195,7 @@ export default function JoinPage() {
                     <div className="text-sm font-medium text-navy">
                       {build.label}
                       {build.platform === mine && (
-                        <span className="ml-2 rounded-full bg-primary-soft px-2 py-0.5 text-[11px] font-semibold text-primary">
+                        <span className="ml-2 whitespace-nowrap rounded-full bg-primary-soft px-2 py-0.5 text-[11px] font-semibold text-primary">
                           your system
                         </span>
                       )}
@@ -205,7 +205,7 @@ export default function JoinPage() {
                       {build.available && build.size ? ` · ${formatSize(build.size)}` : ''}
                     </div>
                     {build.available && howTo(build) && (
-                      <div className="mt-1 break-all font-mono text-[11px] text-navy">
+                      <div className="mt-1 break-words font-mono text-[11px] text-navy">
                         {howTo(build)}
                       </div>
                     )}

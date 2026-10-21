@@ -162,10 +162,10 @@ export default function App() {
   const showDetail = mobilePane === 'detail' && Boolean(selected)
 
   return (
-    <div className="flex h-full flex-col md:flex-row">
+    <div className="flex h-full flex-col min-[1100px]:flex-row">
       <IconRail />
       <SectionPanel sessionCount={sessions.length} onCreate={createSession} creating={creating} />
-      <div className="flex shrink-0 items-center gap-3 border-b border-line bg-white px-4 py-3 md:hidden">
+      <div className="flex shrink-0 items-center gap-3 border-b border-line bg-white px-4 py-3 min-[1100px]:hidden">
         {showDetail ? (
           <button
             type="button"
@@ -188,7 +188,7 @@ export default function App() {
           </>
         )}
       </div>
-      <div className={`${showDetail ? 'hidden' : 'flex'} min-h-0 min-w-0 flex-1 md:contents`}>
+      <div className={`${showDetail ? 'hidden' : 'flex'} min-h-0 min-w-0 flex-1 min-[1100px]:contents`}>
       <SessionList
         sessions={visible}
         selectedId={selectedId}
@@ -217,7 +217,7 @@ export default function App() {
         onToggleAll={(on) => setChecked(on ? new Set(visible.map((s) => s.id)) : new Set())}
       />
       </div>
-      <div className={`${showDetail ? 'flex' : 'hidden'} min-h-0 min-w-0 flex-1 md:contents`}>
+      <div className={`${showDetail ? 'flex' : 'hidden'} min-h-0 min-w-0 flex-1 min-[1100px]:contents`}>
       <DetailPanel
         session={selected}
         tab={tab}

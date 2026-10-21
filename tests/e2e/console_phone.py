@@ -37,6 +37,42 @@ def overflows(page) -> bool:
     return page.evaluate("document.documentElement.scrollWidth > window.innerWidth")
 
 
+SIZES = [(320, 568), (360, 740), (390, 844), (844, 390), (600, 900)]
+
+MEASURE = """() => ({
+  overflow: document.documentElement.scrollWidth > window.innerWidth,
+  clipped: [...document.querySelectorAll('button,a,input')].filter(e => {
+    const r = e.getBoundingClientRect();
+    return r.width > 0 && (r.right > window.innerWidth + 1 || r.left < -1);
+  }).map(e => (e.innerText || e.placeholder || e.title || e.tagName).slice(0, 20)),
+})"""
+
+
+def sweep(browser) -> None:
+    """Login, join and console at every phone size, portrait and sideways."""
+    for width, height in SIZES:
+        context = browser.new_context(viewport={"width": width, "height": height},
+                                      is_mobile=True, has_touch=True, device_scale_factor=2)
+        page = context.new_page()
+        for name, path in (("login", "/login"), ("join page", "/join")):
+            page.goto(CONSOLE + path)
+            page.wait_for_timeout(500)
+            found = page.evaluate(MEASURE)
+            step(f"{name} fits at {width}x{height}", not found["overflow"] and not found["clipped"],
+                 str(found["clipped"]) if found["clipped"] else "")
+        page.goto(CONSOLE + "/")
+        page.wait_for_timeout(500)
+        if page.locator('input[type="email"]').count():
+            page.fill('input[type="email"]', EMAIL)
+            page.fill('input[type="password"]', PASSWORD)
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(1500)
+        found = page.evaluate(MEASURE)
+        step(f"console fits at {width}x{height}", not found["overflow"] and not found["clipped"],
+             str(found["clipped"]) if found["clipped"] else "")
+        context.close()
+
+
 def main() -> int:
     token = httpx.post(f"{RELAY}/auth/login", json={"email": EMAIL, "password": PASSWORD}).json()["access_token"]
     session = httpx.post(f"{RELAY}/sessions", json={"mode": "attended"},
@@ -49,6 +85,7 @@ def main() -> int:
         time.sleep(10)  # the console learns the guest has joined on its next refresh
         with sync_playwright() as p:
             browser = p.chromium.launch(channel="chrome", headless=True)
+            sweep(browser)
             page = browser.new_page(viewport={"width": WIDTH, "height": HEIGHT})
             page.goto(CONSOLE)
             page.fill('input[type="email"]', EMAIL)
