@@ -6,6 +6,7 @@ the relay refuses to forward frames until the answer is on record.
 """
 import logging
 import queue
+import sys
 import threading
 
 log = logging.getLogger(__name__)
@@ -25,6 +26,11 @@ def _message(code: str, operator: str | None) -> str:
 
 def _ask_with_tk(code: str, operator: str | None, timeout: float) -> bool | None:
     """Show a dialog. Returns None if no GUI toolkit is available."""
+    if sys.platform == "darwin":
+        from rmm_agent import macos_dialogs
+
+        return macos_dialogs.consent(_message(code, operator), timeout)
+
     answer: queue.Queue[bool] = queue.Queue(maxsize=1)
 
     def run() -> None:

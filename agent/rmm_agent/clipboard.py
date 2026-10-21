@@ -10,7 +10,12 @@ root per call - which silently loses the contents the moment it exits.
 """
 import logging
 import queue
+import shutil
+import subprocess
+import sys
 import threading
+
+from rmm_agent.environment import system_environment
 
 log = logging.getLogger(__name__)
 
@@ -77,11 +82,28 @@ def _get_owner() -> _ClipboardOwner | None:
         return _owner
 
 
+def _mac_environment() -> dict:
+    env = system_environment()
+    env["LANG"] = "en_US.UTF-8"  # pbcopy and pbpaste read and write UTF-8 only with this
+    return env
+
+
 def available() -> bool:
+    if sys.platform == "darwin":  # Tk crashes the agent on macOS; use the system tools
+        return bool(shutil.which("pbcopy") and shutil.which("pbpaste"))
     return _get_owner() is not None
 
 
 def get_text() -> str | None:
+    if sys.platform == "darwin":
+        try:
+            result = subprocess.run(
+                ["pbpaste"], capture_output=True, timeout=5, env=_mac_environment()
+            )
+            return result.stdout.decode("utf-8", errors="replace")
+        except (OSError, subprocess.SubprocessError) as exc:
+            log.debug("pbpaste failed: %s", exc)
+            return None
     owner = _get_owner()
     if owner is None:
         return None
@@ -96,6 +118,16 @@ def get_text() -> str | None:
 
 
 def set_text(text: str) -> bool:
+    if sys.platform == "darwin":
+        try:
+            subprocess.run(
+                ["pbcopy"], input=text.encode("utf-8"), timeout=5, check=True,
+                env=_mac_environment(),
+            )
+            return True
+        except (OSError, subprocess.SubprocessError) as exc:
+            log.debug("pbcopy failed: %s", exc)
+            return False
     owner = _get_owner()
     if owner is None:
         return False

@@ -206,7 +206,10 @@ jobs:
           APP="agent/dist/rmm-agent.app/Contents/MacOS/rmm-agent"
           "$APP" status & pid=$!
           ( sleep 120; kill -9 $pid 2>/dev/null ) &
-          wait $pid || true
+          status=0; wait $pid || status=$?
+          if [ "$status" -ge 128 ]; then
+            echo "::error::the built agent crashed (exit $status)"; exit 1
+          fi
           LOG="$HOME/Library/Application Support/RMMAgent/agent.log"
           test -f "$LOG" || { echo "::error::the agent wrote no log at $LOG"; exit 1; }
           grep -i "native\|capturing" "$LOG" || true

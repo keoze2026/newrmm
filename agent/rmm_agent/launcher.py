@@ -157,9 +157,31 @@ def _ask_in_terminal(default_relay: str | None) -> tuple[str, str] | None:
         print(message)
 
 
+def _ask_with_macos_dialog(relay: str, prefill: str, notice: str) -> tuple[str, str] | None:
+    """The same question as the window, through macOS's own dialog (no Tk)."""
+    from rmm_agent import macos_dialogs
+
+    for _ in range(10):
+        answer = macos_dialogs.ask_code(prefill, notice)
+        if answer is None:
+            return None
+        code = normalise_code(answer)
+        if not code:
+            notice = "Type the code your technician gave you."
+            continue
+        ok, message = check_code(relay, code)
+        if ok:
+            return code, relay
+        prefill, notice = code, message
+    return None
+
+
 def _ask_with_window(
     default_relay: str | None, prefill: str = "", notice: str = ""
 ) -> tuple[str, str] | None:
+    if sys.platform == "darwin" and default_relay:
+        return _ask_with_macos_dialog(default_relay, prefill, notice)
+
     import tkinter as tk
     from tkinter import ttk
 
@@ -247,6 +269,11 @@ def _ask_with_window(
 
 def show_error(text: str) -> None:
     """Tell the person something went wrong, where they will actually see it."""
+    if sys.platform == "darwin":
+        from rmm_agent import macos_dialogs
+
+        if macos_dialogs.show_error(text):
+            return
     try:
         import tkinter as tk
         from tkinter import messagebox
