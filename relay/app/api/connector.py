@@ -12,14 +12,18 @@ practice because a session accepts one guest at a time.
 import hashlib
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import client_ip
 from app.db.session import get_db
-from app.models import Session
+from app.core.codes import generate_device_secret
+from app.core.security import hash_secret
+from app.models import Device, Session
+from app.schemas.device import EnrolByCode, EnrolledByCode
+from app.services.hub import hub
 from app.services import audit, ratelimit
 from app.services.sessions import is_joinable
 
@@ -187,3 +191,57 @@ async def download_connector(
         filename=download_name,
         headers={"X-Connector-SHA256": _digest(path)},
     )
+
+
+@router.post("/enrol", response_model=EnrolledByCode, status_code=status.HTTP_201_CREATED)
+async def enrol_by_code(
+    payload: EnrolByCode,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> EnrolledByCode:
+    """Turn a live, consented session into a standing one for this computer.
+
+    The person at the computer chose "always allow" in the consent window, so
+    the agent asks here. The session code is the credential, as everywhere on
+    the guest side, and the session must be live and already consented, so a
+    code alone cannot enrol a machine that never agreed. The session then
+    belongs to the new device and stops expiring; from now on the device is
+    started by the operator opening that session, with no window.
+    """
+    await ratelimit.enforce(request, "enrol", limit=10, window=60)
+
+    code = payload.code.upper()
+    session = await db.scalar(select(Session).where(Session.code == code))
+    live = session is not None and (session.guest_connected or hub.guest_online(code))
+    if (
+        session is None
+        or session.state == "ended"
+        or session.mode != "attended"
+        or session.consent_state != "granted"
+        or not live
+    ):
+        raise HTTPException(status_code=409, detail="This session cannot be turned into a standing one")
+
+    secret = generate_device_secret()
+    device = Device(name=payload.name, os=payload.os, secret_hash=hash_secret(secret))
+    db.add(device)
+    await db.flush()
+
+    session.mode = "unattended"
+    session.device_id = device.id
+    session.expires_at = None  # a standing session does not expire
+
+    await audit.record(
+        db,
+        action=audit.DEVICE_ENROLLED,
+        actor_type="guest",
+        actor_label=session.host_name or payload.name,
+        target_type="device",
+        target_id=str(device.id),
+        ip=client_ip(request),
+        detail={"name": device.name, "os": device.os, "via": "session", "code": code,
+                "standing_consent": True},
+    )
+    await db.commit()
+    return EnrolledByCode(device_id=str(device.id), secret=secret)
+

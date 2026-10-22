@@ -36,6 +36,10 @@ def guest_json_channel(code: str) -> str:
     return f"rmm:{code}:guest:json"
 
 
+def device_json_channel(device_id: str) -> str:
+    return f"rmm:device:{device_id}:json"
+
+
 @dataclass
 class SessionChannel:
     guest: WebSocket | None = None
@@ -48,6 +52,9 @@ class SessionChannel:
 class Hub:
     def __init__(self) -> None:
         self._channels: dict[str, SessionChannel] = {}
+        # Enrolled devices holding a presence socket on this instance.
+        self._devices: dict[str, WebSocket] = {}
+        self._device_tasks: dict[str, asyncio.Task] = {}
         self._redis: Redis | None = None
         self._redis_failed = False
 
@@ -137,6 +144,34 @@ class Hub:
         channel = self._channels.get(code)
         return bool(channel and channel.guest is not None)
 
+    def device_online(self, device_id: str) -> bool:
+        """Whether an enrolled device is holding a socket *on this instance*."""
+        return device_id in self._devices
+
+    async def attach_device(self, device_id: str, websocket: WebSocket) -> None:
+        """Register a device here and listen for messages aimed at it."""
+        self._devices[device_id] = websocket
+
+        async def deliver(data: bytes) -> None:
+            socket = self._devices.get(device_id)
+            if socket is not None:
+                await socket.send_text(data.decode("utf-8"))
+
+        old = self._device_tasks.pop(device_id, None)
+        if old is not None:
+            old.cancel()
+        task = await self._subscribe(device_json_channel(device_id), deliver)
+        if task is not None:
+            self._device_tasks[device_id] = task
+
+    def detach_device(self, device_id: str, websocket: WebSocket) -> None:
+        """Forget a device's socket, unless a newer one has already replaced it."""
+        if self._devices.get(device_id) is websocket:
+            self._devices.pop(device_id, None)
+            task = self._device_tasks.pop(device_id, None)
+            if task is not None:
+                task.cancel()
+
     async def attach_guest(self, code: str, websocket: WebSocket) -> None:
         """Register a guest here and listen for messages aimed at it."""
         channel = self.channel(code)
@@ -205,6 +240,17 @@ class Hub:
             except Exception:
                 channel.guest = None
         await self._publish(guest_json_channel(code), json.dumps(payload).encode())
+
+    async def to_device_json(self, device_id: str, payload: dict) -> None:
+        """Send to an enrolled device: directly if it is here, else through Redis."""
+        socket = self._devices.get(device_id)
+        if socket is not None:
+            try:
+                await socket.send_json(payload)
+                return
+            except Exception:
+                self._devices.pop(device_id, None)
+        await self._publish(device_json_channel(device_id), json.dumps(payload).encode())
 
     async def close_session(self, code: str, reason: str = "Session ended") -> None:
         """Hang up on both halves of a session.

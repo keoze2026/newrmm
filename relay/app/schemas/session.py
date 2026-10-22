@@ -32,6 +32,8 @@ class SessionOut(BaseModel):
     agent_version: str | None
     consent_state: str
     consent_at: datetime | None
+    # An enrolled device that is holding its connection open right now.
+    device_online: bool = False
 
     model_config = {"from_attributes": True}
 

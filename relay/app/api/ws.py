@@ -236,6 +236,7 @@ async def device_socket(websocket: WebSocket, device_id: str, secret: str = "") 
         return
 
     await websocket.accept()
+    await hub.attach_device(str(device.id), websocket)
     async with SessionLocal() as db:
         live = await db.scalar(select(Device).where(Device.id == device.id))
         if live is not None:
@@ -264,6 +265,11 @@ async def device_socket(websocket: WebSocket, device_id: str, secret: str = "") 
     except Exception:
         pass
     finally:
+        hub.detach_device(str(device.id), websocket)
+        if hub.device_online(str(device.id)):
+            # The device already reconnected (a laptop waking from sleep does
+            # this before the old socket times out): it is not offline.
+            return
         async with SessionLocal() as db:
             live = await db.scalar(select(Device).where(Device.id == device.id))
             if live is not None:
@@ -323,10 +329,22 @@ async def operator_socket(websocket: WebSocket, code: str, token: str = "") -> N
             "monitors": session.monitors,
             "consent": session.consent_state,
         }
+        standing_device = (
+            str(session.device_id)
+            if session.mode == "unattended" and session.device_id
+            else None
+        )
+        guest_already_here = bool(session.guest_connected)
 
     await websocket.accept()
     channel = hub.channel(code)
     await hub.attach_operator(code, websocket)
+
+    # An enrolled device is always listening. Opening its session is the signal
+    # to start: it joins without a window, because the person gave their
+    # permission once, when they enrolled it.
+    if standing_device and not guest_already_here and not hub.guest_online(code):
+        await hub.to_device_json(standing_device, {"type": "start_session", "code": code})
 
     await websocket.send_json(
         {
@@ -351,3 +369,8 @@ async def operator_socket(websocket: WebSocket, code: str, token: str = "") -> N
     finally:
         channel.operator = None
         hub.drop(code)
+        if standing_device:
+            # The operator left, so the screen must stop being shared. An
+            # attended guest decides for themselves; a standing device has no
+            # one at the keyboard to do it.
+            await hub.to_guest_json(code, {"type": "session_ended"})

@@ -124,9 +124,28 @@ async def list_sessions(
             or needle in (s.host_name or "").lower()
         ]
 
+    await _mark_devices(db, sessions)
     for session in sessions:
         session.guest_connected = _present(session)
     return sessions
+
+
+async def _mark_devices(db: AsyncSession, sessions: list[Session]) -> None:
+    """Set `device_online` on sessions that belong to an enrolled device."""
+    ids = {s.device_id for s in sessions if s.device_id}
+    devices = {}
+    if ids:
+        devices = {d.id: d for d in (await db.scalars(select(Device).where(Device.id.in_(ids)))).all()}
+    now = datetime.now(timezone.utc)
+    for session in sessions:
+        device = devices.get(session.device_id) if session.device_id else None
+        fresh = (
+            device is not None
+            and device.status == "online"
+            and device.last_seen_at is not None
+            and (now - device.last_seen_at).total_seconds() < 90
+        )
+        session.device_online = bool(device and (hub.device_online(str(device.id)) or fresh))
 
 
 def _present(session: Session) -> bool:
@@ -146,6 +165,7 @@ async def get_session(
     operator: Operator = Depends(current_operator),
 ) -> Session:
     session = await _get_or_404(db, session_id)
+    await _mark_devices(db, [session])
     session.guest_connected = _present(session)
     return session
 
