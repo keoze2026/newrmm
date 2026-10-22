@@ -373,4 +373,4 @@ async def operator_socket(websocket: WebSocket, code: str, token: str = "") -> N
             # The operator left, so the screen must stop being shared. An
             # attended guest decides for themselves; a standing device has no
             # one at the keyboard to do it.
-            await hub.to_guest_json(code, {"type": "session_ended"})
+            await hub.to_guest_json(code, {"type": "end"})

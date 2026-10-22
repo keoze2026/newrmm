@@ -37,12 +37,14 @@ def _cancelled(result) -> bool:
     return "-128" in (result.stderr or "")
 
 
-def consent(message: str, timeout: float = 120.0) -> bool | None:
-    """Allow or Deny. Closing the dialog, Deny, or no answer in time is a refusal.
-    None only if no dialog could be shown at all."""
+def consent(message: str, timeout: float = 120.0, standing: bool = False) -> "bool | str | None":
+    """Allow or Deny, or "always" when `standing` offers it. Closing the dialog,
+    Deny, or no answer in time is a refusal. None only if no dialog could be
+    shown at all."""
+    buttons = '{"Deny", "Allow this time", "Always allow"}' if standing else '{"Deny", "Allow"}'
     script = (
         f"display dialog {_quote(message)} with title {_quote(TITLE)} "
-        'buttons {"Deny", "Allow"} default button "Deny" with icon caution '
+        f'buttons {buttons} default button "Deny" with icon caution '
         f"giving up after {int(timeout)}"
     )
     result = _osascript(script, timeout + 15)
@@ -51,7 +53,11 @@ def consent(message: str, timeout: float = 120.0) -> bool | None:
     if result.returncode != 0:
         return False if _cancelled(result) else None
     out = result.stdout or ""
-    return "button returned:Allow" in out and "gave up:false" in out
+    if "gave up:false" not in out:
+        return False
+    if "button returned:Always allow" in out:
+        return "always"
+    return "button returned:Allow" in out
 
 
 def ask_code(prefill: str = "", notice: str = "", timeout: float = 600.0) -> str | None:

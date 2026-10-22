@@ -85,7 +85,11 @@ def test_stopping_on_purpose_turns_the_restart_off(monkeypatch):
     autostart.remember("wss://relay/api", "ABCD1234", enable=Recorder())
     systemctl = Recorder()
     real_forget = autostart.forget
-    monkeypatch.setattr(agent.autostart, "forget", lambda code=None: real_forget(code, disable=systemctl))
+    monkeypatch.setattr(
+        agent.autostart, "forget",
+        lambda code=None, always=False: real_forget(code, disable=systemctl, always=always),
+    )
+    monkeypatch.setattr(agent.Enrolment, "delete", classmethod(lambda cls: None))  # never touch the real one
     monkeypatch.setattr(agent.background, "stop", lambda: False)
     agent.cmd_stop(None)
     assert autostart.saved() is None

@@ -7,7 +7,7 @@ import Viewer from './components/Viewer'
 import type { TabKey } from './components/TabStrip'
 import JoinPage from './pages/JoinPage'
 import LoginPage from './pages/LoginPage'
-import { api, type Session } from './lib/api'
+import { api, canJoin, type Session } from './lib/api'
 import { useAuth } from './lib/auth'
 import { SessionStream, type FrameSource, type StreamState } from './lib/stream'
 
@@ -153,7 +153,7 @@ export default function App() {
   }
 
   function openViewer() {
-    if (!selected?.guest_connected) return
+    if (!canJoin(selected)) return
     setViewerOpen(true)
   }
 

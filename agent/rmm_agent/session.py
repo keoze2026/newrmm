@@ -8,7 +8,7 @@ import websockets
 
 from rmm_agent import __version__, clipboard, files, platform_support, privacy, sysinfo
 from rmm_agent.capture import RateController, ScreenCapture
-from rmm_agent.consent import ask as ask_consent
+from rmm_agent.consent import ask_choice as ask_consent_choice
 from rmm_agent.remote_input import InputInjector
 from rmm_agent.terminal import RemoteTerminal, default_shell
 from rmm_agent.tiles import TileEncoder
@@ -58,6 +58,10 @@ class AgentSession:
         inject: bool = True,
         auto_consent: bool = False,
         on_over=None,
+        standing_allowed: bool = False,
+        on_standing=None,
+        standing_consent: bool = False,
+        single_shot: bool = False,
         device_id: str = "",
         device_secret: str = "",
         blank_watchdog: float = 0.0,
@@ -76,6 +80,17 @@ class AgentSession:
         self.device_secret = device_secret
         self._stop = asyncio.Event()
         self.on_over = on_over
+        # "Always allow" is offered in the consent window, and when chosen
+        # `on_standing` enrols this computer. `enrolled` tells the caller to stay
+        # online as an always-on device once this session is over.
+        self.standing_allowed = standing_allowed
+        self.on_standing = on_standing
+        self.enrolled = False
+        # A session an enrolled device starts because an operator opened it: no
+        # window, because the person gave permission once; it ends when the
+        # connection does, and the operator opening it again starts a new one.
+        self.standing_consent = standing_consent
+        self.single_shot = single_shot
         self._consented = False
         self._streamed_until: float | None = None
         self._terminal: RemoteTerminal | None = None
@@ -93,6 +108,27 @@ class AgentSession:
                 self.on_over()
             except Exception as exc:
                 log.warning("could not clean up after the session: %s", exc)
+
+    async def _enrol(self) -> None:
+        """The person chose "Always allow": make this computer an always-on device."""
+        try:
+            done = await asyncio.to_thread(self.on_standing)
+        except Exception as exc:
+            log.warning("could not turn on always-on access: %s", exc)
+            done = False
+        if done:
+            self.enrolled = True
+            # From now on starting again after a restart belongs to the device,
+            # not to this one session, so this session ending is not the end.
+            self.on_over = None
+            if self.tray:
+                self.tray.notify(
+                    "This computer will stay connected so support can reach it. "
+                    "Turn it off from this menu any time.",
+                    "Always allow is on",
+                )
+        elif self.tray:
+            self.tray.notify("Could not turn on always-on access. This session still works.", "Always allow")
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -128,6 +164,8 @@ class AgentSession:
                 log.warning("session connection failed: %s", exc)
 
             if self._stop.is_set():
+                break
+            if self.single_shot:
                 break
             if self._consented:
                 # Consent is per session; a reconnect asks again.
@@ -165,14 +203,23 @@ class AgentSession:
                     "Session requested",
                 )
 
-            if can_resume(self._streamed_until, time.monotonic()):
+            choice = "once"
+            by = "endpoint user"
+            if self.standing_consent:
+                log.info("starting under the permission given when this computer was enrolled")
+                by = "standing permission"
+            elif can_resume(self._streamed_until, time.monotonic()):
                 log.info("reconnected during a consented session; continuing without asking again")
-                granted = True
             else:
-                granted = await asyncio.to_thread(
-                    ask_consent, self.code, None, 120.0, self.auto_consent
+                choice = await asyncio.to_thread(
+                    ask_consent_choice, self.code, None, 120.0, self.auto_consent,
+                    self.standing_allowed,
                 )
-            await socket.send(json.dumps({"type": "consent", "granted": granted}))
+            granted = choice != "deny"
+            await socket.send(json.dumps({"type": "consent", "granted": granted, "by": by}))
+
+            if choice == "always" and self.on_standing is not None:
+                await self._enrol()
 
             if not granted:
                 log.info("consent denied; nothing will be captured")

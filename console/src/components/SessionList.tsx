@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import ConnectionIndicator from './ConnectionIndicator'
 import { CaretIcon, DeleteIcon, EditIcon, JoinIcon, MoreIcon, SearchIcon } from './icons'
-import type { Session } from '../lib/api'
+import { canJoin, type Session } from '../lib/api'
 
 /** Column 3 (Appendix A.2 and A.3). */
 export default function SessionList({
@@ -35,7 +35,7 @@ export default function SessionList({
     [sessions, checked],
   )
   const selected = sessions.find((s) => s.id === selectedId) ?? null
-  const canJoin = Boolean(selected?.guest_connected)
+  const joinable = canJoin(selected)
 
   const action =
     'flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-xs text-navy transition hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-40'
@@ -45,7 +45,7 @@ export default function SessionList({
       <header className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3">
         <h2 className="shrink-0 whitespace-nowrap text-sm font-semibold text-navy">My Sessions</h2>
         <div className="relative flex items-center gap-0.5">
-          <button type="button" data-testid="list-join" className={action} onClick={onJoin} disabled={!canJoin} title="Join">
+          <button type="button" data-testid="list-join" className={action} onClick={onJoin} disabled={!joinable} title="Join">
             <JoinIcon width={16} height={16} />
             Join
           </button>
@@ -151,7 +151,7 @@ export default function SessionList({
                     Host: {session.host_name ?? '—'}
                   </div>
                 </div>
-                <ConnectionIndicator connected={session.guest_connected} />
+                <ConnectionIndicator connected={canJoin(session)} />
               </div>
             </li>
           )

@@ -166,12 +166,12 @@ def remember(relay: str, code: str, enable=None) -> bool:
     return enable("enable", UNIT) if enable else _enable_here()
 
 
-def forget(code: str | None = None, disable=None) -> None:
+def forget(code: str | None = None, disable=None, always: bool = False) -> None:
     """Stop starting at login. With a code, only if it is the remembered one."""
     current = saved()
-    if current is None:
+    if current is None and not always:
         return
-    if code is not None and current[1] != code:
+    if current is not None and code is not None and current[1] != code:
         return
     try:
         session_file().unlink()

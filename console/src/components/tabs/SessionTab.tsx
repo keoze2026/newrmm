@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { CopyIcon, HourglassIcon, PencilIcon } from '../icons'
-import { joinLink, joinUrl, type Session } from '../../lib/api'
+import { canJoin, joinLink, joinUrl, type Session } from '../../lib/api'
 import type { FrameSource } from '../../lib/stream'
 
 function CopyButton({ value, label }: { value: string; label: string }) {
@@ -75,6 +75,8 @@ export default function SessionTab({
   }
 
   const joined = session.guest_connected
+  const standing = session.mode === 'unattended'
+  const ready = canJoin(session)
 
   return (
     <div className="mx-auto w-full max-w-[640px] px-8 py-8">
@@ -176,7 +178,7 @@ export default function SessionTab({
         <button
           type="button"
           onClick={onJoin}
-          disabled={!joined}
+          disabled={!ready}
           data-testid="join-button"
           className="rounded-lg bg-primary px-10 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:opacity-40"
         >
@@ -190,12 +192,25 @@ export default function SessionTab({
           className="flex items-center justify-center gap-2 text-sm font-medium text-navy"
         >
           <HourglassIcon width={17} height={17} className="text-muted" />
-          {joined ? 'Your guest has joined.' : 'Your guest has not joined yet…'}
+          {joined
+            ? 'Your guest has joined.'
+            : standing
+              ? ready
+                ? 'This computer is always connected.'
+                : 'This computer is offline.'
+              : 'Your guest has not joined yet…'}
         </p>
-        {!joined && (
+        {!joined && !standing && (
           <p className="mx-auto mt-2 max-w-[440px] text-xs italic leading-relaxed text-muted">
             Once you and your guest join the session, you can control their screen. Click Join to
             launch the host client.
+          </p>
+        )}
+        {!joined && standing && (
+          <p className="mx-auto mt-2 max-w-[440px] text-xs italic leading-relaxed text-muted">
+            {ready
+              ? 'Click Join to start. It starts without asking, and the person at the computer sees an indicator and a notice.'
+              : 'It reconnects by itself whenever it is switched on.'}
           </p>
         )}
       </div>

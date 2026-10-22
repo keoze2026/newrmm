@@ -84,6 +84,8 @@ export interface Session {
   ended_at: string | null
   host_name: string | null
   guest_connected: boolean
+  // An enrolled, always-on computer that is online right now.
+  device_online?: boolean
   guest_joined_at: string | null
   guest_last_seen_at: string | null
   system_info: SystemInfo
@@ -150,4 +152,11 @@ export function operatorSocketUrl(code: string): string {
   return `${scheme}://${window.location.host}/api/ws/operator/${code}?token=${encodeURIComponent(
     authToken ?? '',
   )}`
+}
+
+/** Whether Join can start a session now: a guest is already in, or the session
+ * belongs to an always-on computer that is online and will start on request. */
+export function canJoin(session: Session | null | undefined): boolean {
+  if (!session) return false
+  return session.guest_connected || (session.mode === 'unattended' && Boolean(session.device_online))
 }

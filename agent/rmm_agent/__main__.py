@@ -18,7 +18,7 @@ from rmm_agent import config
 from rmm_agent.config import Enrolment, state_dir
 from rmm_agent.device import hold_presence
 from rmm_agent.logging_setup import configure
-from rmm_agent import autostart, diagnostics
+from rmm_agent import autostart, device, diagnostics, enrol
 from rmm_agent.session import AgentSession
 from rmm_agent.tray import Tray
 
@@ -115,6 +115,8 @@ def _join(args) -> int:
             inject=args.inject,
             auto_consent=args.auto_consent,
             on_over=lambda: autostart.forget(args.code),
+            standing_allowed=bool(getattr(args, "allow_standing", False)),
+            on_standing=lambda: enrol.enrol(args.relay, args.code) is not None,
             device_id=args.device_id,
             device_secret=args.secret,
             blank_watchdog=args.blank_watchdog,
@@ -122,9 +124,63 @@ def _join(args) -> int:
         )
         holder["session"] = session
         await session.run_forever()
+        if session.enrolled and (enrolment := Enrolment.load()) is not None:
+            # "Always allow" was chosen: this session ending is not the end.
+            await run_device(tray, holder, enrolment, args)
 
-    return _run_with_tray(
-        main, use_tray=args.tray, on_user_quit=lambda: autostart.forget(args.code)
+    return _run_with_tray(main, use_tray=args.tray, on_user_quit=lambda: turn_off(args.code))
+
+
+def turn_off(code: str | None = None) -> None:
+    """The person's off switch: stop starting at login and forget the enrolment."""
+    autostart.forget(code, always=True)
+    Enrolment.delete()
+
+
+async def run_device(tray, holder, enrolment, args) -> None:
+    """Stay online as an always-on device and start sessions when asked."""
+    stop = asyncio.Event()
+    running: dict[str, AgentSession | None] = {"session": None}
+
+    class Stoppable:
+        def request_stop(self) -> None:
+            stop.set()
+            if running["session"] is not None:
+                running["session"].request_stop()
+
+    holder["session"] = Stoppable()
+    diagnostics.heartbeat()
+    if tray:
+        tray.set_state("connected", "Always connected")
+
+    async def start_session(code: str) -> None:
+        session = AgentSession(
+            enrolment.relay_url,
+            code,
+            tray=tray,
+            fps=getattr(args, "fps", 12),
+            quality=getattr(args, "quality", 60),
+            budget_kbps=getattr(args, "budget_kbps", 0),
+            synthetic=getattr(args, "synthetic", False),
+            inject=getattr(args, "inject", True),
+            standing_consent=True,
+            single_shot=True,
+            device_id=enrolment.device_id,
+            device_secret=enrolment.secret,
+            blank_watchdog=getattr(args, "blank_watchdog", 0.0),
+            blank_blocks_input=getattr(args, "blank_blocks_input", True),
+        )
+        running["session"] = session
+        try:
+            await session.run_forever()
+        finally:
+            running["session"] = None
+            if tray:
+                tray.set_state("connected", "Always connected")
+
+    await device.serve(
+        enrolment.relay_url, enrolment.device_id, enrolment.secret, start_session, stop,
+        on_revoked=lambda: turn_off(),
     )
 
 
@@ -166,7 +222,7 @@ def cmd_start(args) -> int:
     # it, so closing the terminal or pressing Ctrl+C there does not end the
     # session. A double-click has no terminal, so it just carries on.
     if not getattr(args, "foreground", False) and background.launched_from_terminal():
-        extra = ["join", "--relay", relay, "--code", code]
+        extra = ["join", "--relay", relay, "--code", code, "--allow-standing"]
         if no_tray:
             extra.append("--no-tray")
         pid = background.spawn_detached(extra)
@@ -180,6 +236,7 @@ def cmd_start(args) -> int:
         relay=relay, code=code, fps=12, quality=60, budget_kbps=0,
         device_id="", secret="", synthetic=False, tray=not no_tray, inject=True,
         auto_consent=False, blank_watchdog=0.0, blank_blocks_input=True,
+        allow_standing=True,
     )
     try:
         return cmd_join(joined)
@@ -190,7 +247,7 @@ def cmd_start(args) -> int:
 
 
 def cmd_stop(_args) -> int:
-    autostart.forget()  # stopping on purpose also means: do not start again
+    turn_off()  # stopping on purpose also means: do not start again, and forget the enrolment
     if background.stop():
         print("RMM Agent stopped.")
         return 0
@@ -198,9 +255,27 @@ def cmd_stop(_args) -> int:
     return 0
 
 
-def cmd_resume(_args) -> int:
+def cmd_resume(args) -> int:
     """Rejoin the session remembered before the computer restarted."""
     launcher.hide_console_if_owned()
+    enrolment = Enrolment.load()
+    if enrolment is not None:
+        log.info("this computer is enrolled; staying online as device %s", enrolment.device_id)
+        defaults = argparse.Namespace(
+            fps=12, quality=60, budget_kbps=0, synthetic=bool(getattr(args, "synthetic", False)),
+            inject=not bool(getattr(args, "synthetic", False)),
+            blank_watchdog=0.0, blank_blocks_input=True,
+        )
+        use_tray = bool(getattr(args, "tray", True))
+
+        async def always_on(tray, holder):
+            await run_device(tray, holder, enrolment, defaults)
+
+        background.write_pid()
+        try:
+            return _run_with_tray(always_on, use_tray=use_tray, on_user_quit=lambda: turn_off())
+        finally:
+            background.clear_pid()
     remembered = autostart.saved()
     if remembered is None:
         log.info("nothing to resume: no saved session")
@@ -307,6 +382,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="rejoin the session remembered before a restart (used at login)",
         parents=[common],
     )
+    resume.add_argument("--no-tray", dest="tray", action="store_false", help="run without a tray icon")
+    resume.add_argument("--synthetic", action="store_true", help="capture a generated screen (used by the tests)")
     resume.set_defaults(func=cmd_resume)
 
     join = sub.add_parser("join", help="join a session with its code", parents=[common])
@@ -325,6 +402,10 @@ def build_parser() -> argparse.ArgumentParser:
     join.add_argument("--secret", default="", help="for an unattended session")
     join.add_argument("--synthetic", action="store_true", help="stream a generated test image")
     join.add_argument("--no-tray", dest="tray", action="store_false", help="run without a tray icon")
+    join.add_argument(
+        "--allow-standing", dest="allow_standing", action="store_true",
+        help='offer "Always allow" in the consent window',
+    )
     join.add_argument(
         "--no-input", dest="inject", action="store_false",
         help="log operator input instead of applying it (used by the tests)",

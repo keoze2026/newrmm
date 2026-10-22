@@ -14,22 +14,33 @@ log = logging.getLogger(__name__)
 PROMPT_TITLE = "Remote support session"
 
 
-def _message(code: str, operator: str | None) -> str:
+def _message(code: str, operator: str | None, standing: bool = False) -> str:
     who = operator or "A support operator"
-    return (
+    text = (
         f"{who} is requesting to view and control this computer.\n\n"
         f"Session code: {code}\n\n"
         "They will see your screen and be able to use your mouse and keyboard "
         "until you end the session.\n\nAllow this session?"
     )
+    if standing:
+        text += (
+            "\n\nChoose \"Always allow\" to keep this computer connected, so support can "
+            "reach it any time without asking again. You will still see an indicator "
+            "and a notice whenever someone connects. You can turn this off from the "
+            "tray menu, or by running: rmm-agent stop"
+        )
+    return text
 
 
-def _ask_with_tk(code: str, operator: str | None, timeout: float) -> bool | None:
-    """Show a dialog. Returns None if no GUI toolkit is available."""
+def _ask_with_tk(
+    code: str, operator: str | None, timeout: float, standing: bool = False
+) -> "bool | str | None":
+    """Show a dialog. True or False, or "always" when `standing` offers it.
+    Returns None if no GUI toolkit is available."""
     if sys.platform == "darwin":
         from rmm_agent import macos_dialogs
 
-        return macos_dialogs.consent(_message(code, operator), timeout)
+        return macos_dialogs.consent(_message(code, operator, standing), timeout, standing)
 
     answer: queue.Queue[bool] = queue.Queue(maxsize=1)
 
@@ -52,21 +63,28 @@ def _ask_with_tk(code: str, operator: str | None, timeout: float) -> bool | None
             frame.pack(fill="both", expand=True)
             ttk.Label(frame, text=PROMPT_TITLE, font=("Segoe UI", 12, "bold")).pack(anchor="w")
             ttk.Label(
-                frame, text=_message(code, operator), wraplength=420, justify="left"
+                frame, text=_message(code, operator, standing), wraplength=420, justify="left"
             ).pack(anchor="w", pady=(10, 16))
 
             buttons = ttk.Frame(frame)
             buttons.pack(anchor="e")
 
-            def decide(value: bool) -> None:
+            def decide(value) -> None:
                 if answer.empty():
                     answer.put(value)
                 root.destroy()
 
             ttk.Button(buttons, text="Deny", command=lambda: decide(False)).pack(side="left", padx=6)
-            allow = ttk.Button(buttons, text="Allow", command=lambda: decide(True))
-            allow.pack(side="left")
+            allow = ttk.Button(
+                buttons, text="Allow this time" if standing else "Allow",
+                command=lambda: decide(True),
+            )
+            allow.pack(side="left", padx=(0, 6) if standing else 0)
             allow.focus_set()
+            if standing:
+                ttk.Button(
+                    buttons, text="Always allow", command=lambda: decide("always")
+                ).pack(side="left")
 
             root.protocol("WM_DELETE_WINDOW", lambda: decide(False))
             # An unanswered prompt denies rather than hanging the session.
@@ -91,16 +109,25 @@ def _ask_with_tk(code: str, operator: str | None, timeout: float) -> bool | None
         return False
 
 
-def ask(code: str, operator: str | None = None, timeout: float = 120.0, auto: bool = False) -> bool:
-    """Ask the endpoint user to allow the session."""
+def ask_choice(
+    code: str,
+    operator: str | None = None,
+    timeout: float = 120.0,
+    auto: bool = False,
+    standing: bool = False,
+) -> str:
+    """"deny", "once", or "always". "always" is only offered when `standing`."""
     if auto:
         log.warning("consent auto-granted (--auto-consent); intended for testing only")
-        return True
+        return "once"
 
-    result = _ask_with_tk(code, operator, timeout)
+    result = _ask_with_tk(code, operator, timeout, standing)
     if result is not None:
+        if result == "always":
+            log.info("consent granted by the endpoint user, and kept for next time")
+            return "always"
         log.info("consent %s by the endpoint user", "granted" if result else "denied")
-        return result
+        return "once" if result else "deny"
 
     # No GUI available: fall back to the terminal the agent was started from.
     print("\n" + "=" * 60)
@@ -116,4 +143,9 @@ def ask(code: str, operator: str | None = None, timeout: float = 120.0, auto: bo
         reply = ""
     granted = reply in ("y", "yes")
     log.info("consent %s at the console", "granted" if granted else "denied")
-    return granted
+    return "once" if granted else "deny"
+
+
+def ask(code: str, operator: str | None = None, timeout: float = 120.0, auto: bool = False) -> bool:
+    """Ask the endpoint user to allow the session."""
+    return ask_choice(code, operator, timeout, auto, standing=False) != "deny"

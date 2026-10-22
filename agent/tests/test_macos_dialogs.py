@@ -70,7 +70,7 @@ def test_the_code_is_read_back_and_cancel_is_none(monkeypatch):
 
 def test_the_consent_prompt_on_macos_never_touches_tk(monkeypatch):
     monkeypatch.setattr(consent.sys, "platform", "darwin")
-    monkeypatch.setattr(macos_dialogs, "consent", lambda message, timeout=120.0: True)
+    monkeypatch.setattr(macos_dialogs, "consent", lambda message, timeout=120.0, standing=False: True)
     monkeypatch.setitem(sys.modules, "tkinter", None)  # importing it would now fail
     assert consent._ask_with_tk("ABCD1234", None, 120.0) is True
 

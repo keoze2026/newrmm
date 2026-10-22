@@ -72,6 +72,14 @@ class Enrolment:
         except (ValueError, KeyError):
             return None
 
+    @classmethod
+    def delete(cls) -> None:
+        """Forget this computer's enrolment: it will no longer stay online."""
+        try:
+            (state_dir() / "enrolment.json").unlink()
+        except OSError:
+            pass
+
     def save(self) -> Path:
         path = state_dir() / "enrolment.json"
         durable.write_text(path, json.dumps(self.__dict__, indent=2))
