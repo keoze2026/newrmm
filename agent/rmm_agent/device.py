@@ -50,10 +50,13 @@ async def serve(
 ) -> None:
     """Stay online for as long as the agent runs, and start sessions on request.
 
-    This never gives up: after sleep, a network change or the relay restarting,
-    it keeps retrying until it is back. The only ways out are `stop`, or the
-    relay refusing this device's credentials (it was removed), which is reported
-    through `on_revoked` and ends the loop.
+    This never gives up: after sleep, a network change, the relay restarting, or
+    a handshake the relay turns away, it keeps retrying until it is back. A
+    rejected handshake arrives as a plain 403 regardless of why the relay sent
+    it, so it cannot be told apart from a real "this device was removed" - it is
+    retried like any other drop rather than treated as final. The only way out
+    is `stop`. `on_revoked` is kept for a future, unambiguous revoke signal; it
+    is not called today.
 
     `on_start(code)` is called when an operator opens this device's session. It
     runs as its own task so a long session never blocks the connection, and a
@@ -95,13 +98,6 @@ async def serve(
                     heartbeat.cancel()
         except asyncio.CancelledError:
             raise
-        except websockets.InvalidStatus as exc:
-            if getattr(exc.response, "status_code", None) == 403:
-                log.warning("the relay no longer accepts this device; stopping")
-                if on_revoked is not None:
-                    on_revoked()
-                break
-            log.warning("device presence lost: %s", exc)
         except Exception as exc:
             log.warning("device presence lost: %s", exc)
 

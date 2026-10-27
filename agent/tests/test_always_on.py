@@ -264,11 +264,18 @@ def test_it_keeps_retrying_forever_after_the_network_goes(monkeypatch):
     assert started == ["AFTER123"]
 
 
-def test_it_stops_and_says_so_when_the_relay_removes_the_device(monkeypatch):
+def test_a_rejected_handshake_is_retried_not_treated_as_revoked(monkeypatch):
+    """A 403 arrives for any rejected handshake, not only a real removal, so it
+    must be retried like any other drop rather than stopping for good."""
     response = websockets.http11.Response(403, "Forbidden", websockets.Headers())
+    socket = FakeSocket([json.dumps({"type": "start_session", "code": "AFTER123"})])
     revoked = []
-    run_serve(monkeypatch, [websockets.InvalidStatus(response)], on_revoked=lambda: revoked.append(1))
-    assert revoked == [1]
+    started = run_serve(
+        monkeypatch, [websockets.InvalidStatus(response), socket],
+        on_revoked=lambda: revoked.append(1), stop_after=True,
+    )
+    assert started == ["AFTER123"]
+    assert revoked == []
 
 
 def test_a_second_request_while_a_session_runs_is_ignored(monkeypatch):
