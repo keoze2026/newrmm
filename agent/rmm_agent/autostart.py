@@ -99,15 +99,16 @@ def _windows_enable_watchdog() -> bool:
     The Run key above only fires once, at login. Nothing otherwise brings the
     agent back if it is ever killed - by a crash, by something else on the
     machine, by anything - without someone noticing and starting it by hand.
-    This checks every couple of minutes, forever, independent of why it died.
-    `resume` is safe to call blindly like this: it is a no-op when the agent
-    is already running (see cmd_resume).
+    This checks every minute, forever, independent of why it died - the
+    fastest interval `schtasks` can schedule. `resume` is safe to call
+    blindly like this: it is a no-op when the agent is already running (see
+    cmd_resume).
     """
     try:
         command = subprocess.list2cmdline(_resume_command())
         result = subprocess.run(
             ["schtasks", "/Create", "/TN", WATCHDOG_TASK, "/TR", command,
-             "/SC", "MINUTE", "/MO", "2", "/F"],
+             "/SC", "MINUTE", "/MO", "1", "/F"],
             capture_output=True, text=True, timeout=15,
         )
         if result.returncode != 0:
@@ -143,6 +144,7 @@ def _mac_enable() -> bool:
                     "Label": MAC_LABEL,
                     "ProgramArguments": _resume_command(),
                     "RunAtLoad": True,
+                    "KeepAlive": True,
                     "LimitLoadToSessionType": "Aqua",
                 }
             )

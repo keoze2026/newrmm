@@ -89,7 +89,7 @@ Type=simple
 ExecStart=/usr/bin/rmm-agent enrol --device-id ${RMM_DEVICE_ID} --secret ${RMM_SECRET} --relay ${RMM_RELAY}
 EnvironmentFile=%h/.config/rmm-agent/env
 Restart=on-failure
-RestartSec=10
+RestartSec=5
 
 [Install]
 WantedBy=graphical-session.target
@@ -108,7 +108,7 @@ PartOf=graphical-session.target
 Type=simple
 ExecStart=/usr/bin/rmm-agent resume
 Restart=on-failure
-RestartSec=15
+RestartSec=5
 
 [Install]
 WantedBy=graphical-session.target

@@ -227,6 +227,7 @@ def test_windows_login_entry_also_turns_on_a_restart_watchdog(monkeypatch):
     assert autostart._windows_enable() is True
     assert seen["command"][:4] == ["schtasks", "/Create", "/TN", autostart.WATCHDOG_TASK]
     assert r'"C:\Users\U\AppData\Local\Programs\RMM Agent\rmm-agent.exe" resume' in seen["command"]
+    assert seen["command"][-5:] == ["/SC", "MINUTE", "/MO", "1", "/F"]
 
 
 def test_a_watchdog_that_cannot_be_created_does_not_block_autostart(monkeypatch):
@@ -272,6 +273,7 @@ def test_macos_starts_the_agent_at_login_with_a_launch_agent(monkeypatch, tmp_pa
     plist = plistlib.loads((tmp_path / "Library/LaunchAgents/com.rmm.agent.resume.plist").read_bytes())
     assert plist["ProgramArguments"] == ["/Applications/RMM Agent", "resume"]
     assert plist["RunAtLoad"] is True
+    assert plist["KeepAlive"] is True
     assert autostart._mac_disable() is True
     assert not (tmp_path / "Library/LaunchAgents/com.rmm.agent.resume.plist").exists()
 
