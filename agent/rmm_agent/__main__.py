@@ -256,8 +256,16 @@ def cmd_stop(_args) -> int:
 
 
 def cmd_resume(args) -> int:
-    """Rejoin the session remembered before the computer restarted."""
+    """Rejoin the session remembered before the computer restarted.
+
+    Safe to call while one is already running: a restart watchdog calls this
+    on a timer without knowing whether the agent is still alive, so it must
+    be a no-op rather than start a second, competing instance.
+    """
     launcher.hide_console_if_owned()
+    if background.running_pid() is not None:
+        log.info("already running; nothing to resume")
+        return 0
     enrolment = Enrolment.load()
     if enrolment is not None:
         log.info("this computer is enrolled; staying online as device %s", enrolment.device_id)

@@ -54,6 +54,7 @@ def test_forgetting_when_nothing_is_remembered_is_harmless():
 
 
 def test_without_systemd_the_session_is_still_remembered_and_nothing_breaks(monkeypatch):
+    monkeypatch.setattr(autostart.sys, "platform", "linux")
     monkeypatch.setattr(autostart.shutil, "which", lambda _name: None)
     assert autostart.remember("wss://relay/api", "ABCD1234") is False
     assert autostart.saved() == ("wss://relay/api", "ABCD1234")
@@ -77,6 +78,19 @@ def test_resume_rejoins_the_remembered_session(monkeypatch):
     monkeypatch.setattr(agent, "cmd_join", lambda args: joined.update(relay=args.relay, code=args.code) or 0)
     assert agent.cmd_resume(None) == 0
     assert joined == {"relay": "wss://relay/api", "code": "ABCD1234"}
+
+
+def test_resume_is_a_no_op_when_one_is_already_running(monkeypatch):
+    """A restart watchdog calls `resume` on a timer with no idea whether the
+    agent is alive. If it is, this must not start a second, competing copy."""
+    from rmm_agent import __main__ as agent
+
+    monkeypatch.setattr(agent.background, "running_pid", lambda: 12345)
+    monkeypatch.setattr(
+        agent.Enrolment, "load",
+        classmethod(lambda cls: (_ for _ in ()).throw(AssertionError("should not have looked further"))),
+    )
+    assert agent.cmd_resume(None) == 0
 
 
 def test_stopping_on_purpose_turns_the_restart_off(monkeypatch):
@@ -170,6 +184,7 @@ class FakeWinreg:
 def test_windows_starts_the_agent_at_login_with_a_run_entry(monkeypatch):
     fake = FakeWinreg()
     monkeypatch.setitem(sys.modules, "winreg", fake)
+    monkeypatch.setattr(autostart, "_windows_enable_watchdog", lambda: True)
     monkeypatch.setattr(
         background, "own_command",
         lambda args: [r"C:\Users\U\AppData\Local\Programs\RMM Agent\rmm-agent.exe", *args],
@@ -184,10 +199,68 @@ def test_windows_starts_the_agent_at_login_with_a_run_entry(monkeypatch):
 def test_windows_removes_the_run_entry_and_a_missing_one_is_fine(monkeypatch):
     fake = FakeWinreg()
     monkeypatch.setitem(sys.modules, "winreg", fake)
+    monkeypatch.setattr(autostart, "_windows_enable_watchdog", lambda: True)
+    monkeypatch.setattr(autostart, "_windows_disable_watchdog", lambda: None)
     assert autostart._windows_disable() is True
     assert fake.deleted == ["RMMAgentResume"]
     monkeypatch.setitem(sys.modules, "winreg", FakeWinreg(missing=True))
     assert autostart._windows_disable() is True
+
+
+def test_windows_login_entry_also_turns_on_a_restart_watchdog(monkeypatch):
+    """The Run key alone only fires once, at login. Nothing else brings the
+    agent back if it dies later for any reason, so enabling autostart also
+    registers a Scheduled Task that checks every couple of minutes."""
+    fake = FakeWinreg()
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    monkeypatch.setattr(
+        background, "own_command",
+        lambda args: [r"C:\Users\U\AppData\Local\Programs\RMM Agent\rmm-agent.exe", *args],
+    )
+    seen = {}
+
+    def fake_run(command, **options):
+        seen["command"] = command
+        return types.SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(autostart.subprocess, "run", fake_run)
+    assert autostart._windows_enable() is True
+    assert seen["command"][:4] == ["schtasks", "/Create", "/TN", autostart.WATCHDOG_TASK]
+    assert r'"C:\Users\U\AppData\Local\Programs\RMM Agent\rmm-agent.exe" resume' in seen["command"]
+
+
+def test_a_watchdog_that_cannot_be_created_does_not_block_autostart(monkeypatch):
+    """schtasks can be missing or blocked by policy; the Run key entry -
+    autostart's required part - must still succeed."""
+    fake = FakeWinreg()
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    monkeypatch.setattr(
+        background, "own_command",
+        lambda args: [r"C:\Users\U\AppData\Local\Programs\RMM Agent\rmm-agent.exe", *args],
+    )
+
+    def fake_run(_command, **_options):
+        raise FileNotFoundError("schtasks not found")
+
+    monkeypatch.setattr(autostart.subprocess, "run", fake_run)
+    assert autostart._windows_enable() is True
+    assert fake.values["RMMAgentResume"] == (
+        r'"C:\Users\U\AppData\Local\Programs\RMM Agent\rmm-agent.exe" resume'
+    )
+
+
+def test_disabling_autostart_removes_the_watchdog_too(monkeypatch):
+    fake = FakeWinreg()
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    seen = {}
+
+    def fake_run(command, **options):
+        seen["command"] = command
+        return types.SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(autostart.subprocess, "run", fake_run)
+    assert autostart._windows_disable() is True
+    assert seen["command"] == ["schtasks", "/Delete", "/TN", autostart.WATCHDOG_TASK, "/F"]
 
 
 def test_macos_starts_the_agent_at_login_with_a_launch_agent(monkeypatch, tmp_path):

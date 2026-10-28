@@ -36,6 +36,7 @@ UNIT = "rmm-agent-resume.service"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_NAME = "RMMAgentResume"
 MAC_LABEL = "com.rmm.agent.resume"
+WATCHDOG_TASK = "RMMAgentWatchdog"
 
 
 def session_file():
@@ -70,10 +71,11 @@ def _windows_enable() -> bool:
         command = subprocess.list2cmdline(_resume_command())
         with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
             winreg.SetValueEx(key, RUN_NAME, 0, winreg.REG_SZ, command)
-        return True
     except Exception as exc:
         log.warning("could not turn on starting at login: %s", exc)
         return False
+    _windows_enable_watchdog()
+    return True
 
 
 def _windows_disable() -> bool:
@@ -87,7 +89,44 @@ def _windows_disable() -> bool:
     except Exception as exc:
         log.warning("could not turn off starting at login: %s", exc)
         return False
+    _windows_disable_watchdog()
     return True
+
+
+def _windows_enable_watchdog() -> bool:
+    """A Scheduled Task that notices if the agent is gone and starts it again.
+
+    The Run key above only fires once, at login. Nothing otherwise brings the
+    agent back if it is ever killed - by a crash, by something else on the
+    machine, by anything - without someone noticing and starting it by hand.
+    This checks every couple of minutes, forever, independent of why it died.
+    `resume` is safe to call blindly like this: it is a no-op when the agent
+    is already running (see cmd_resume).
+    """
+    try:
+        command = subprocess.list2cmdline(_resume_command())
+        result = subprocess.run(
+            ["schtasks", "/Create", "/TN", WATCHDOG_TASK, "/TR", command,
+             "/SC", "MINUTE", "/MO", "2", "/F"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            log.warning("could not turn on the restart watchdog: %s", result.stderr.strip())
+            return False
+        return True
+    except Exception as exc:
+        log.warning("could not turn on the restart watchdog: %s", exc)
+        return False
+
+
+def _windows_disable_watchdog() -> None:
+    try:
+        subprocess.run(
+            ["schtasks", "/Delete", "/TN", WATCHDOG_TASK, "/F"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except Exception as exc:
+        log.debug("could not remove the restart watchdog: %s", exc)
 
 
 def _mac_plist() -> Path:
