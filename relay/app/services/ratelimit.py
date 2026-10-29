@@ -19,7 +19,7 @@ import logging
 import time
 from collections import defaultdict, deque
 
-from fastapi import HTTPException, Request, status
+from fastapi import HTTPException, Request, WebSocket, status
 from redis.asyncio import Redis
 
 from app.core.config import settings
@@ -50,7 +50,12 @@ async def _client() -> Redis | None:
     return _redis
 
 
-def caller(request: Request) -> str:
+def caller(request: Request | WebSocket) -> str:
+    """The real visitor's address, not nginx's: behind a reverse proxy every
+    connection's raw TCP peer is the proxy itself, the same for everyone, which
+    would turn a per-caller limit into one shared global bucket. Works for an
+    HTTP request and a WebSocket handshake alike - both expose the same
+    `.headers` and `.client`."""
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
         return forwarded.split(",")[0].strip()

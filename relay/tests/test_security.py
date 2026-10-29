@@ -123,3 +123,39 @@ async def test_hunting_many_different_codes_is_still_throttled_after_repeats(cli
             seen_429 = True
             break
     assert seen_429, "different codes could be tried without limit"
+
+
+class _FakeHeaders(dict):
+    def get(self, key, default=None):
+        return super().get(key.lower(), default)
+
+
+class _FakeClient:
+    def __init__(self, host):
+        self.host = host
+
+
+class _FakePeer:
+    """Shaped like both a Request and a WebSocket: same .headers/.client the
+    real ones expose, which is all `caller()` is allowed to depend on."""
+
+    def __init__(self, peer_host, forwarded_for=None):
+        self.client = _FakeClient(peer_host)
+        self.headers = _FakeHeaders()
+        if forwarded_for:
+            self.headers["x-forwarded-for"] = forwarded_for
+
+
+async def test_rate_limiting_uses_the_real_visitor_not_the_reverse_proxy():
+    """Behind nginx, every connection's raw TCP peer is nginx itself - the same
+    address for every visitor. A guest join's rate limit found and fixed this
+    exact bug (relay/app/api/ws.py): it read the raw peer instead of
+    X-Forwarded-For, turning a 20-per-minute per-caller limit into one shared
+    global bucket that any normal traffic could exhaust for everyone."""
+    from app.services import ratelimit
+
+    behind_proxy = _FakePeer("172.20.0.5", forwarded_for="203.0.113.7, 172.20.0.5")
+    assert ratelimit.caller(behind_proxy) == "203.0.113.7"
+
+    direct = _FakePeer("203.0.113.9")
+    assert ratelimit.caller(direct) == "203.0.113.9"

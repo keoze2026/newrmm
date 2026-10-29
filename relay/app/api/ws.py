@@ -64,7 +64,7 @@ async def guest_socket(
 
     # The code is the whole credential for an attended session, so guessing it
     # here has to be as slow as guessing it over HTTP.
-    origin = websocket.client.host if websocket.client else "unknown"
+    origin = ratelimit.caller(websocket)
     if not await ratelimit.allowed(origin, "guest-join", limit=20, window=60):
         await websocket.close(code=4429, reason="Too many attempts")
         return
