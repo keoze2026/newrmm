@@ -300,8 +300,22 @@ export default function Viewer({
   }
 
   function pullClipboard() {
+    // An agent without clipboard support, a denied permission, or a reply
+    // dropped mid-reconnect all mean no reply ever arrives - without the
+    // timeout below, this listener had no cleanup path tied to it at all and
+    // sat in the stream's listener set forever, one more per failed click.
+    let settled = false
+    const timeout = window.setTimeout(() => {
+      if (settled) return
+      settled = true
+      unsubscribe()
+      flash('The endpoint did not respond.')
+    }, 5000)
     const unsubscribe = stream.subscribe(async (message) => {
       if (message.type !== 'clipboard' || message.action !== 'text') return
+      if (settled) return
+      settled = true
+      window.clearTimeout(timeout)
       unsubscribe()
       const text = String(message.text ?? '')
       try {

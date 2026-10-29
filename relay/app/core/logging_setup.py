@@ -74,7 +74,16 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
         elapsed = (time.perf_counter() - started) * 1000
         if request.url.path not in QUIET_PATHS:
             level = logging.WARNING if response.status_code >= 500 else logging.INFO
-            client = request.client.host if request.client else "-"
+            # Behind nginx every request's raw TCP peer is nginx itself, the
+            # same address for all traffic - this log would otherwise
+            # attribute every line to the proxy instead of the real visitor
+            # (the same bug class already found and fixed in the guest
+            # WebSocket's rate limiting).
+            forwarded = request.headers.get("x-forwarded-for")
+            if forwarded:
+                client = forwarded.split(",")[0].strip()
+            else:
+                client = request.client.host if request.client else "-"
             self.log.log(
                 level,
                 "%s %s %s %.0fms from %s",

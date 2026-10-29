@@ -172,6 +172,24 @@ class Hub:
             if task is not None:
                 task.cancel()
 
+    def detach_guest(self, code: str, websocket: WebSocket) -> None:
+        """Forget a guest's socket, unless a newer one has already replaced it.
+
+        A reconnect can attach a new socket before the old one's read loop has
+        noticed it is dead (TCP teardown is not instant). Without this check,
+        the old socket's own cleanup would clobber the new, live one - exactly
+        the bug `detach_device` above was already written to avoid.
+        """
+        channel = self._channels.get(code)
+        if channel is not None and channel.guest is websocket:
+            channel.guest = None
+
+    def detach_operator(self, code: str, websocket: WebSocket) -> None:
+        """Forget an operator's socket, unless a newer one has already replaced it."""
+        channel = self._channels.get(code)
+        if channel is not None and channel.operator is websocket:
+            channel.operator = None
+
     async def attach_guest(self, code: str, websocket: WebSocket) -> None:
         """Register a guest here and listen for messages aimed at it."""
         channel = self.channel(code)

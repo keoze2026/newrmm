@@ -87,6 +87,15 @@ jobs:
   windows:
     name: Windows agent
     runs-on: windows-latest
+    # GitHub Actions evaluates a step's `if:` before that step's own `env:`
+    # block is applied, so checking `env.WINDOWS_CERT_PFX` only inside the
+    # Sign/Note-when-unsigned steps themselves (as this used to) meant it was
+    # always unset at the point the `if:` was evaluated - the Sign step could
+    # never run and the unsigned warning fired unconditionally, no matter
+    # what secrets were configured in the repository. Setting it at job level
+    # makes it visible to `if:` too.
+    env:
+      WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
     steps:
       - uses: actions/checkout@v4
 
@@ -179,6 +188,11 @@ jobs:
   macos:
     name: macOS agent
     runs-on: macos-14
+    # Same reasoning as the Windows job above: `if:` is evaluated before a
+    # step's own `env:`, so this must be set at job level or Sign-and-notarise
+    # could never run no matter what secrets exist.
+    env:
+      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
     steps:
       - uses: actions/checkout@v4
 

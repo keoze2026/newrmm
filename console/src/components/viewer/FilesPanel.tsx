@@ -26,10 +26,23 @@ export default function FilesPanel({ stream }: { stream: SessionStream }) {
   const download = useRef<{ name: string; parts: string[] } | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
 
+  const pathRef = useRef(path)
+  useEffect(() => {
+    pathRef.current = path
+  }, [path])
+
   const list = useCallback((next?: string) => {
     stream.send({ type: 'files', action: 'list', path: next })
   }, [stream])
 
+  // Subscribing is the only thing this effect should do. It used to also
+  // call list() unconditionally on every run, with `path` as a dependency -
+  // but the 'list' handler right above it calls setPath(), which is exactly
+  // the dependency that re-triggers the effect, so every reply re-requested
+  // the root listing it had just moved away from: a click into any subfolder
+  // bounced straight back to root one round trip later, and the panel could
+  // never browse past the top level. `path` is read via a ref instead, so
+  // this only subscribes once per `stream`.
   useEffect(() => {
     const unsubscribe = stream.subscribe((message) => {
       if (message.type !== 'files') return
@@ -60,17 +73,28 @@ export default function FilesPanel({ stream }: { stream: SessionStream }) {
         }
       } else if (message.action === 'received') {
         setBusy(null)
-        list(path)
+        list(pathRef.current)
       } else if (message.action === 'error') {
         setError(String(message.error ?? 'Something went wrong'))
         setBusy(null)
       }
     })
-    list()
     return unsubscribe
-  }, [stream, list, path])
+  }, [stream, list])
+
+  // The initial root listing, once - separate from the subscription above so
+  // that effect is free to run only when `stream` itself changes.
+  useEffect(() => {
+    list()
+  }, [list])
 
   async function send(file: File) {
+    // Keyed only by basename, a second click (another file, or the same one
+    // twice) while a transfer is already in flight used to interleave both
+    // transfers' chunks into one corrupted download/upload with no error
+    // shown. Busy already means "something is in flight" to the operator;
+    // make it actually block a second one.
+    if (busy) return
     setBusy(`Sending ${file.name}…`)
     const target = `${path}/${file.name}`
     const buffer = new Uint8Array(await file.arrayBuffer())
@@ -80,13 +104,22 @@ export default function FilesPanel({ stream }: { stream: SessionStream }) {
       slice.forEach((byte) => {
         binary += String.fromCharCode(byte)
       })
-      stream.send({
+      // send() silently no-ops on a closed socket - previously nothing
+      // noticed, so a drop mid-upload left "Sending…" stuck forever with no
+      // way to recover short of reloading, and the endpoint never got a
+      // final chunk to finish the file. Stop and say so instead.
+      const sent = stream.send({
         type: 'files',
         action: 'put',
         path: target,
         data: btoa(binary),
         final: offset + CHUNK >= buffer.length,
       })
+      if (!sent) {
+        setError(`Connection dropped while sending ${file.name}.`)
+        setBusy(null)
+        return
+      }
       if (buffer.length === 0) break
     }
   }
@@ -155,6 +188,10 @@ export default function FilesPanel({ stream }: { stream: SessionStream }) {
                 if (entry.dir) {
                   list(`${path}/${entry.name}`)
                 } else {
+                  // See send() above: a second click while a transfer is
+                  // already in flight used to interleave both downloads'
+                  // chunks (keyed only by filename) into one corrupted file.
+                  if (busy) return
                   setBusy(`Retrieving ${entry.name}…`)
                   stream.send({ type: 'files', action: 'get', path: `${path}/${entry.name}` })
                 }

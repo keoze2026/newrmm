@@ -147,7 +147,15 @@ def running_pid() -> int | None:
         if not psutil.pid_exists(pid):
             return None
         name = psutil.Process(pid).name().lower()
-    except Exception:
+    except Exception as exc:
+        # The Windows watchdog calls this blindly every minute, forever, and
+        # treats None as "safe to start another copy" (cmd_resume). A broken
+        # psutil in the frozen build - or any other failure here - used to
+        # make that check always say "not running" with nothing logged,
+        # which would mean the watchdog launching a brand-new, fully
+        # competing agent process every single minute, forever, with no
+        # trace of why. This at least leaves one.
+        log.warning("could not check whether pid %s is this agent: %s", pid, exc)
         return None
     # A recycled process id belongs to something else; do not claim it.
     return pid if ("rmm" in name or "python" in name) else None

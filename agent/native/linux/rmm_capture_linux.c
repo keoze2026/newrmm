@@ -62,6 +62,37 @@ typedef struct {
 
 static CaptureState state = {0};
 
+/* Xlib's default error handler prints the error and calls exit() - taking the
+ * whole agent process down with zero Python exception, zero crash.log entry,
+ * zero trace anywhere. A monitor/resolution change or a transient server
+ * hiccup mid-grab (BadMatch/BadValue against now-stale geometry) hits exactly
+ * this path. Returning instead of exiting lets XShmGetImage/XGetImage report
+ * their own ordinary failure to the caller, which capture_grab() already
+ * turns into a clean, recoverable Python exception.
+ */
+static int x_error_handler(Display *display, XErrorEvent *error)
+{
+    char message[256];
+    XGetErrorText(display, error->error_code, message, sizeof(message));
+    fprintf(stderr, "rmm_capture_linux: X error: %s (request %d.%d)\n",
+            message, error->request_code, error->minor_code);
+    fflush(stderr);
+    return 0;
+}
+
+/* A dropped X connection cannot be recovered on the same Display*, and Xlib
+ * documents that it will exit() right after this handler returns regardless
+ * of what it does - but today that exit leaves no trace at all. This at least
+ * leaves one line of evidence before the process goes.
+ */
+static int x_io_error_handler(Display *display)
+{
+    (void)display;
+    fprintf(stderr, "rmm_capture_linux: lost the X server connection; exiting\n");
+    fflush(stderr);
+    return 0;
+}
+
 static void free_shm_image(void)
 {
     if (state.shm_attached) {
@@ -209,6 +240,9 @@ static PyObject *capture_open(PyObject *self, PyObject *args, PyObject *kwargs)
         return PyUnicode_FromString(state.have_shm ? "x11-shm" : "x11");
     }
 
+    XSetErrorHandler(x_error_handler);
+    XSetIOErrorHandler(x_io_error_handler);
+
     state.display = XOpenDisplay(display_name);
     if (!state.display) {
         PyErr_SetString(PyExc_RuntimeError, "could not open the X display");
@@ -299,6 +333,17 @@ static PyObject *capture_grab(PyObject *self, PyObject *args, PyObject *kwargs)
         PyErr_SetString(PyExc_RuntimeError, "open() has not been called");
         return NULL;
     }
+
+    /* Geometry was last refreshed whenever open()/monitors() happened to be
+     * called, which can be long before this grab - a resolution change or a
+     * monitor being unplugged mid-session left grab() reading stale
+     * coordinates against the X server's current (now different) screen,
+     * which is exactly what used to trigger the BadMatch/BadValue that
+     * x_error_handler above now survives instead of exiting on. Refreshing
+     * here closes the gap instead of just surviving it after the fact.
+     */
+    enumerate_monitors();
+
     if (index < 0 || index >= state.monitor_count) {
         PyErr_Format(PyExc_ValueError, "no monitor with index %d", index);
         return NULL;

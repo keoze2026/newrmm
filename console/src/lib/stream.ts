@@ -61,6 +61,7 @@ export class SessionStream {
   private frameTimes: number[] = []
   private bytesWindow: { at: number; bytes: number }[] = []
   private statsTimer: number | null = null
+  private reconnectTimer: number | null = null
   private closed = false
   private listeners = new Set<MessageHandler>()
   private assembler = new FrameAssembler()
@@ -84,6 +85,15 @@ export class SessionStream {
 
   connect() {
     this.closed = false
+    // A reconnect still pending from a previous drop must not also fire once
+    // this fresh connect() is already under way - without this, close()
+    // could not actually cancel it (see close() below), and a stream the app
+    // believes is dead could silently resurrect itself moments later and
+    // start overwriting UI state for a session the operator already left.
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
     const socket = new WebSocket(operatorSocketUrl(this.code))
     socket.binaryType = 'arraybuffer'
     this.socket = socket
@@ -120,10 +130,20 @@ export class SessionStream {
       this.state = { ...this.state, connected: false }
       this.onState(this.state)
       // Reconnect unless the operator closed the viewer (spec section 8:
-      // "reconnects automatically after drops").
-      if (!this.closed) window.setTimeout(() => this.connect(), 1500)
+      // "reconnects automatically after drops"). The handle is stored so
+      // close() can actually cancel it - previously it could not, and a
+      // reconnect scheduled just before close() would still fire afterward.
+      if (!this.closed) {
+        this.reconnectTimer = window.setTimeout(() => this.connect(), 1500)
+      }
     }
 
+    // Each reconnect used to start a new interval without ever clearing the
+    // previous one - close() can only ever clear the single most recent
+    // handle, so every earlier reconnect on a flaky connection leaked its own
+    // setInterval, forever, each one still calling publishStats()/onState()
+    // every 500ms for the life of the page.
+    if (this.statsTimer !== null) window.clearInterval(this.statsTimer)
     this.statsTimer = window.setInterval(() => this.publishStats(), 500)
   }
 
@@ -176,15 +196,21 @@ export class SessionStream {
     return () => this.listeners.delete(listener)
   }
 
-  send(message: ControlMessage) {
+  /** Sends if the socket is open right now; returns whether it actually did,
+   * so a caller doing a multi-part transfer (a file upload) can tell a drop
+   * mid-transfer apart from a message that genuinely went out. */
+  send(message: ControlMessage): boolean {
     if (this.socket?.readyState === WebSocket.OPEN) {
       this.socket.send(JSON.stringify(message))
+      return true
     }
+    return false
   }
 
   close() {
     this.closed = true
     if (this.statsTimer !== null) window.clearInterval(this.statsTimer)
+    if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer)
     this.socket?.close()
     this.socket = null
     this.listeners.clear()

@@ -16,6 +16,8 @@
 //! Frames are produced on a capture thread by the OS and handed over as packed
 //! RGB, matching the Linux module so the agent treats both the same way.
 
+use std::panic::{self, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -66,22 +68,34 @@ type Shared = Arc<Mutex<LatestFrame>>;
 
 struct Handler {
     shared: Shared,
+    stop: Arc<AtomicBool>,
 }
 
 impl GraphicsCaptureApiHandler for Handler {
-    type Flags = Shared;
+    type Flags = (Shared, Arc<AtomicBool>);
     type Error = Box<dyn std::error::Error + Send + Sync>;
 
     fn new(context: Context<Self::Flags>) -> Result<Self, Self::Error> {
-        Ok(Self { shared: context.flags })
+        let (shared, stop) = context.flags;
+        Ok(Self { shared, stop })
     }
 
     /// Called by Windows for every frame it composites.
     fn on_frame_arrived(
         &mut self,
         frame: &mut Frame,
-        _control: InternalCaptureControl,
+        control: InternalCaptureControl,
     ) -> Result<(), Self::Error> {
+        // close() and a monitor switch both used to just drop this Session,
+        // which never actually stopped the OS capture session or this
+        // thread - every switch leaked one more of each, forever, for the
+        // life of the process. This is the only place that can end the
+        // capture: `stop()` must be called from inside this callback.
+        if self.stop.load(Ordering::SeqCst) {
+            control.stop();
+            return Ok(());
+        }
+
         let width = frame.width();
         let height = frame.height();
 
@@ -115,8 +129,20 @@ impl GraphicsCaptureApiHandler for Handler {
 /// A running capture of one monitor.
 struct Session {
     shared: Shared,
+    stop: Arc<AtomicBool>,
     monitor_index: usize,
     _thread: std::thread::JoinHandle<()>,
+}
+
+impl Session {
+    /// Tell the capture thread to stop. Does not block: the thread notices on
+    /// its next frame callback (normally well under a second) and exits on
+    /// its own; the OS capture session is released once it does. Not joined
+    /// here on purpose - a stalled display (unplugged, asleep, DXGI lost)
+    /// would otherwise turn this into a hang instead of the leak it replaces.
+    fn signal_stop(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
 }
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
@@ -133,7 +159,8 @@ fn monitor_at(index: usize) -> PyResult<Monitor> {
 fn start_session(index: usize) -> PyResult<Session> {
     let monitor = monitor_at(index)?;
     let shared: Shared = Arc::new(Mutex::new(LatestFrame::default()));
-    let flags = Arc::clone(&shared);
+    let stop = Arc::new(AtomicBool::new(false));
+    let flags = (Arc::clone(&shared), Arc::clone(&stop));
 
     let settings = Settings::new(
         monitor,
@@ -149,12 +176,27 @@ fn start_session(index: usize) -> PyResult<Session> {
     );
 
     let thread = std::thread::spawn(move || {
-        // Blocks on the OS capture loop until the session is dropped.
-        let _ = Handler::start(settings);
+        // A panic unwinding out of this thread - including one that started
+        // inside on_frame_arrived, which Windows calls back into from its own
+        // capture machinery on this same thread - would otherwise be an
+        // uncatchable process abort with nothing logged anywhere: exactly the
+        // "agent died with zero trace" symptom this project has been chasing.
+        // Catching it here, at the entry point, turns that into a loggable,
+        // recoverable thread exit instead.
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| Handler::start(settings)));
+        if let Err(payload) = outcome {
+            let message = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".to_string());
+            eprintln!("rmm_capture_windows: capture thread panicked: {message}");
+        }
     });
 
     Ok(Session {
         shared,
+        stop,
         monitor_index: index,
         _thread: thread,
     })
@@ -172,6 +214,10 @@ fn open(index: usize) -> PyResult<String> {
         if session.monitor_index == index {
             return Ok("windows-graphics-capture".to_string());
         }
+        // Switching monitors used to just drop the old Session here, leaking
+        // its OS capture session and thread forever - on ordinary
+        // multi-monitor use, not just shutdown.
+        session.signal_stop();
     }
     *guard = Some(start_session(index)?);
 
@@ -264,6 +310,9 @@ fn close() -> PyResult<()> {
     let mut guard = SESSION
         .lock()
         .map_err(|_| PyRuntimeError::new_err("capture state is poisoned"))?;
+    if let Some(session) = guard.as_ref() {
+        session.signal_stop();
+    }
     *guard = None;
     Ok(())
 }

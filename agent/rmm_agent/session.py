@@ -275,24 +275,37 @@ class AgentSession:
                 continue
 
             kind = message.get("type")
-            if kind == "input":
-                self.injector.apply(message, self.capture.geometry)
-            elif kind == "monitor":
-                self.capture.select(int(message.get("index", 0)))
-            elif kind == "keyframe":
-                self._tiles.request_keyframe()
-            elif kind == "blank":
-                await self._handle_blank(message)
-            elif kind == "terminal":
-                await self._handle_terminal(message)
-            elif kind == "files":
-                await self._handle_files(message)
-            elif kind == "clipboard":
-                await self._handle_clipboard(message)
-            elif kind == "end":
-                log.info("the operator ended the session")
-                self._stop.set()
-                return
+            # This loop is the whole control channel for the session - input,
+            # terminal, files, clipboard, monitor switching, and the "end"
+            # message itself. It runs as a detached task whose exception is
+            # never awaited or retrieved, so one malformed/unexpected message
+            # (a non-integer "index"/"cols"/"rows", an edge case a handler
+            # does not expect) used to end this loop for good: everything
+            # above would go silently, permanently deaf for the rest of the
+            # connection - frames kept streaming obliviously, and the
+            # operator could not even cleanly end the session. The agent
+            # looked dead; it was actually just deaf.
+            try:
+                if kind == "input":
+                    self.injector.apply(message, self.capture.geometry)
+                elif kind == "monitor":
+                    self.capture.select(int(message.get("index", 0)))
+                elif kind == "keyframe":
+                    self._tiles.request_keyframe()
+                elif kind == "blank":
+                    await self._handle_blank(message)
+                elif kind == "terminal":
+                    await self._handle_terminal(message)
+                elif kind == "files":
+                    await self._handle_files(message)
+                elif kind == "clipboard":
+                    await self._handle_clipboard(message)
+                elif kind == "end":
+                    log.info("the operator ended the session")
+                    self._stop.set()
+                    return
+            except Exception as exc:
+                log.warning("could not handle a %r message: %s", kind, exc)
 
     # ---------------------------------------------------------------- tools
 
@@ -315,6 +328,10 @@ class AgentSession:
         for upload in self._uploads.values():
             upload.abort()
         self._uploads.clear()
+        # A connection that drops between a mouse/key down and its matching
+        # up left that button or key physically stuck at the OS level with no
+        # code path that ever released it - see InputInjector.release_all.
+        self.injector.release_all()
 
     async def _handle_terminal(self, message: dict) -> None:
         action = message.get("action")

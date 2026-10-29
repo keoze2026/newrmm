@@ -154,16 +154,23 @@ private final class CaptureEngine {
         stop()
 
         let display = displays[index]
+        let filter = SCContentFilter(display: display, excludingWindows: [])
         let configuration = SCStreamConfiguration()
-        configuration.width = display.width
-        configuration.height = display.height
+        // SCDisplay.width/height are in points, not pixels - on a Retina
+        // display (e.g. a 2560x1600-pixel panel reporting 1280x800 points)
+        // using them directly as the output buffer size, which is in pixels,
+        // captured at half the linear resolution (a quarter of the pixel
+        // count) on every Retina Mac. pointPixelScale is Apple's own
+        // documented way to convert.
+        let scale = CGFloat(filter.pointPixelScale)
+        configuration.width = Int(CGFloat(display.width) * scale)
+        configuration.height = Int(CGFloat(display.height) * scale)
         configuration.pixelFormat = kCVPixelFormatType_32BGRA
         configuration.showsCursor = true
         configuration.queueDepth = 3
         // 30 fps ceiling; the agent's own rate controller throttles below this.
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: 30)
 
-        let filter = SCContentFilter(display: display, excludingWindows: [])
         let handler = StreamOutput(store: store)
         let newStream = SCStream(filter: filter, configuration: configuration, delegate: handler)
 

@@ -17,6 +17,13 @@ class InputInjector:
         self._keyboard = None
         self._Button = None
         self._Key = None
+        # What this operator is currently holding down. Nothing else records
+        # this: if the connection drops between a down and its matching up -
+        # mid-drag, or mid-shortcut - the button/key stayed physically pressed
+        # at the OS level forever, with no code path that ever released it,
+        # not even on the next reconnect.
+        self._pressed_buttons: set = set()
+        self._pressed_keys: set = set()
         if not enabled:
             log.info("input injection disabled; operator input will only be logged")
             return
@@ -83,10 +90,25 @@ class InputInjector:
                         "right": self._Button.right,
                         "middle": self._Button.middle,
                     }.get(message.get("button", "left"), self._Button.left)
-                    (self._mouse.press if action == "down" else self._mouse.release)(button)
+                    if action == "down":
+                        self._mouse.press(button)
+                        self._pressed_buttons.add(button)
+                    else:
+                        self._mouse.release(button)
+                        self._pressed_buttons.discard(button)
             elif kind == "scroll":
-                steps = int(message.get("dy", 0) / 100) or (1 if message.get("dy", 0) < 0 else -1)
-                self._mouse.scroll(0, -steps)
+                dy = message.get("dy", 0)
+                # A small nonzero delta still rounds to int(dy/100) == 0, and
+                # that case is meant to fall through to a minimum one-notch
+                # scroll in the right direction - but int(0/100) is also 0,
+                # so a *zero*-delta event used to hit that same fallback and
+                # produce an unasked-for one-notch scroll on every such event.
+                if dy == 0:
+                    steps = 0
+                else:
+                    steps = int(dy / 100) or (1 if dy < 0 else -1)
+                if steps:
+                    self._mouse.scroll(0, -steps)
             elif kind == "key":
                 name = message.get("key", "")
                 target = self._special(name) or (name if len(name) == 1 else None)
@@ -94,7 +116,35 @@ class InputInjector:
                     return
                 if message.get("action") == "down":
                     self._keyboard.press(target)
+                    self._pressed_keys.add(target)
                 else:
                     self._keyboard.release(target)
+                    self._pressed_keys.discard(target)
         except Exception as exc:
             log.debug("could not apply input %s: %s", message, exc)
+
+    def release_all(self) -> None:
+        """Let go of everything still held down.
+
+        Call this whenever a session ends for any reason - a clean end, a
+        dropped connection, anything. Without it, a connection that dropped
+        between a down and its matching up (mid-drag, mid-shortcut) left that
+        button or key physically stuck at the OS level with no way to clear
+        it, even across a reconnect.
+        """
+        if not self.available:
+            self._pressed_buttons.clear()
+            self._pressed_keys.clear()
+            return
+        for button in list(self._pressed_buttons):
+            try:
+                self._mouse.release(button)
+            except Exception as exc:
+                log.debug("could not release mouse button %s: %s", button, exc)
+        for key in list(self._pressed_keys):
+            try:
+                self._keyboard.release(key)
+            except Exception as exc:
+                log.debug("could not release key %s: %s", key, exc)
+        self._pressed_buttons.clear()
+        self._pressed_keys.clear()

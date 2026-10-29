@@ -89,8 +89,19 @@ async def guest_socket(
     await websocket.accept()
     channel = hub.channel(code)
     if channel.guest is not None:
-        await websocket.close(code=4409, reason="A guest is already connected")
-        return
+        # The previous connection may already be dead - TCP teardown is not
+        # instant, and the agent's own reconnect (the watchdog/self-heal work
+        # relies on exactly this) can easily beat the old socket's read loop
+        # to noticing. Rejecting the new one outright used to make a
+        # legitimate reconnect fail until the stale socket's own cleanup
+        # eventually ran, sometimes well after the agent had given up
+        # retrying. Close the stale one and take over instead, the same
+        # pattern already used for a device's socket being replaced.
+        stale = channel.guest
+        try:
+            await stale.close(code=4409, reason="Replaced by a new connection")
+        except Exception:
+            pass
     await hub.attach_guest(code, websocket)
 
     consented = False
@@ -203,8 +214,17 @@ async def guest_socket(
     except Exception:
         pass
     finally:
-        channel.guest = None
+        # A stale connection's own cleanup running after a newer one has
+        # already replaced it (see the reconnect handling above) must not
+        # tear down the live connection's state - neither the in-memory
+        # socket reference nor the "guest left" row/notification, both of
+        # which used to fire unconditionally here regardless of which
+        # connection this cleanup actually belonged to.
+        still_current = channel.guest is websocket
+        hub.detach_guest(code, websocket)
         hub.drop(code)
+        if not still_current:
+            return
         async with SessionLocal() as db:
             live = await db.scalar(select(Session).where(Session.code == code))
             if live is not None:
@@ -367,9 +387,17 @@ async def operator_socket(websocket: WebSocket, code: str, token: str = "") -> N
     except Exception:
         pass
     finally:
-        channel.operator = None
+        # Same reasoning as the guest socket's finally block: a reconnecting
+        # operator (flaky wifi, a tab refresh, a token refresh) attaches a new
+        # socket before the old one's read loop has noticed it is dead, and
+        # the old socket's own cleanup running afterward must not tear down
+        # the live one - least of all by telling a still-watched standing
+        # device to stop sharing out from under the operator who is still
+        # there.
+        still_current = channel.operator is websocket
+        hub.detach_operator(code, websocket)
         hub.drop(code)
-        if standing_device:
+        if still_current and standing_device:
             # The operator left, so the screen must stop being shared. An
             # attended guest decides for themselves; a standing device has no
             # one at the keyboard to do it.

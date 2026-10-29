@@ -9,6 +9,7 @@ and never will. Knowing a valid session code is the credential, exactly as it is
 for the agent's own WebSocket, and the code is short-lived and single-use in
 practice because a session accepts one guest at a time.
 """
+import asyncio
 import hashlib
 from pathlib import Path
 
@@ -79,13 +80,36 @@ def _artefact(platform: str) -> Path | None:
     return None
 
 
-def _digest(path: Path) -> str:
+def _digest_sync(path: Path) -> str:
     """So the guest can check what they downloaded is what we built."""
     sha = hashlib.sha256()
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             sha.update(block)
     return sha.hexdigest()
+
+
+# path -> (size, mtime, digest), so a fresh build invalidates the cache.
+_digest_cache: dict[Path, tuple[int, float, str]] = {}
+
+
+async def _digest(path: Path) -> str:
+    """Cached, and off the event loop.
+
+    This event loop is shared with every live session's frame and input
+    delivery (ws.py's guest/operator sockets). Hashing a multi-ten-MB
+    installer is blocking, CPU-bound work; doing it synchronously, from
+    scratch, on every single call - list_connectors polls this - added
+    latency/jitter to every concurrently active session each time someone
+    opened the download page.
+    """
+    stat = path.stat()
+    cached = _digest_cache.get(path)
+    if cached is not None and cached[0] == stat.st_size and cached[1] == stat.st_mtime:
+        return cached[2]
+    digest = await asyncio.to_thread(_digest_sync, path)
+    _digest_cache[path] = (stat.st_size, stat.st_mtime, digest)
+    return digest
 
 
 @router.get("")
@@ -102,7 +126,7 @@ async def list_connectors() -> dict:
                 "available": path is not None,
                 "filename": path.name if path else None,
                 "size": path.stat().st_size if path else None,
-                "sha256": _digest(path) if path else None,
+                "sha256": await _digest(path) if path else None,
             }
         )
     return {"builds": builds}
@@ -189,7 +213,7 @@ async def download_connector(
         path,
         media_type="application/octet-stream",
         filename=download_name,
-        headers={"X-Connector-SHA256": _digest(path)},
+        headers={"X-Connector-SHA256": await _digest(path)},
     )
 
 
