@@ -60,6 +60,8 @@ export default function Viewer({
   const [monitorMenu, setMonitorMenu] = useState(false)
   const [monitor, setMonitor] = useState(0)
   const [notice, setNotice] = useState<string | null>(null)
+  const pendingMoveRef = useRef<{ x: number; y: number } | null>(null)
+  const moveScheduledRef = useRef(false)
 
   const flash = useCallback((message: string) => {
     setNotice(message)
@@ -177,6 +179,19 @@ export default function Viewer({
     })
   }
 
+  // A mouse can fire pointermove far faster than the network round-trip to
+  // the guest. Sending every one queues up a backlog of stale positions that
+  // the agent keeps applying after the real mouse has stopped, which looks
+  // like the cursor dragging itself. Coalescing to one send per animation
+  // frame keeps only the latest position in flight.
+  function flushMove() {
+    moveScheduledRef.current = false
+    const point = pendingMoveRef.current
+    if (!point) return
+    pendingMoveRef.current = null
+    stream.send({ type: 'input', kind: 'mouse', action: 'move', ...point })
+  }
+
   function onPointerMove(event: React.PointerEvent) {
     if (annotating) {
       if (drawingRef.current) annotate(event.clientX, event.clientY, false)
@@ -185,7 +200,11 @@ export default function Viewer({
     if (!controlling) return
     const point = toGuest(event.clientX, event.clientY)
     if (!point) return
-    stream.send({ type: 'input', kind: 'mouse', action: 'move', ...point })
+    pendingMoveRef.current = point
+    if (!moveScheduledRef.current) {
+      moveScheduledRef.current = true
+      requestAnimationFrame(flushMove)
+    }
   }
 
   function onPointerUp(event: React.PointerEvent) {
