@@ -158,7 +158,7 @@ async def run_device(tray, holder, enrolment, args) -> None:
             enrolment.relay_url,
             code,
             tray=tray,
-            fps=getattr(args, "fps", 12),
+            fps=getattr(args, "fps", 30),
             quality=getattr(args, "quality", 60),
             budget_kbps=getattr(args, "budget_kbps", 0),
             synthetic=getattr(args, "synthetic", False),
@@ -233,7 +233,7 @@ def cmd_start(args) -> int:
         return 0
 
     joined = argparse.Namespace(
-        relay=relay, code=code, fps=12, quality=60, budget_kbps=0,
+        relay=relay, code=code, fps=30, quality=60, budget_kbps=0,
         device_id="", secret="", synthetic=False, tray=not no_tray, inject=True,
         auto_consent=False, blank_watchdog=0.0, blank_blocks_input=True,
         allow_standing=True,
@@ -270,7 +270,7 @@ def cmd_resume(args) -> int:
     if enrolment is not None:
         log.info("this computer is enrolled; staying online as device %s", enrolment.device_id)
         defaults = argparse.Namespace(
-            fps=12, quality=60, budget_kbps=0, synthetic=bool(getattr(args, "synthetic", False)),
+            fps=30, quality=60, budget_kbps=0, synthetic=bool(getattr(args, "synthetic", False)),
             inject=not bool(getattr(args, "synthetic", False)),
             blank_watchdog=0.0, blank_blocks_input=True,
         )
@@ -291,7 +291,7 @@ def cmd_resume(args) -> int:
     relay, code = remembered
     log.info("resuming session %s", code)
     joined = argparse.Namespace(
-        relay=relay, code=code, fps=12, quality=60, budget_kbps=0,
+        relay=relay, code=code, fps=30, quality=60, budget_kbps=0,
         device_id="", secret="", synthetic=False, tray=True, inject=True,
         auto_consent=False, blank_watchdog=0.0, blank_blocks_input=True,
     )
@@ -400,7 +400,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="relay WebSocket base URL (defaults to the server this agent was built for)",
     )
     join.add_argument("--code", required=True)
-    join.add_argument("--fps", type=int, default=12)
+    join.add_argument("--fps", type=int, default=30)
     join.add_argument("--quality", type=int, default=60)
     join.add_argument(
         "--budget-kbps", type=int, default=0,

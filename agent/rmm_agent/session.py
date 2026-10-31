@@ -51,7 +51,7 @@ class AgentSession:
         code: str,
         tray: Tray | None = None,
         *,
-        fps: int = 12,
+        fps: int = 30,
         quality: int = 60,
         budget_kbps: int = 0,
         synthetic: bool = False,
