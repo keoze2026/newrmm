@@ -11,6 +11,7 @@ practice because a session accepts one guest at a time.
 """
 import asyncio
 import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -247,7 +248,17 @@ async def enrol_by_code(
         raise HTTPException(status_code=409, detail="This session cannot be turned into a standing one")
 
     secret = generate_device_secret()
-    device = Device(name=payload.name, os=payload.os, secret_hash=hash_secret(secret))
+    # The agent making this request is, by the live/consented check above,
+    # connected and streaming right now - mark it online immediately rather
+    # than leaving it at the "offline" default until the standing /ws/device
+    # socket opens, which only happens after this very session ends.
+    device = Device(
+        name=payload.name,
+        os=payload.os,
+        secret_hash=hash_secret(secret),
+        status="online",
+        last_seen_at=datetime.now(timezone.utc),
+    )
     db.add(device)
     await db.flush()
 

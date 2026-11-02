@@ -7,6 +7,7 @@ Nothing is relayed to the operator until the endpoint user has granted consent
 (spec section 9). The relay drops any frame that arrives before that, so a
 misbehaving or modified agent still cannot stream without a decision on record.
 """
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -105,6 +106,14 @@ async def guest_socket(
     await hub.attach_guest(code, websocket)
 
     consented = False
+    # Enrolling ("Always allow") can happen mid-session, on a different HTTP
+    # request, while this same socket keeps streaming - so the device this
+    # session belongs to is re-checked each tick below rather than captured
+    # once at connect time. Kept online the same way a standing device's own
+    # /ws/device socket does, since that one does not open until this session
+    # ends and would otherwise leave a freshly-enrolled, actively-streaming
+    # device shown as offline for the rest of it.
+    last_device_ping = 0.0
     try:
         hello = await websocket.receive_json()
         async with SessionLocal() as db:
@@ -147,6 +156,21 @@ async def guest_socket(
             message = await websocket.receive()
             if message["type"] == "websocket.disconnect":
                 break
+
+            if consented:
+                now_ts = time.monotonic()
+                if now_ts - last_device_ping >= 30:
+                    last_device_ping = now_ts
+                    async with SessionLocal() as db:
+                        live = await db.scalar(select(Session).where(Session.code == code))
+                        if live is not None and live.device_id is not None:
+                            device = await db.scalar(
+                                select(Device).where(Device.id == live.device_id)
+                            )
+                            if device is not None:
+                                device.status = "online"
+                                device.last_seen_at = datetime.now(timezone.utc)
+                                await db.commit()
 
             if (text := message.get("text")) is not None:
                 import json
