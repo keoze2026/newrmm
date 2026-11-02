@@ -524,7 +524,7 @@ export default function Viewer({
             ref={screenRef}
             data-testid="viewer-canvas"
             className={`absolute inset-0 h-full w-full ${
-              annotating ? 'cursor-crosshair' : controlling ? 'cursor-none' : 'cursor-default'
+              annotating ? 'cursor-crosshair' : 'cursor-default'
             }`}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}

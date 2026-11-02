@@ -104,6 +104,33 @@ def cmd_join(args) -> int:
 def _join(args) -> int:
     diagnostics.heartbeat()
     async def main(tray, holder):
+        # A device enrolled mid-session only gets its standing /ws/device
+        # socket once run_device() starts below - which used to wait for this
+        # whole session to end. Until then the relay has nothing to push a
+        # future "start_session" to (lost, not queued - hub.to_device_json
+        # falls back to a bare Redis publish), and the console reads the
+        # device as offline, because nothing has ever marked it online. Start
+        # a lightweight presence-only socket (heartbeat, no message handling)
+        # the moment enrolment succeeds instead, running alongside this still-
+        # live session. Safe to do: the relay only ever pushes start_session
+        # for this device's one session code when nobody is already attached
+        # to it (`ws.py`: `not guest_already_here and not hub.guest_online`),
+        # which is never true here since this session already owns that code.
+        presence_task: asyncio.Task | None = None
+        presence_stop = asyncio.Event()
+
+        def start_standing_presence() -> None:
+            nonlocal presence_task
+            if presence_task is not None:
+                return
+            enrolment = Enrolment.load()
+            if enrolment is not None:
+                presence_task = asyncio.create_task(
+                    hold_presence(
+                        enrolment.relay_url, enrolment.device_id, enrolment.secret, presence_stop
+                    )
+                )
+
         session = AgentSession(
             args.relay,
             args.code,
@@ -117,6 +144,7 @@ def _join(args) -> int:
             on_over=lambda: autostart.forget(args.code),
             standing_allowed=bool(getattr(args, "allow_standing", False)),
             on_standing=lambda: enrol.enrol(args.relay, args.code) is not None,
+            on_enrolled=start_standing_presence,
             device_id=args.device_id,
             device_secret=args.secret,
             blank_watchdog=args.blank_watchdog,
@@ -124,6 +152,14 @@ def _join(args) -> int:
         )
         holder["session"] = session
         await session.run_forever()
+
+        if presence_task is not None:
+            presence_stop.set()
+            try:
+                await asyncio.wait_for(presence_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                presence_task.cancel()
+
         if session.enrolled and (enrolment := Enrolment.load()) is not None:
             # "Always allow" was chosen: this session ending is not the end.
             await run_device(tray, holder, enrolment, args)

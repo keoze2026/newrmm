@@ -60,6 +60,7 @@ class AgentSession:
         on_over=None,
         standing_allowed: bool = False,
         on_standing=None,
+        on_enrolled=None,
         standing_consent: bool = False,
         single_shot: bool = False,
         device_id: str = "",
@@ -85,6 +86,14 @@ class AgentSession:
         # online as an always-on device once this session is over.
         self.standing_allowed = standing_allowed
         self.on_standing = on_standing
+        # Fired the moment enrolment succeeds, not at session end: the device's
+        # standing-presence socket can then start right away, in parallel with
+        # this still-running session, instead of only after it ends - closing
+        # the window where a push from the relay to "start sharing" has no
+        # device socket listening yet to receive it (hub.to_device_json falls
+        # back to a Redis publish with no queueing, so that push is lost, not
+        # delayed, if nothing is subscribed at that instant).
+        self.on_enrolled = on_enrolled
         self.enrolled = False
         # A session an enrolled device starts because an operator opened it: no
         # window, because the person gave permission once; it ends when the
@@ -121,6 +130,11 @@ class AgentSession:
             # From now on starting again after a restart belongs to the device,
             # not to this one session, so this session ending is not the end.
             self.on_over = None
+            if self.on_enrolled is not None:
+                try:
+                    self.on_enrolled()
+                except Exception as exc:
+                    log.warning("could not start standing presence alongside this session: %s", exc)
             if self.tray:
                 self.tray.notify(
                     "This computer will stay connected so support can reach it. "
