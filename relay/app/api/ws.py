@@ -271,6 +271,19 @@ async def guest_socket(
                     target_id=str(live.id),
                     detail={"code": code, "consented": consented},
                 )
+                # This socket was the one refreshing the owning device's
+                # presence (see the periodic update above); nothing else here
+                # marks it offline on disconnect, unlike /ws/device/{id}'s own
+                # handler. Without this, a crashed/killed agent still reads as
+                # "online" for up to the 90s freshness window in
+                # _mark_devices, even though nothing is live. Only mark it
+                # offline if no standing /ws/device socket is holding it up
+                # independently - same reconnect-safety check device_socket's
+                # own finally block already uses.
+                if live.device_id is not None and not hub.device_online(str(live.device_id)):
+                    device = await db.scalar(select(Device).where(Device.id == live.device_id))
+                    if device is not None:
+                        device.status = "offline"
                 await db.commit()
         await hub.to_operator_json(code, {"type": "guest_left"})
 
