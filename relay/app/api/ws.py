@@ -7,6 +7,7 @@ Nothing is relayed to the operator until the endpoint user has granted consent
 (spec section 9). The relay drops any frame that arrives before that, so a
 misbehaving or modified agent still cannot stream without a decision on record.
 """
+import asyncio
 import time
 import uuid
 from datetime import datetime, timezone
@@ -43,7 +44,14 @@ async def _authenticate_device(device_id: str, secret: str) -> Device | None:
         return None
     async with SessionLocal() as db:
         device = await db.scalar(select(Device).where(Device.id == identifier))
-        if device is None or not verify_secret(secret, device.secret_hash):
+        if device is None:
+            return None
+        # Argon2 verification is deliberately CPU/memory-expensive, and this
+        # relay runs a single worker - called inline, it blocks every other
+        # live session's frames and every other connection on this same event
+        # loop for its full duration, same class of bug as the _digest() fix
+        # earlier tonight. Every device-auth reconnect hits this path.
+        if not await asyncio.to_thread(verify_secret, secret, device.secret_hash):
             return None
         return device
 

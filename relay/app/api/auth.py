@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -27,7 +28,15 @@ async def login(
     operator = await db.scalar(select(Operator).where(Operator.email == payload.email.lower()))
     ip = client_ip(request)
 
-    if operator is None or not operator.is_active or not verify_secret(payload.password, operator.password_hash):
+    # Argon2 verification is deliberately expensive; run off the shared event
+    # loop so one login attempt does not stall every other live session on
+    # this single-worker relay for its duration.
+    password_ok = (
+        operator is not None
+        and operator.is_active
+        and await asyncio.to_thread(verify_secret, payload.password, operator.password_hash)
+    )
+    if not password_ok:
         await audit.record(
             db,
             action=audit.LOGIN_FAILED,

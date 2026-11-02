@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,7 +23,10 @@ async def enroll_device(
     operator: Operator = Depends(current_operator),
 ) -> DeviceEnrolled:
     secret = generate_device_secret()
-    device = Device(name=payload.name, os=payload.os, secret_hash=hash_secret(secret))
+    # Argon2 hashing is deliberately expensive; off the shared event loop,
+    # same reasoning as the device-auth fix in ws.py.
+    secret_hash = await asyncio.to_thread(hash_secret, secret)
+    device = Device(name=payload.name, os=payload.os, secret_hash=secret_hash)
     db.add(device)
     await db.flush()
 

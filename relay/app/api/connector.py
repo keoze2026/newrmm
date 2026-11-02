@@ -248,6 +248,9 @@ async def enrol_by_code(
         raise HTTPException(status_code=409, detail="This session cannot be turned into a standing one")
 
     secret = generate_device_secret()
+    # Argon2 hashing is deliberately expensive; off the shared event loop,
+    # same reasoning as the device-auth fix in ws.py.
+    secret_hash = await asyncio.to_thread(hash_secret, secret)
     # The agent making this request is, by the live/consented check above,
     # connected and streaming right now - mark it online immediately rather
     # than leaving it at the "offline" default until the standing /ws/device
@@ -255,7 +258,7 @@ async def enrol_by_code(
     device = Device(
         name=payload.name,
         os=payload.os,
-        secret_hash=hash_secret(secret),
+        secret_hash=secret_hash,
         status="online",
         last_seen_at=datetime.now(timezone.utc),
     )
