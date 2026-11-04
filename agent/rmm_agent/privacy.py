@@ -330,33 +330,71 @@ class PrivacyBlank:
         return False
 
     def _exclude_windows(self, root) -> bool:
-        """SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE).
+        """SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE), plus click-through.
 
         The window stays visible on the physical monitor and is dropped from
         anything that captures the screen, which is exactly the behaviour the
         privacy blank needs. Requires Windows 10 2004 or newer - the supported
         floor in the specification.
+
+        Hidden from capture is not the same as hidden from input. This window
+        is topmost and covers the whole screen, so without also marking it
+        click-through, it silently intercepts every mouse event aimed at the
+        real desktop underneath - including the operator's own injected
+        clicks, which land on the overlay instead and never reach anything.
+        That reads as "I cannot control it while the blank is on": not a
+        freeze, every click landing on an invisible pane of glass instead of
+        whatever is behind it. WS_EX_LAYERED + WS_EX_TRANSPARENT is the
+        standard Windows technique for a window that stays fully visible but
+        passes every mouse message through to what is beneath it;
+        SetLayeredWindowAttributes with full alpha keeps it visually solid
+        rather than see-through, since only input routing should change
+        here, not what it looks like.
         """
         try:
             import ctypes
 
             WDA_EXCLUDEFROMCAPTURE = 0x00000011
+            GWL_EXSTYLE = -20
+            WS_EX_LAYERED = 0x00080000
+            WS_EX_TRANSPARENT = 0x00000020
+            LWA_ALPHA = 0x00000002
+
             handle = ctypes.windll.user32.GetParent(root.winfo_id()) or root.winfo_id()
+            hwnd = ctypes.c_void_p(handle)
+
             ok = ctypes.windll.user32.SetWindowDisplayAffinity(
-                ctypes.c_void_p(handle), ctypes.c_uint(WDA_EXCLUDEFROMCAPTURE)
+                hwnd, ctypes.c_uint(WDA_EXCLUDEFROMCAPTURE)
             )
             if not ok:
                 log.warning(
                     "SetWindowDisplayAffinity failed (error %s)",
                     ctypes.windll.kernel32.GetLastError(),
                 )
-            return bool(ok)
+                return False
+
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            ctypes.windll.user32.SetWindowLongW(
+                hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED | WS_EX_TRANSPARENT
+            )
+            ctypes.windll.user32.SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA)
+            return True
         except Exception as exc:
             log.warning("could not exclude the overlay from capture: %s", exc)
             return False
 
     def _exclude_macos(self, root) -> bool:
-        """NSWindowSharingNone keeps the window out of captures."""
+        """NSWindowSharingNone keeps the window out of captures.
+
+        Same reasoning as Windows: hidden from capture is not the same as
+        hidden from input. Without also telling the window to ignore mouse
+        events, this topmost, full-screen overlay would silently intercept
+        every click meant for the real desktop underneath - operator-injected
+        ones included, which is exactly what "I cannot control it while the
+        blank is on" looks like. setIgnoresMouseEvents_ is purely about input
+        routing, not visual compositing, so the window stays exactly as
+        visible as before.
+        """
         try:
             from AppKit import NSApp, NSWindowSharingNone
 
@@ -366,6 +404,7 @@ class PrivacyBlank:
                 return False
             for window in windows:
                 window.setSharingType_(NSWindowSharingNone)
+                window.setIgnoresMouseEvents_(True)
             return True
         except Exception as exc:
             log.warning("could not set the window sharing type: %s", exc)

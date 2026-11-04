@@ -115,6 +115,37 @@ def test_the_watchdog_releases_the_blank_on_its_own():
         instance.disable()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only capture exclusion path")
+def test_windows_overlay_is_click_through_while_active():
+    """Hidden from capture is not the same as hidden from input. Without this,
+    the overlay - topmost and covering the whole screen - silently intercepted
+    every mouse event meant for the real desktop underneath, operator-injected
+    clicks included: "I cannot control it while the blank is on." Checked for
+    real here, not mocked - this laptop can actually run the Windows capture-
+    exclusion path."""
+    import ctypes
+
+    GWL_EXSTYLE = -20
+    WS_EX_TRANSPARENT = 0x00000020
+
+    instance = privacy.PrivacyBlank()
+    instance._dimmer = None
+    instance.mode = privacy.MODE_EXCLUDED
+    try:
+        state = instance.enable(block_input=False)
+        assert state["active"] is True, state
+        assert instance.mode == privacy.MODE_EXCLUDED, (
+            "fell back to guest-lock - SetWindowDisplayAffinity itself failed, "
+            "so click-through was never reached"
+        )
+
+        handle = ctypes.windll.user32.GetParent(instance._root.winfo_id()) or instance._root.winfo_id()
+        style = ctypes.windll.user32.GetWindowLongW(ctypes.c_void_p(handle), GWL_EXSTYLE)
+        assert style & WS_EX_TRANSPARENT, "the overlay is not click-through"
+    finally:
+        instance.disable()
+
+
 def test_a_toggled_blank_can_be_re_enabled(blank):
     for _ in range(3):
         assert blank.enable(block_input=False)["active"] is True
