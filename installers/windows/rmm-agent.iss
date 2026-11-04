@@ -35,6 +35,9 @@ DisableFinishedPage=yes
 
 [Files]
 Source: "..\..\agent\dist\rmm-agent-windows.exe"; DestDir: "{app}"; DestName: "rmm-agent.exe"; Flags: ignoreversion
+; The silent watchdog check (rmm_agent/watchdog_check.py) - must land in the
+; same directory as rmm-agent.exe itself, since that is where it looks for it.
+Source: "..\..\agent\dist\rmm-agent-watchdog.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\RMM Agent"; Filename: "{app}\rmm-agent.exe"

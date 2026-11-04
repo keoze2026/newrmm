@@ -64,6 +64,24 @@ def _resume_command() -> list[str]:
     return background.own_command(["resume"])
 
 
+def _watchdog_command() -> list[str] | None:
+    """The silent, windowed-subsystem helper that performs the watchdog's own
+    "is it still running?" check, built and installed alongside the main agent
+    as rmm-agent-watchdog.exe. Launching the main agent directly from Task
+    Scheduler (as this used to) flashed a console window on screen every
+    single check, even when nothing needed fixing - the main agent is a
+    console-subsystem program by design, so Windows allocates a visible
+    window for it the instant it starts, before any of its own code can hide
+    it again. None if there is no installed, frozen build to find the helper
+    next to (running from source has no separate helper build at all)."""
+    if not getattr(sys, "frozen", False):
+        return None
+    helper = Path(sys.executable).with_name("rmm-agent-watchdog.exe")
+    if not helper.exists():
+        return None
+    return [str(helper)]
+
+
 def _windows_enable() -> bool:
     try:
         import winreg
@@ -100,12 +118,18 @@ def _windows_enable_watchdog() -> bool:
     agent back if it is ever killed - by a crash, by something else on the
     machine, by anything - without someone noticing and starting it by hand.
     This checks every minute, forever, independent of why it died - the
-    fastest interval `schtasks` can schedule. `resume` is safe to call
-    blindly like this: it is a no-op when the agent is already running (see
+    fastest interval `schtasks` can schedule.
+
+    Points at the silent windowed-subsystem helper (_watchdog_command) when
+    one is installed, so the check itself never flashes a window; falls back
+    to calling the main agent's own `resume` directly (the old behaviour,
+    console flash and all) only if no helper build is found next to it - an
+    older install, or running from source. `resume` is safe to call blindly
+    either way: it is a no-op when the agent is already running (see
     cmd_resume).
     """
     try:
-        command = subprocess.list2cmdline(_resume_command())
+        command = subprocess.list2cmdline(_watchdog_command() or _resume_command())
         result = subprocess.run(
             ["schtasks", "/Create", "/TN", WATCHDOG_TASK, "/TR", command,
              "/SC", "MINUTE", "/MO", "1", "/F"],

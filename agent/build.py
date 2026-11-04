@@ -192,6 +192,33 @@ def build(app_bundle: bool, windowed: bool) -> int:
     return 0
 
 
+def build_watchdog_helper() -> int:
+    """The silent, windowed-subsystem watchdog check, Windows only.
+
+    Launching the main agent directly from Task Scheduler to ask "are you
+    still running?" flashed a console window on screen every single check,
+    even when nothing needed fixing - the main agent is a console-subsystem
+    program by design (rmm_agent/watchdog_check.py explains why this needs
+    to be its own executable rather than a flag on the main one: the
+    difference is set at build time, on the whole process, and the main
+    agent still needs its console for `status`/`join` run from a terminal).
+    """
+    command = [
+        sys.executable, "-m", "PyInstaller",
+        "--noconfirm", "--clean",
+        "--name", "rmm-agent-watchdog",
+        "--windowed", "--onefile",
+        str(ROOT / "rmm_agent" / "watchdog_check.py"),
+    ]
+    print(" ".join(command), flush=True)
+    result = subprocess.run(command, cwd=ROOT)
+    if result.returncode != 0:
+        return result.returncode
+    produced = ROOT / "dist" / "rmm-agent-watchdog.exe"
+    print(f"built: {produced if produced.exists() else ROOT / 'dist'}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -213,7 +240,11 @@ def main() -> int:
         pass  # not required, just noted
 
     print(f"building the endpoint agent for {SYSTEM}")
-    return build(app_bundle=args.app, windowed=args.windowed)
+    result = build(app_bundle=args.app, windowed=args.windowed)
+    if result == 0 and SYSTEM == "Windows":
+        print("\nbuilding the silent watchdog helper")
+        result = build_watchdog_helper()
+    return result
 
 
 if __name__ == "__main__":

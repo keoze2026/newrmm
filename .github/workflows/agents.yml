@@ -166,7 +166,7 @@ jobs:
           & "${env:ProgramFiles(x86)}\Windows Kits\10\bin\x64\signtool.exe" sign `
             /f cert.pfx /p $env:WINDOWS_CERT_PASSWORD `
             /tr http://timestamp.digicert.com /td sha256 /fd sha256 `
-            agent\dist\rmm-agent-windows.exe agent\dist\rmm-agent-setup.exe
+            agent\dist\rmm-agent-windows.exe agent\dist\rmm-agent-watchdog.exe agent\dist\rmm-agent-setup.exe
           Remove-Item cert.pfx
         shell: pwsh
 
@@ -182,6 +182,7 @@ jobs:
           name: rmm-agent-windows
           path: |
             agent/dist/rmm-agent-windows.exe
+            agent/dist/rmm-agent-watchdog.exe
             agent/dist/rmm-agent-setup.exe
           if-no-files-found: error
 

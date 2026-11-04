@@ -230,6 +230,32 @@ def test_windows_login_entry_also_turns_on_a_restart_watchdog(monkeypatch):
     assert seen["command"][-5:] == ["/SC", "MINUTE", "/MO", "1", "/F"]
 
 
+def test_the_watchdog_prefers_the_silent_helper_when_one_is_installed(monkeypatch, tmp_path):
+    """Launching the main agent directly from Task Scheduler flashes a console
+    window every check, even when nothing needs fixing - the main agent is a
+    console-subsystem program by design. A windowed-subsystem helper installed
+    next to it never shows a window at all, so the watchdog must prefer it."""
+    fake = FakeWinreg()
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    agent_exe = tmp_path / "rmm-agent.exe"
+    helper_exe = tmp_path / "rmm-agent-watchdog.exe"
+    helper_exe.write_text("not a real exe, just needs to exist")
+    monkeypatch.setattr(background, "own_command", lambda args: [str(agent_exe), *args])
+    monkeypatch.setattr(autostart.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(autostart.sys, "executable", str(agent_exe))
+
+    seen = {}
+
+    def fake_run(command, **options):
+        seen["command"] = command
+        return types.SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(autostart.subprocess, "run", fake_run)
+    assert autostart._windows_enable() is True
+    assert str(helper_exe) in seen["command"]
+    assert "resume" not in seen["command"]
+
+
 def test_a_watchdog_that_cannot_be_created_does_not_block_autostart(monkeypatch):
     """schtasks can be missing or blocked by policy; the Run key entry -
     autostart's required part - must still succeed."""
