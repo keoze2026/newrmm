@@ -81,7 +81,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            python3-tk xvfb libx11-dev libxext-dev libxrandr-dev
+            python3-tk xvfb libx11-dev libxext-dev libxrandr-dev libxfixes-dev
 
       - name: Install
         run: |

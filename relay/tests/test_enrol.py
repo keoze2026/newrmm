@@ -67,12 +67,21 @@ async def test_a_standing_session_cannot_be_enrolled_twice(client, auth_headers)
 
 
 async def test_the_session_list_says_whether_the_device_is_online(client, auth_headers):
+    """Online immediately on enrolment, not after a heartbeat.
+
+    This used to assert the opposite (device_online is False "no heartbeat has
+    arrived"). That read as "offline" for the whole rest of the session it was
+    enrolled during - a real bug, confirmed live and fixed in enrol_by_code: the
+    enrolling request only ever succeeds for an already-live, consented
+    session, which is itself proof of liveness, so there is no reason to wait
+    for a separate heartbeat before saying so.
+    """
     created = await _live_session(client, auth_headers)
     await client.post("/connector/enrol", json=_body(created["code"]))
     listed = (await client.get("/sessions", headers=auth_headers)).json()
     row = next(s for s in listed if s["id"] == created["id"])
     assert row["mode"] == "unattended"
-    assert row["device_online"] is False  # no heartbeat has arrived
+    assert row["device_online"] is True
 
 
 async def test_enrolment_is_rate_limited(client, auth_headers):
