@@ -2,9 +2,11 @@
 
     python setup.py build_ext --inplace
 
-Needs libx11, libxext (for MIT-SHM) and libxrandr development headers:
+Needs libx11, libxext (for MIT-SHM), libxrandr and libxfixes (for the cursor
+image - the guest's own cursor is otherwise never captured at all) development
+headers:
 
-    sudo apt install libx11-dev libxext-dev libxrandr-dev
+    sudo apt install libx11-dev libxext-dev libxrandr-dev libxfixes-dev
 
 PipeWire support is compiled in when its headers are present, which adds the
 Wayland path the specification calls for:
@@ -56,7 +58,7 @@ def has_pipewire() -> bool:
         return False
 
 
-packages = ["x11", "xext", "xrandr"]
+packages = ["x11", "xext", "xrandr", "xfixes"]
 define_macros = []
 
 if has_pipewire():

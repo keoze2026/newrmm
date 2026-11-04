@@ -27,6 +27,7 @@
 #include <X11/Xutil.h>
 #include <X11/extensions/XShm.h>
 #include <X11/extensions/Xrandr.h>
+#include <X11/extensions/Xfixes.h>
 
 #include <sys/ipc.h>
 #include <sys/shm.h>
@@ -58,6 +59,7 @@ typedef struct {
     int shm_width;
     int shm_height;
     int have_shm;
+    int have_xfixes;
 } CaptureState;
 
 static CaptureState state = {0};
@@ -256,6 +258,9 @@ static PyObject *capture_open(PyObject *self, PyObject *args, PyObject *kwargs)
     Bool pixmaps = False;
     state.have_shm = XShmQueryVersion(state.display, &major, &minor, &pixmaps) ? 1 : 0;
 
+    int xfixes_event = 0, xfixes_error = 0;
+    state.have_xfixes = XFixesQueryExtension(state.display, &xfixes_event, &xfixes_error) ? 1 : 0;
+
     enumerate_monitors();
     return PyUnicode_FromString(state.have_shm ? "x11-shm" : "x11");
 }
@@ -313,6 +318,68 @@ static void to_rgb(const XImage *image, unsigned char *out, int width, int heigh
             dest += 3;
         }
     }
+}
+
+/* The guest's own cursor was never captured into the frame at all: XShmGetImage
+ * and XGetImage never include the X11 hardware cursor by design, and nothing
+ * drew it back in. The operator saw no cursor anywhere while controlling
+ * (confirmed and partly mitigated on 2026-11-02 by showing the operator's own
+ * local pointer instead - this is the other half, the actual guest cursor).
+ * XFixesGetCursorImage's x/y mark the cursor's hotspot in *root window*
+ * coordinates; xhot/yhot are the hotspot's offset within the cursor image
+ * itself, so the image's top-left corner is (x - xhot, y - yhot). `pixels` is
+ * documented as premultiplied-alpha ARGB, one `unsigned long` per pixel (only
+ * the low 32 bits are meaningful - `unsigned long` is 64-bit on this
+ * platform), which is why a plain "add the cursor's colour, then scale the
+ * background down by its remaining alpha" blend is correct with no separate
+ * un-premultiply step. */
+static void composite_cursor(unsigned char *out, int width, int height, int origin_x, int origin_y)
+{
+    if (!state.have_xfixes) {
+        return;
+    }
+    XFixesCursorImage *cursor = XFixesGetCursorImage(state.display);
+    if (!cursor) {
+        return;
+    }
+
+    int cursor_left = (int)cursor->x - (int)cursor->xhot - origin_x;
+    int cursor_top = (int)cursor->y - (int)cursor->yhot - origin_y;
+
+    for (int cy = 0; cy < cursor->height; cy++) {
+        int py = cursor_top + cy;
+        if (py < 0 || py >= height) {
+            continue;
+        }
+        for (int cx = 0; cx < cursor->width; cx++) {
+            int px = cursor_left + cx;
+            if (px < 0 || px >= width) {
+                continue;
+            }
+
+            unsigned long pixel = cursor->pixels[(size_t)cy * cursor->width + cx];
+            unsigned char a = (unsigned char)((pixel >> 24) & 0xff);
+            if (a == 0) {
+                continue;
+            }
+            unsigned char r = (unsigned char)((pixel >> 16) & 0xff);
+            unsigned char g = (unsigned char)((pixel >> 8) & 0xff);
+            unsigned char b = (unsigned char)(pixel & 0xff);
+
+            unsigned char *dest = out + ((size_t)py * (size_t)width + (size_t)px) * 3;
+            if (a == 255) {
+                dest[0] = r;
+                dest[1] = g;
+                dest[2] = b;
+            } else {
+                unsigned int keep = 255 - a;
+                dest[0] = (unsigned char)(r + (dest[0] * keep) / 255);
+                dest[1] = (unsigned char)(g + (dest[1] * keep) / 255);
+                dest[2] = (unsigned char)(b + (dest[2] * keep) / 255);
+            }
+        }
+    }
+    XFree(cursor);
 }
 
 PyDoc_STRVAR(grab_doc,
@@ -373,6 +440,7 @@ static PyObject *capture_grab(PyObject *self, PyObject *args, PyObject *kwargs)
                           monitor.x, monitor.y, AllPlanes) ? 1 : 0;
         if (ok) {
             to_rgb(state.image, out, width, height);
+            composite_cursor(out, width, height, monitor.x, monitor.y);
         }
         Py_END_ALLOW_THREADS
 
@@ -388,6 +456,7 @@ static PyObject *capture_grab(PyObject *self, PyObject *args, PyObject *kwargs)
                           (unsigned)width, (unsigned)height, AllPlanes, ZPixmap);
         if (image) {
             to_rgb(image, out, width, height);
+            composite_cursor(out, width, height, monitor.x, monitor.y);
         }
         Py_END_ALLOW_THREADS
 
@@ -415,6 +484,7 @@ static PyObject *capture_close(PyObject *self, PyObject *Py_UNUSED(ignored))
         state.display = NULL;
         state.monitor_count = 0;
         state.have_shm = 0;
+        state.have_xfixes = 0;
     }
     Py_RETURN_NONE;
 }
