@@ -34,6 +34,19 @@ async def _get_or_404(db: AsyncSession, session_id: uuid.UUID) -> Session:
     return session
 
 
+def _require_owner_or_admin(session: Session, operator: Operator) -> None:
+    """Every operator can see and join any session - that is deliberate, so
+    the team can cover for each other - but ending one is the one disruptive
+    action a session's owner did not ask a colleague to take for them. Only
+    the operator who created it, or an admin, may end it."""
+    if operator.role == "admin" or session.operator_id == operator.id:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Only this session's own operator or an admin can end it.",
+    )
+
+
 @router.post("", response_model=SessionOut, status_code=status.HTTP_201_CREATED)
 async def create_session(
     payload: SessionCreate,
@@ -198,6 +211,8 @@ async def update_session(
     if payload.state is not None and payload.state != session.state:
         if session.state == "ended":
             raise HTTPException(status_code=409, detail="Session has already ended")
+        if payload.state == "ended":
+            _require_owner_or_admin(session, operator)
         previous_state = session.state
         session.state = payload.state
         now = datetime.now(timezone.utc)
@@ -237,6 +252,7 @@ async def delete_session(
     """Sessions are ended rather than erased, so the audit trail stays whole."""
     session = await _get_or_404(db, session_id)
     if session.state != "ended":
+        _require_owner_or_admin(session, operator)
         session.state = "ended"
         session.ended_at = datetime.now(timezone.utc)
         session.guest_connected = False

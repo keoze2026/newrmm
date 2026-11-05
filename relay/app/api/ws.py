@@ -423,9 +423,27 @@ async def operator_socket(websocket: WebSocket, code: str, token: str = "") -> N
     # no picture to patch. Ask for a whole frame first.
     await hub.to_guest_json(code, {"type": "keyframe"})
 
+    # Every operator may join and control any session - deliberate, so the
+    # team can cover for each other - but ending one is the one disruptive
+    # action a session's owner did not ask a colleague to take for them.
+    # Input, terminal, files, clipboard, monitor switching: all pass through
+    # unrestricted below, same as always. Only this one message type is
+    # gated, and only here - the REST endpoints (sessions.py's PATCH/DELETE)
+    # enforce the identical rule for the console's own "End session" button,
+    # but this socket forwards whatever it receives with no check of its
+    # own, so a raw `{"type": "end"}` sent straight over an already-open,
+    # otherwise-legitimate connection would otherwise bypass that entirely.
+    can_end = operator.role == "admin" or session.operator_id == operator.id
+
     try:
         while True:
             message = await websocket.receive_json()
+            if message.get("type") == "end" and not can_end:
+                await websocket.send_json({
+                    "type": "error",
+                    "detail": "Only this session's own operator or an admin can end it.",
+                })
+                continue
             await hub.to_guest_json(code, message)
     except WebSocketDisconnect:
         pass
