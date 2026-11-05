@@ -23,6 +23,19 @@ if settings.environment != "development" and settings.jwt_secret in (
         "before running outside development: openssl rand -hex 32"
     )
 
+# Same reasoning as JWT_SECRET above, found during a later audit: the database
+# password has the identical placeholder-default problem (infra/docker-
+# compose.yml: POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rdp_dev_pass}, baked
+# into DATABASE_URL the same way), but had no equivalent guard - a forgotten
+# POSTGRES_PASSWORD in production silently runs with a publicly-known
+# password instead of refusing to start.
+if settings.environment != "development" and "rdp_dev_pass" in settings.database_url:
+    raise RuntimeError(
+        "DATABASE_URL still contains the placeholder database password "
+        "(rdp_dev_pass). Set POSTGRES_PASSWORD to a long random value before "
+        "running outside development."
+    )
+
 app = FastAPI(
     title="Remote Desktop & Support Platform - Relay",
     version="0.1.0",

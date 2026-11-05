@@ -35,6 +35,22 @@ export default function FilesPanel({ stream }: { stream: SessionStream }) {
     stream.send({ type: 'files', action: 'list', path: next })
   }, [stream])
 
+  // A typeable copy of the path, separate from `path` itself: `path` is the
+  // server-confirmed current folder and must only change once a 'list' reply
+  // actually arrives, but the operator needs somewhere to type into before
+  // that happens. Kept in sync whenever `path` changes some other way
+  // (clicking into a folder, going up), so it never goes stale.
+  const [pathInput, setPathInput] = useState('')
+  useEffect(() => {
+    setPathInput(path)
+  }, [path])
+
+  function goToTypedPath(event: React.FormEvent) {
+    event.preventDefault()
+    const target = pathInput.trim()
+    if (target && target !== path) list(target)
+  }
+
   // Subscribing is the only thing this effect should do. It used to also
   // call list() unconditionally on every run, with `path` as a dependency -
   // but the 'list' handler right above it calls setPath(), which is exactly
@@ -150,9 +166,22 @@ export default function FilesPanel({ stream }: { stream: SessionStream }) {
         </div>
       </div>
 
-      <div className="mb-2 truncate font-mono text-[11px] text-white/45" title={path}>
-        {path || '…'}
-      </div>
+      <form onSubmit={goToTypedPath} className="mb-2 flex gap-1.5">
+        <input
+          type="text"
+          value={pathInput}
+          onChange={(e) => setPathInput(e.target.value)}
+          placeholder={path || '…'}
+          data-testid="files-path-input"
+          className="min-w-0 flex-1 rounded-md border border-white/15 bg-black/25 px-2 py-1 font-mono text-[11px] text-white/85 placeholder:text-white/45 focus:outline-none focus:ring-1 focus:ring-white/30"
+        />
+        <button
+          type="submit"
+          className="rounded-md border border-white/15 px-2 py-1 text-[11px] text-white/80 hover:bg-white/10"
+        >
+          Go
+        </button>
+      </form>
 
       {error && (
         <div className="mb-2 rounded-md bg-red-500/15 px-2.5 py-1.5 text-[11px] text-red-200">
