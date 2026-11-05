@@ -190,6 +190,108 @@ export function LaunchTab({
   )
 }
 
+interface IpLookup {
+  city?: string
+  region?: string
+  country_name?: string
+  org?: string
+  latitude?: number
+  longitude?: number
+  error?: boolean
+  reason?: string
+}
+
+function isPrivateIp(ip: string): boolean {
+  if (ip === '127.0.0.1' || ip === '::1' || ip === 'localhost') return true
+  if (ip.startsWith('10.') || ip.startsWith('192.168.') || ip.startsWith('172.1') || ip.startsWith('172.2') || ip.startsWith('172.3')) {
+    // Narrow down the 172.16-172.31 range properly.
+    const second = Number(ip.split('.')[1])
+    if (ip.startsWith('172.') && !(second >= 16 && second <= 31)) return false
+    return true
+  }
+  return false
+}
+
+/** Approximate only - the public IP an endpoint connects from, looked up
+ *  against a free geolocation service straight from the browser so the relay
+ *  never needs an outbound HTTP dependency of its own. */
+export function LocateTab({ session }: { session: Session }) {
+  const [lookup, setLookup] = useState<IpLookup | null>(null)
+  const [loading, setLoading] = useState(false)
+  const ip = session.guest_ip
+
+  useEffect(() => {
+    setLookup(null)
+    if (!ip || isPrivateIp(ip)) return
+    setLoading(true)
+    fetch(`https://ipapi.co/${ip}/json/`)
+      .then((res) => res.json())
+      .then((data) => setLookup(data))
+      .catch(() => setLookup({ error: true }))
+      .finally(() => setLoading(false))
+  }, [ip])
+
+  return (
+    <Panel title="Locate">
+      {!ip ? (
+        <Empty>The endpoint's address is recorded once your guest joins.</Empty>
+      ) : isPrivateIp(ip) ? (
+        <Empty>
+          <span className="font-medium text-navy">{ip}</span>
+          <br />
+          That's a private network address, so it can't be located on a map.
+        </Empty>
+      ) : loading ? (
+        <Empty>Looking up {ip}…</Empty>
+      ) : !lookup || lookup.error ? (
+        <Empty>Couldn't look up {ip} right now.</Empty>
+      ) : (
+        <dl className="overflow-hidden rounded-xl border border-line bg-white">
+          <div className="flex border-b border-line">
+            <dt className="w-52 shrink-0 bg-canvas px-4 py-2.5 text-sm text-muted">IP address</dt>
+            <dd className="px-4 py-2.5 text-sm text-navy">{ip}</dd>
+          </div>
+          <div className="flex border-b border-line">
+            <dt className="w-52 shrink-0 bg-canvas px-4 py-2.5 text-sm text-muted">City / region</dt>
+            <dd className="px-4 py-2.5 text-sm text-navy">
+              {[lookup.city, lookup.region].filter(Boolean).join(', ') || '—'}
+            </dd>
+          </div>
+          <div className="flex border-b border-line">
+            <dt className="w-52 shrink-0 bg-canvas px-4 py-2.5 text-sm text-muted">Country</dt>
+            <dd className="px-4 py-2.5 text-sm text-navy">{lookup.country_name || '—'}</dd>
+          </div>
+          <div className="flex border-b border-line">
+            <dt className="w-52 shrink-0 bg-canvas px-4 py-2.5 text-sm text-muted">ISP</dt>
+            <dd className="px-4 py-2.5 text-sm text-navy">{lookup.org || '—'}</dd>
+          </div>
+          <div className="flex">
+            <dt className="w-52 shrink-0 bg-canvas px-4 py-2.5 text-sm text-muted">Map</dt>
+            <dd className="px-4 py-2.5 text-sm">
+              {lookup.latitude && lookup.longitude ? (
+                <a
+                  className="text-primary underline"
+                  target="_blank"
+                  rel="noreferrer"
+                  href={`https://www.openstreetmap.org/?mlat=${lookup.latitude}&mlon=${lookup.longitude}#map=10/${lookup.latitude}/${lookup.longitude}`}
+                >
+                  Open in OpenStreetMap
+                </a>
+              ) : (
+                '—'
+              )}
+            </dd>
+          </div>
+        </dl>
+      )}
+      <p className="mt-4 text-xs text-muted">
+        Approximate only - based on the IP address the endpoint connected from, not a precise
+        location.
+      </p>
+    </Panel>
+  )
+}
+
 export function NotImplementedTab({ title, note }: { title: string; note: string }) {
   return (
     <Panel title={title}>

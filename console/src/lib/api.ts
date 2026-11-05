@@ -83,6 +83,7 @@ export interface Session {
   started_at: string | null
   ended_at: string | null
   host_name: string | null
+  guest_ip: string | null
   guest_connected: boolean
   // An enrolled, always-on computer that is online right now.
   device_online?: boolean

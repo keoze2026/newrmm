@@ -1,101 +1,99 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { applyControlChars, parseAnsi } from '../../lib/ansi'
+import { useEffect, useRef } from 'react'
+import { Terminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import '@xterm/xterm/css/xterm.css'
 import type { SessionStream } from '../../lib/stream'
 
-/** A shell on the endpoint, inside the viewer (Appendix A.7). */
+/** A shell on the endpoint, inside the viewer (Appendix A.7).
+ *
+ * A real terminal emulator (xterm.js), not a line-buffered input box feeding
+ * a colour-only text renderer: the previous version sent a whole line at a
+ * time on Enter and only interpreted ANSI colour codes, appending output as
+ * plain growing text. Interactive full-screen programs (vim, top, htop, less)
+ * need every keystroke the instant it is typed - not buffered until Enter -
+ * and need the escape sequences that move the cursor and redraw regions of
+ * the screen actually obeyed, not stripped down to colour. The agent's own
+ * side (`terminal.py`) already passed raw bytes straight through a real pty
+ * on Linux/macOS and already supported a `resize` message
+ * (`session.py`'s `_handle_terminal`) - neither needed to change; only the
+ * console ever fell short of what the protocol already carried.
+ */
 export default function TerminalPanel({ stream }: { stream: SessionStream }) {
-  const [lines, setLines] = useState('')
-  const [shell, setShell] = useState<string | null>(null)
-  const [draft, setDraft] = useState('')
-  const outputRef = useRef<HTMLPreElement>(null)
-  const rendered = useMemo(() => parseAnsi(applyControlChars(lines)), [lines])
-  const inputRef = useRef<HTMLInputElement>(null)
-  const history = useRef<string[]>([])
-  const historyAt = useRef<number>(-1)
+  const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    const term = new Terminal({
+      cursorBlink: true,
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      fontSize: 12,
+      scrollback: 5000,
+      theme: {
+        background: '#0a0e16',
+        foreground: '#e5e7eb',
+      },
+    })
+    const fit = new FitAddon()
+    term.loadAddon(fit)
+    term.open(container)
+    fit.fit()
+
     const unsubscribe = stream.subscribe((message) => {
       if (message.type !== 'terminal') return
-      if (message.action === 'opened') setShell(String(message.shell ?? 'shell'))
-      if (message.action === 'closed') setShell(null)
-      if (message.action === 'output') setLines((prev) => (prev + String(message.data ?? '')).slice(-200_000))
+      if (message.action === 'opened') {
+        term.writeln(`\x1b[2m[connected: ${String(message.shell ?? 'shell')}]\x1b[0m`)
+      } else if (message.action === 'closed') {
+        term.writeln('\r\n\x1b[2m[the shell closed]\x1b[0m')
+      } else if (message.action === 'output') {
+        term.write(String(message.data ?? ''))
+      }
     })
-    stream.send({ type: 'terminal', action: 'open', cols: 100, rows: 30 })
-    inputRef.current?.focus()
-    // The shell belongs to the session, not to this panel: switching to Files
-    // and back must not kill it. The viewer closes it on exit.
-    return unsubscribe
-  }, [stream])
 
-  useEffect(() => {
-    const node = outputRef.current
-    if (node) node.scrollTop = node.scrollHeight
-  }, [lines])
+    // Every keystroke goes straight to the shell the instant it is typed -
+    // not buffered into a line - which is what distinguishes a real terminal
+    // from a command box and is required for vim, top and anything else that
+    // reads single keys (arrow keys, Ctrl+C, i/Esc, etc.) directly.
+    const onData = term.onData((data) => {
+      stream.send({ type: 'terminal', action: 'input', data })
+    })
+    const onResize = term.onResize(({ cols, rows }) => {
+      stream.send({ type: 'terminal', action: 'resize', cols, rows })
+    })
 
-  function submit() {
-    stream.send({ type: 'terminal', action: 'input', data: draft + '\n' })
-    if (draft.trim()) {
-      history.current.push(draft)
-      historyAt.current = history.current.length
+    stream.send({ type: 'terminal', action: 'open', cols: term.cols, rows: term.rows })
+    term.focus()
+
+    // The viewer panel can resize (window resize, switching panels); the
+    // terminal grid - and the shell's own idea of its window size - must
+    // track it, or output wraps at the wrong column and full-screen programs
+    // misdraw.
+    const resizeObserver = new ResizeObserver(() => fit.fit())
+    resizeObserver.observe(container)
+
+    // The shell belongs to the session, not to this panel: switching to
+    // Files and back must not kill it. The viewer closes it on exit; this
+    // only tears down the local terminal UI and listeners.
+    return () => {
+      unsubscribe()
+      onData.dispose()
+      onResize.dispose()
+      resizeObserver.disconnect()
+      term.dispose()
     }
-    setDraft('')
-  }
+  }, [stream])
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between px-1 pb-2">
         <h3 className="text-sm font-semibold text-white">Terminal</h3>
-        <span className="font-mono text-[11px] text-white/45">{shell ?? 'connecting…'}</span>
       </div>
-
-      <pre
-        ref={outputRef}
+      <div
+        ref={containerRef}
         data-testid="terminal-output"
-        className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded-md bg-black/40 p-3 font-mono text-[12px] leading-relaxed text-white/85"
-      >
-        {rendered.map((segment, i) => (
-          <span
-            key={i}
-            style={{
-              color: segment.colour,
-              fontWeight: segment.bold ? 600 : undefined,
-              opacity: segment.dim ? 0.65 : undefined,
-            }}
-          >
-            {segment.text}
-          </span>
-        ))}
-      </pre>
-
-      <div className="mt-2 flex items-center gap-2">
-        <span className="font-mono text-sm text-white/40">$</span>
-        <input
-          ref={inputRef}
-          value={draft}
-          data-testid="terminal-input"
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            // The viewer sends keystrokes to the guest's screen; while the
-            // terminal has focus they belong to the shell instead.
-            e.stopPropagation()
-            if (e.key === 'Enter') {
-              submit()
-            } else if (e.key === 'ArrowUp') {
-              e.preventDefault()
-              historyAt.current = Math.max(0, historyAt.current - 1)
-              setDraft(history.current[historyAt.current] ?? '')
-            } else if (e.key === 'ArrowDown') {
-              e.preventDefault()
-              historyAt.current = Math.min(history.current.length, historyAt.current + 1)
-              setDraft(history.current[historyAt.current] ?? '')
-            } else if (e.key === 'c' && e.ctrlKey) {
-              stream.send({ type: 'terminal', action: 'input', data: '\x03' })
-            }
-          }}
-          placeholder="Type a command and press Enter"
-          className="flex-1 rounded-md border border-white/15 bg-black/40 px-2.5 py-1.5 font-mono text-[12px] text-white outline-none focus:border-primary"
-        />
-      </div>
+        className="min-h-0 flex-1 overflow-hidden rounded-md bg-black/40 p-2"
+      />
     </div>
   )
 }

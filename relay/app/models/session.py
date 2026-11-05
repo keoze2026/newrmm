@@ -44,6 +44,12 @@ class Session(Base):
 
     # Reported by the guest when it joins.
     host_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # The guest's real address, read the same way the rate limiter already
+    # does (ratelimit.caller()) - behind the reverse proxy, the raw TCP peer
+    # is always the proxy itself, never the guest. Powers the Locate tab's
+    # approximate-location lookup; not a precise location, just what the IP
+    # itself implies.
+    guest_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     guest_connected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     guest_joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     guest_last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

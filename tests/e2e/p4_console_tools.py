@@ -93,17 +93,27 @@ def main() -> int:
                 toolbar = page.get_by_test_id("viewer-toolbar")
 
                 # --------------------------------------------------- terminal
+                # A real terminal emulator (xterm.js) has no separate input
+                # box - the output area itself is what receives keystrokes
+                # once focused, the same as clicking into any real terminal
+                # window. .fill() only sets an <input>'s value, which xterm
+                # never sees, so driving it means clicking to focus, then
+                # actually typing through the keyboard like a person would.
+                def types_into_terminal(text: str) -> None:
+                    page.get_by_test_id("terminal-output").click()
+                    page.keyboard.type(text)
+                    page.keyboard.press("Enter")
+
                 def opens_terminal():
                     toolbar.get_by_title("Terminal").click()
                     expect(page.get_by_test_id("viewer-panel-terminal")).to_be_visible(timeout=10000)
-                    expect(page.get_by_test_id("terminal-input")).to_be_visible()
+                    expect(page.get_by_test_id("terminal-output")).to_be_visible()
 
                 step("the Terminal panel opens inside the viewer", opens_terminal)
 
                 def runs_a_command():
                     marker = "CONSOLE_TERMINAL_OK"
-                    page.get_by_test_id("terminal-input").fill(f"echo {marker}")
-                    page.get_by_test_id("terminal-input").press("Enter")
+                    types_into_terminal(f"echo {marker}")
                     expect(page.get_by_test_id("terminal-output")).to_contain_text(
                         marker, timeout=15000
                     )
@@ -111,8 +121,7 @@ def main() -> int:
                 step("a command typed in the console runs on the endpoint", runs_a_command)
 
                 def shows_real_output():
-                    page.get_by_test_id("terminal-input").fill("uname -s")
-                    page.get_by_test_id("terminal-input").press("Enter")
+                    types_into_terminal("uname -s")
                     expect(page.get_by_test_id("terminal-output")).to_contain_text(
                         "Linux", timeout=15000
                     )
@@ -123,8 +132,7 @@ def main() -> int:
                     """Typing in the terminal must not also drive the guest screen."""
                     log = agent_output()
                     before = log.count("input key")
-                    page.get_by_test_id("terminal-input").fill("echo not-remote-input")
-                    page.get_by_test_id("terminal-input").press("Enter")
+                    types_into_terminal("echo not-remote-input")
                     page.wait_for_timeout(800)
                     after = agent_output().count("input key")
                     assert after == before, "terminal keystrokes leaked to the guest screen"
@@ -158,8 +166,7 @@ def main() -> int:
                     # Point the panel at the working directory first by using
                     # the terminal, then send the file there.
                     toolbar.get_by_title("Terminal").click()
-                    page.get_by_test_id("terminal-input").fill(f"cd {workdir} && pwd")
-                    page.get_by_test_id("terminal-input").press("Enter")
+                    types_into_terminal(f"cd {workdir} && pwd")
                     page.wait_for_timeout(800)
                     toolbar.get_by_title("Files").click()
                     expect(page.get_by_test_id("files-list")).to_be_visible(timeout=10000)

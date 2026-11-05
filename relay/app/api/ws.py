@@ -130,6 +130,7 @@ async def guest_socket(
                 await websocket.close(code=4404)
                 return
             live.host_name = str(hello.get("host_name", "unknown"))[:255]
+            live.guest_ip = ratelimit.caller(websocket)
             live.system_info = hello.get("system_info", {}) or {}
             live.monitors = hello.get("monitors", []) or []
             live.agent_version = str(hello.get("agent_version", ""))[:32] or None

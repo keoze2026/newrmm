@@ -24,6 +24,7 @@ class SessionOut(BaseModel):
     ended_at: datetime | None
     expires_at: datetime | None
     host_name: str | None
+    guest_ip: str | None
     guest_connected: bool
     guest_joined_at: datetime | None
     guest_last_seen_at: datetime | None

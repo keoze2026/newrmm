@@ -10,6 +10,7 @@ async def test_new_session_is_named_after_its_code(client, auth_headers):
     assert session["name"] == session["code"]
     assert session["guest_connected"] is False
     assert session["host_name"] is None
+    assert session["guest_ip"] is None
     assert session["system_info"] == {}
     assert session["monitors"] == []
 

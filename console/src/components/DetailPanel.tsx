@@ -3,6 +3,7 @@ import SessionTab from './tabs/SessionTab'
 import {
   HistoryTab,
   LaunchTab,
+  LocateTab,
   LogsTab,
   NotImplementedTab,
   SystemInfoTab,
@@ -91,12 +92,7 @@ export default function DetailPanel({
             note="Endpoint utilities beyond the terminal and file browser are not built yet."
           />
         )}
-        {tab === 'locate' && (
-          <NotImplementedTab
-            title="Locate"
-            note="Locating the endpoint on a map is not built yet."
-          />
-        )}
+        {tab === 'locate' && <LocateTab session={session} />}
       </div>
     </section>
   )
