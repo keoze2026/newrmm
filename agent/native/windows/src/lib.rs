@@ -19,7 +19,7 @@
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -147,6 +147,46 @@ impl Session {
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 
+/// Same place `diagnostics.py`'s `crash.log` lives (`config.py`'s
+/// `state_dir()`: %APPDATA%\RMMAgent, or the user profile's own
+/// AppData\Roaming if APPDATA is unset) - not computed by calling into
+/// Python, just the identical fallback logic in Rust, so this can write
+/// evidence even from inside a panicking thread with no safe way to call
+/// back into the interpreter.
+fn crash_log_path() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("APPDATA")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("USERPROFILE")
+                .map(|home| std::path::PathBuf::from(home).join("AppData").join("Roaming"))
+        })?;
+    Some(base.join("RMMAgent").join("crash.log"))
+}
+
+/// `eprintln!` alone was not enough: it writes to raw stderr, which this
+/// agent does not capture anywhere persistent for a double-clicked,
+/// Run-key, or Scheduled-Task launch - only crash.log and agent.log are.
+/// A panic the guard in start_session actually catches would otherwise
+/// still vanish with no trace, the same symptom this fix exists to solve.
+/// Appending to the same crash.log faulthandler already writes to keeps
+/// every piece of native-crash evidence in the one place already being
+/// watched for it.
+fn record_panic_to_crash_log(message: &str) {
+    use std::io::Write;
+
+    let Some(path) = crash_log_path() else { return };
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(
+            file,
+            "[{seconds}] rmm_capture_windows: capture thread panicked: {message}"
+        );
+    }
+}
+
 fn monitor_at(index: usize) -> PyResult<Monitor> {
     let monitors = Monitor::enumerate()
         .map_err(|e| PyRuntimeError::new_err(format!("could not enumerate monitors: {e}")))?;
@@ -191,6 +231,7 @@ fn start_session(index: usize) -> PyResult<Session> {
                 .or_else(|| payload.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
             eprintln!("rmm_capture_windows: capture thread panicked: {message}");
+            record_panic_to_crash_log(&message);
         }
     });
 
