@@ -1,21 +1,29 @@
 """Every operator can see and join any session - deliberate, for team
 coverage. Only the session's own operator, or an admin, may end it.
 """
+import uuid
+
 from app.core.security import hash_secret
 from app.db.session import SessionLocal
 from app.models import Operator
 
-OTHER_EMAIL = "colleague@example.com"
 OTHER_PASSWORD = "AlsoAPassw0rd!"
 
 
 async def other_operator_headers(client, role: str = "operator") -> dict:
     """A second operator, distinct from the one `auth_headers` logs in as -
-    needed to test that one operator cannot act on another's session."""
+    needed to test that one operator cannot act on another's session.
+
+    The test database's schema is built once per test run (`conftest.py`'s
+    `migrated_database` fixture is session-scoped, not reset per test), so a
+    fixed email here would collide with the row an earlier test in the same
+    run already inserted. Each call gets its own operator.
+    """
+    email = f"colleague-{uuid.uuid4().hex[:12]}@example.com"
     async with SessionLocal() as db:
         db.add(
             Operator(
-                email=OTHER_EMAIL,
+                email=email,
                 full_name="Colleague",
                 password_hash=hash_secret(OTHER_PASSWORD),
                 role=role,
@@ -23,7 +31,7 @@ async def other_operator_headers(client, role: str = "operator") -> dict:
         )
         await db.commit()
     response = await client.post(
-        "/auth/login", json={"email": OTHER_EMAIL, "password": OTHER_PASSWORD}
+        "/auth/login", json={"email": email, "password": OTHER_PASSWORD}
     )
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
