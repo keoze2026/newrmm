@@ -177,6 +177,36 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **Console: visual polish pass, no layout or structural changes (2026-11-06).**
+  User's complaint: the console "looks too plain." Checked first whether the
+  flat look was a bug or by design - it's by design: `Remote_Desktop_Platform_Specification.txt`'s
+  Appendix A explicitly specifies a flat "light theme, corporate palette" and
+  says the console must reproduce it "EXACTLY," and `tests/e2e/console_appendix_a.py`'s
+  32-test conformance suite locks exactly two things pixel-precise - the icon
+  rail's ~74px width and the active tab's left-border colour
+  (`rgb(47, 111, 228)` / `#2F6FE4`). Everything else in that suite checks
+  structure and behaviour, not colour or shadow, so there was room to add real
+  depth without breaking it or deviating from the spec's own brand colour.
+  Kept the same layout, same four columns, same labels, same tab order, same
+  `--color-primary` value - only added: soft card shadows, gradient buttons
+  (`SectionPanel`'s Create+, `SessionTab`'s Join, the login Sign in button, the
+  `LaunchTab` "Open in viewer" button), rounded-2xl cards in place of flat
+  rounded-xl ones, a pill-shaped status line and connection badges, a pulsing
+  ring on the LIVE dot, pill-shaped toolbar buttons and invite/code tabs, thin
+  custom scrollbars, and a faint radial brand-colour wash behind the canvas
+  background. Touched: `index.css`, `IconRail.tsx`, `SectionPanel.tsx`,
+  `SessionList.tsx`, `ConnectionIndicator.tsx`, `TabStrip.tsx`,
+  `tabs/SessionTab.tsx`, `tabs/OtherTabs.tsx` (the shared `Panel`/`Empty`
+  components lift System info, History, Logs, Locate, Launch and the
+  Not-implemented tab all at once), `pages/LoginPage.tsx`. **Not touched:**
+  `pages/JoinPage.tsx` (the guest-facing page). Verified: `tsc -b --noEmit`
+  clean, `vite build` clean (544.93 kB bundle, same pre-existing non-blocking
+  chunk-size advisory), and a real Chromium render via a throwaway Playwright
+  script with mocked `/api/*` responses (no local Postgres/Redis available on
+  this laptop to run the real relay) - screenshotted the session list, the
+  live-session detail view and System info to confirm the result actually
+  renders before calling it done.
+
 - **Chat feature built, agent side only (2026-11-06).** New `agent/rmm_agent/chat.py`:
   a real Tk chat window shown to the endpoint user, created on the first incoming
   chat message and torn down with the session's other tools in `_close_tools`.

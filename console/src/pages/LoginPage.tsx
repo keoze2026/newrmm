@@ -26,10 +26,10 @@ export default function LoginPage() {
       {/* Enter submits: the button is the form's submit control. */}
       <form
         onSubmit={onSubmit}
-        className="w-full max-w-sm rounded-xl border border-line bg-white p-8 shadow-[0_2px_18px_rgba(31,58,95,0.08)]"
+        className="w-full max-w-sm rounded-2xl border border-line bg-white p-8 shadow-[0_2px_18px_rgba(31,58,95,0.08),0_16px_48px_rgba(31,58,95,0.08)]"
       >
         <div className="flex flex-col items-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary text-lg font-bold text-white">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-primary-dark text-lg font-bold text-white shadow-[0_4px_12px_rgba(47,111,228,0.35)]">
             R
           </div>
           <h1 className="mt-4 text-xl font-semibold text-navy">RMM Console</h1>
@@ -71,7 +71,7 @@ export default function LoginPage() {
         <button
           type="submit"
           disabled={busy}
-          className="mt-6 w-full rounded-lg bg-primary px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-dark disabled:opacity-60"
+          className="mt-6 w-full rounded-lg bg-gradient-to-b from-primary to-primary-dark px-3 py-2.5 text-sm font-semibold text-white shadow-[0_2px_8px_rgba(47,111,228,0.3)] transition hover:shadow-[0_4px_14px_rgba(47,111,228,0.4)] active:scale-[0.98] disabled:opacity-60"
         >
           {busy ? 'Signing in…' : 'Sign in'}
         </button>

@@ -3,7 +3,7 @@ import { api, type AuditEvent, type HistoryEntry, type Session } from '../../lib
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="w-full px-8 py-8">
+    <div className="mx-auto w-full max-w-[760px] px-8 py-8">
       <h2 className="text-lg font-semibold text-navy">{title}</h2>
       <div className="mt-5">{children}</div>
     </div>
@@ -12,7 +12,7 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 
 function Empty({ children }: { children: React.ReactNode }) {
   return (
-    <div className="rounded-xl border border-dashed border-line-strong bg-white px-6 py-10 text-center text-sm text-muted">
+    <div className="rounded-2xl border border-dashed border-line-strong bg-white px-6 py-10 text-center text-sm text-muted shadow-sm">
       {children}
     </div>
   )
@@ -39,7 +39,7 @@ export function SystemInfoTab({ session }: { session: Session }) {
       {!hasInfo ? (
         <Empty>The endpoint reports its system details when your guest joins.</Empty>
       ) : (
-        <dl className="overflow-hidden rounded-xl border border-line bg-white">
+        <dl className="overflow-hidden rounded-2xl border border-line bg-white shadow-sm">
           {FIELDS.map(({ key, label }) => (
             <div key={key} className="flex border-b border-line last:border-b-0">
               <dt className="w-52 shrink-0 bg-canvas px-4 py-2.5 text-sm text-muted">{label}</dt>
@@ -89,7 +89,7 @@ export function HistoryTab({ session }: { session: Session }) {
       {rows.length === 0 ? (
         <Empty>No past sessions recorded for this machine.</Empty>
       ) : (
-        <table className="w-full overflow-hidden rounded-xl border border-line bg-white text-left text-sm">
+        <table className="w-full overflow-hidden rounded-2xl border border-line bg-white text-left text-sm shadow-sm">
           <thead className="bg-canvas text-xs uppercase tracking-wide text-muted">
             <tr>
               <th className="px-4 py-2.5 font-medium">Start time</th>
@@ -128,7 +128,7 @@ export function LogsTab({ session }: { session: Session }) {
       {rows.length === 0 ? (
         <Empty>No server-side events recorded for this session yet.</Empty>
       ) : (
-        <table className="w-full overflow-hidden rounded-xl border border-line bg-white text-left text-sm">
+        <table className="w-full overflow-hidden rounded-2xl border border-line bg-white text-left text-sm shadow-sm">
           <thead className="bg-canvas text-xs uppercase tracking-wide text-muted">
             <tr>
               <th className="px-4 py-2.5 font-medium">Time</th>
@@ -173,12 +173,12 @@ export function LaunchTab({
   return (
     <Panel title={title}>
       {session.guest_connected ? (
-        <div className="rounded-xl border border-line bg-white px-6 py-10 text-center">
+        <div className="rounded-2xl border border-line bg-gradient-to-b from-white to-primary-soft/30 px-6 py-10 text-center shadow-sm">
           <p className="text-sm text-navy">{description}</p>
           <button
             type="button"
             onClick={onJoin}
-            className="mt-4 rounded-lg bg-primary px-6 py-2 text-sm font-semibold text-white transition hover:bg-primary-dark"
+            className="mt-4 rounded-full bg-gradient-to-b from-primary to-primary-dark px-6 py-2 text-sm font-semibold text-white shadow-[0_2px_8px_rgba(47,111,228,0.3)] transition hover:shadow-[0_4px_14px_rgba(47,111,228,0.4)] active:scale-[0.97]"
           >
             Open in viewer
           </button>
@@ -246,7 +246,7 @@ export function LocateTab({ session }: { session: Session }) {
       ) : !lookup || lookup.error ? (
         <Empty>Couldn't look up {ip} right now.</Empty>
       ) : (
-        <dl className="overflow-hidden rounded-xl border border-line bg-white">
+        <dl className="overflow-hidden rounded-2xl border border-line bg-white shadow-sm">
           <div className="flex border-b border-line">
             <dt className="w-52 shrink-0 bg-canvas px-4 py-2.5 text-sm text-muted">IP address</dt>
             <dd className="px-4 py-2.5 text-sm text-navy">{ip}</dd>

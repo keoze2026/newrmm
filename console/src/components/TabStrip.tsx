@@ -58,13 +58,13 @@ export default function TabStrip({
             data-testid={`tab-${key}`}
             data-active={isActive}
             onClick={() => onChange(key)}
-            className={`flex h-11 items-center justify-center border-l-[3px] transition ${
+            className={`flex h-11 items-center justify-center border-l-[3px] transition-all ${
               isActive
-                ? 'border-primary bg-primary-soft text-primary'
-                : 'border-transparent text-muted hover:bg-canvas hover:text-navy'
+                ? 'border-primary bg-primary-soft text-primary shadow-[inset_0_0_0_1px_rgba(47,111,228,0.08)]'
+                : 'border-transparent text-muted hover:border-line-strong hover:bg-canvas hover:text-navy'
             }`}
           >
-            <Icon width={20} height={20} />
+            <Icon width={20} height={20} className="transition-transform" />
           </button>
         )
       })}

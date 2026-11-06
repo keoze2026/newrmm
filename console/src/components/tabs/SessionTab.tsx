@@ -19,7 +19,11 @@ function CopyButton({ value, label }: { value: string; label: string }) {
         setCopied(true)
         window.setTimeout(() => setCopied(false), 1400)
       }}
-      className="flex items-center gap-1.5 rounded-md border border-line-strong px-2.5 py-1.5 text-xs text-navy transition hover:bg-canvas"
+      className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition active:scale-95 ${
+        copied
+          ? 'border-online/30 bg-online-soft text-online'
+          : 'border-line-strong text-navy shadow-sm hover:border-primary/30 hover:bg-primary-soft hover:text-primary'
+      }`}
     >
       <CopyIcon width={15} height={15} />
       {copied ? 'Copied' : 'Copy'}
@@ -98,10 +102,10 @@ export default function SessionTab({
             }}
             aria-label="Session name"
             data-testid="session-name-input"
-            className="flex-1 rounded-lg border border-primary bg-white px-3 py-1.5 text-sm font-semibold text-navy outline-none ring-2 ring-primary/20"
+            className="flex-1 rounded-lg border border-primary bg-white px-3 py-1.5 text-sm font-semibold text-navy shadow-[0_0_0_4px_rgba(47,111,228,0.12)] outline-none"
           />
         ) : (
-          <div className="flex flex-1 items-center gap-2 rounded-lg border border-line-strong bg-white px-3 py-1.5">
+          <div className="flex flex-1 items-center gap-2 rounded-lg border border-line-strong bg-white px-3 py-1.5 shadow-sm transition hover:border-line-strong/80">
             <span data-testid="session-name" className="flex-1 text-sm font-semibold text-navy">
               {session.name}
             </span>
@@ -122,7 +126,7 @@ export default function SessionTab({
       <div className="mt-7">
         <div className="flex items-center gap-4">
           <span className="text-sm font-medium text-muted">Invite via:</span>
-          <div className="flex gap-1 rounded-lg bg-canvas p-1">
+          <div className="flex gap-1 rounded-full bg-canvas p-1 shadow-inner">
             {(['code', 'link'] as const).map((mode) => (
               <button
                 key={mode}
@@ -130,7 +134,7 @@ export default function SessionTab({
                 data-testid={`invite-${mode}`}
                 data-active={invite === mode}
                 onClick={() => setInvite(mode)}
-                className={`rounded-md px-4 py-1.5 text-sm font-medium capitalize transition ${
+                className={`rounded-full px-4 py-1.5 text-sm font-medium capitalize transition ${
                   invite === mode ? 'bg-white text-primary shadow-sm' : 'text-muted hover:text-navy'
                 }`}
               >
@@ -141,7 +145,7 @@ export default function SessionTab({
         </div>
 
         {invite === 'code' ? (
-          <div className="mt-4 rounded-xl border border-line bg-white px-6 py-7 text-center">
+          <div className="mt-4 overflow-hidden rounded-2xl border border-line bg-gradient-to-b from-white to-primary-soft/30 px-6 py-7 text-center shadow-[0_1px_2px_rgba(16,24,40,0.04),0_8px_24px_rgba(31,58,95,0.06)]">
             <p className="text-sm text-muted">Direct guest to:</p>
             <p className="mt-1 text-base font-medium text-primary">{joinUrl()}</p>
             <p className="mt-6 text-sm text-muted">And instruct to type in the code:</p>
@@ -156,7 +160,7 @@ export default function SessionTab({
             </div>
           </div>
         ) : (
-          <div className="mt-4 rounded-xl border border-line bg-white px-6 py-6">
+          <div className="mt-4 rounded-2xl border border-line bg-white px-6 py-6 shadow-[0_1px_2px_rgba(16,24,40,0.04),0_8px_24px_rgba(31,58,95,0.06)]">
             <label className="text-sm text-muted" htmlFor="join-link">
               Share this link with your guest:
             </label>
@@ -180,7 +184,7 @@ export default function SessionTab({
           onClick={onJoin}
           disabled={!ready}
           data-testid="join-button"
-          className="rounded-lg bg-primary px-10 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-full bg-gradient-to-b from-primary to-primary-dark px-10 py-2.5 text-sm font-semibold text-white shadow-[0_2px_8px_rgba(47,111,228,0.35)] transition hover:shadow-[0_6px_18px_rgba(47,111,228,0.45)] hover:brightness-105 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none disabled:hover:brightness-100"
         >
           Join
         </button>
@@ -189,7 +193,9 @@ export default function SessionTab({
       <div className="mt-7 text-center">
         <p
           data-testid="waiting-line"
-          className="flex items-center justify-center gap-2 text-sm font-medium text-navy"
+          className={`mx-auto inline-flex items-center justify-center gap-2 rounded-full px-4 py-1.5 text-sm font-medium ${
+            joined || (standing && ready) ? 'bg-online-soft text-online' : 'bg-canvas text-navy'
+          }`}
         >
           <HourglassIcon width={17} height={17} className="text-muted" />
           {joined
@@ -217,8 +223,11 @@ export default function SessionTab({
 
       {joined && (
         <div className="mt-8">
-          <div className="mb-2 flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full bg-online" />
+          <div className="mb-2 flex items-center gap-1.5">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-pulse-ring rounded-full" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-online" />
+            </span>
             <span className="text-xs font-semibold tracking-wide text-online">LIVE</span>
           </div>
           <button
@@ -226,10 +235,10 @@ export default function SessionTab({
             onClick={onJoin}
             data-testid="live-preview"
             title="Open the full viewer"
-            className="block w-full overflow-hidden rounded-xl border border-line bg-navy transition hover:border-primary"
+            className="group block w-full overflow-hidden rounded-2xl border border-line bg-navy shadow-[0_8px_24px_rgba(31,58,95,0.18)] transition hover:border-primary hover:shadow-[0_10px_30px_rgba(47,111,228,0.25)]"
           >
             {previewBitmap ? (
-              <canvas ref={previewRef} className="block w-full" />
+              <canvas ref={previewRef} className="block w-full transition group-hover:brightness-105" />
             ) : (
               <div className="flex h-44 items-center justify-center text-sm text-white/70">
                 Waiting for the first frame…

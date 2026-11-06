@@ -38,7 +38,7 @@ export default function SessionList({
   const joinable = canJoin(selected)
 
   const action =
-    'flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-xs text-navy transition hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-40'
+    'flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-xs text-navy transition hover:bg-primary-soft hover:text-primary disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-navy'
 
   return (
     <section className="flex w-full min-w-0 shrink-0 flex-col min-[1100px]:w-[392px] border-r border-line bg-white">
@@ -76,7 +76,7 @@ export default function SessionList({
             More
           </button>
           {moreOpen && (
-            <div className="absolute right-0 top-8 z-10 w-44 rounded-lg border border-line bg-white py-1 shadow-lg">
+            <div className="absolute right-0 top-8 z-10 w-44 rounded-xl border border-line bg-white py-1 shadow-lg">
               <p className="px-3 py-2 text-xs text-muted">
                 Additional bulk actions are not built yet.
               </p>
@@ -108,21 +108,21 @@ export default function SessionList({
             placeholder="Search My Sessions"
             value={search}
             onChange={(e) => onSearch(e.target.value)}
-            className="w-full rounded-full border border-line-strong bg-white py-1.5 pl-9 pr-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+            className="w-full rounded-full border border-line-strong bg-white py-1.5 pl-9 pr-3 text-sm shadow-sm outline-none transition focus:border-primary focus:shadow-[0_0_0_4px_rgba(47,111,228,0.12)] focus:ring-0"
           />
         </div>
       </div>
 
-      <ul className="flex-1 overflow-y-auto">
+      <ul className="flex-1 overflow-y-auto px-2 py-2">
         {sessions.length === 0 && (
-          <li className="px-4 py-6 text-sm text-muted">
+          <li className="px-2 py-6 text-sm text-muted">
             No sessions yet. Use <span className="font-medium text-navy">Create +</span> to start one.
           </li>
         )}
         {sessions.map((session) => {
           const isSelected = session.id === selectedId
           return (
-            <li key={session.id}>
+            <li key={session.id} className="mb-1">
               <div
                 role="button"
                 tabIndex={0}
@@ -133,8 +133,10 @@ export default function SessionList({
                 data-testid="session-row"
                 data-code={session.code}
                 data-selected={isSelected}
-                className={`flex cursor-pointer items-center gap-3 border-b border-line px-4 py-3 transition ${
-                  isSelected ? 'bg-primary-soft' : 'hover:bg-canvas'
+                className={`flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-3 transition ${
+                  isSelected
+                    ? 'border-primary/20 bg-gradient-to-r from-primary-soft to-primary-soft/40 shadow-sm'
+                    : 'border-transparent hover:border-line hover:bg-canvas'
                 }`}
               >
                 <input
