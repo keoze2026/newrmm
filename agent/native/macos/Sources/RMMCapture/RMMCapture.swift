@@ -160,11 +160,13 @@ private final class CaptureEngine {
         // display (e.g. a 2560x1600-pixel panel reporting 1280x800 points)
         // using them directly as the output buffer size, which is in pixels,
         // captured at half the linear resolution (a quarter of the pixel
-        // count) on every Retina Mac. pointPixelScale is Apple's own
-        // documented way to convert.
-        let scale = CGFloat(filter.pointPixelScale)
-        configuration.width = Int(CGFloat(display.width) * scale)
-        configuration.height = Int(CGFloat(display.height) * scale)
+        // count) on every Retina Mac. SCContentFilter.pointPixelScale is
+        // Apple's documented way to convert, but it needs macOS 14 and this
+        // module's floor is macOS 12 (Package.swift) - CGDisplayPixelsWide/
+        // High report the same real pixel size directly, for every macOS
+        // version this module supports, with no scale multiply needed at all.
+        configuration.width = CGDisplayPixelsWide(display.displayID)
+        configuration.height = CGDisplayPixelsHigh(display.displayID)
         configuration.pixelFormat = kCVPixelFormatType_32BGRA
         configuration.showsCursor = true
         configuration.queueDepth = 3
