@@ -1,4 +1,4 @@
-"""Build the native Linux capture module.
+"""Build the native Linux capture module - the X11 path.
 
     python setup.py build_ext --inplace
 
@@ -8,13 +8,12 @@ headers:
 
     sudo apt install libx11-dev libxext-dev libxrandr-dev libxfixes-dev
 
-PipeWire support is compiled in when its headers are present, which adds the
-Wayland path the specification calls for:
-
-    sudo apt install libpipewire-0.3-dev
+The Wayland path does not go through this module at all - see
+rmm_agent/wayland_portal.py and rmm_agent/wayland_capture.py, which need
+PyGObject and GStreamer's pipewire plugin instead (python3-gi,
+gstreamer1.0-pipewire), not a C toolchain.
 """
 import subprocess
-import sys
 
 from setuptools import Extension, setup
 
@@ -49,40 +48,16 @@ def pkg_config(*packages) -> dict:
     return flags
 
 
-def has_pipewire() -> bool:
-    try:
-        return subprocess.run(
-            ["pkg-config", "--exists", "libpipewire-0.3"], check=False
-        ).returncode == 0
-    except OSError:
-        return False
-
-
-packages = ["x11", "xext", "xrandr", "xfixes"]
-define_macros = []
-
-if has_pipewire():
-    packages.append("libpipewire-0.3")
-    define_macros.append(("RMM_HAVE_PIPEWIRE", "1"))
-    print("building with PipeWire support (Wayland path enabled)")
-else:
-    print(
-        "libpipewire-0.3 headers not found: building the X11 path only.\n"
-        "  install with: sudo apt install libpipewire-0.3-dev",
-        file=sys.stderr,
-    )
-
-flags = pkg_config(*packages)
+flags = pkg_config("x11", "xext", "xrandr", "xfixes")
 
 setup(
     name="rmm_capture_linux",
     version="0.1.0",
-    description="Native X11 XShm / PipeWire screen capture for the endpoint agent",
+    description="Native X11 XShm screen capture for the endpoint agent",
     ext_modules=[
         Extension(
             "rmm_capture_linux",
             sources=["rmm_capture_linux.c"],
-            define_macros=define_macros,
             extra_compile_args=["-O2", "-Wall", "-Wextra", *flags["extra_compile_args"]],
             **{k: v for k, v in flags.items() if k != "extra_compile_args"},
         )

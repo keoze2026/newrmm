@@ -145,10 +145,13 @@ def warnings() -> list[str]:
         kind = session_type()
         if kind == "wayland":
             notes.append(
-                "This is a Wayland session. Screen capture goes through the "
-                "XDG portal and input injection through XTest may be refused; "
-                "an Xorg session is the reliable option until the PipeWire "
-                "capture path lands."
+                "This is a Wayland session. Capture and input go through the "
+                "XDG desktop portal, which needs PyGObject and GStreamer's "
+                "pipewire plugin installed (python3-gi, gstreamer1.0-pipewire "
+                "or your distro's equivalent) and will show the compositor's "
+                "own permission/picker dialog the first time. Without those "
+                "packages this falls back to mss, which cannot read a "
+                "Wayland screen at all."
             )
         elif kind == "headless":
             notes.append("No display was found; capture will be a generated image.")

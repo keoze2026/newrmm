@@ -49,7 +49,7 @@ Priority: optional
 Architecture: $ARCH
 Maintainer: Remote Desktop & Support Platform
 Depends: libx11-6, libxext6, libxrandr2, libxfixes3, x11-xserver-utils
-Recommends: python3-tk, gir1.2-appindicator3-0.1
+Recommends: python3-tk, gir1.2-appindicator3-0.1, python3-gi, gir1.2-glib-2.0, gir1.2-gstreamer-1.0, gstreamer1.0-plugins-base, gstreamer1.0-pipewire
 Description: Remote support endpoint agent
  Joins a support session, asks the person at the keyboard for consent, then
  streams the screen and applies the operator's mouse and keyboard.

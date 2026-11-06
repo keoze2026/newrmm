@@ -14,6 +14,7 @@ from rmm_agent.remote_input import InputInjector
 from rmm_agent.terminal import RemoteTerminal, default_shell
 from rmm_agent.tiles import TileEncoder
 from rmm_agent.tray import CONNECTED, IDLE, SHARING, Tray
+from rmm_agent import wayland_portal
 
 log = logging.getLogger(__name__)
 
@@ -73,8 +74,26 @@ class AgentSession:
         self.code = code.upper()
         self.tray = tray
         platform_support.prepare()
-        self.capture = ScreenCapture(synthetic=synthetic)
-        self.injector = InputInjector(enabled=inject)
+        # On a real Wayland session neither the X11 capture module nor
+        # XTest-based input works at all (Wayland blocks both by design) -
+        # the only door is the XDG portal, and one portal session covers
+        # both halves since RemoteDesktop's input calls are scoped to a
+        # session that also has an active ScreenCast stream. Built once here
+        # and handed to both, rather than each opening (and prompting for)
+        # its own.
+        self._portal = None
+        if not synthetic and platform_support.LINUX and wayland_portal.session_is_wayland():
+            portal = wayland_portal.PortalSession()
+            if portal.available and portal.start(want_input=inject):
+                self._portal = portal
+            else:
+                log.warning(
+                    "the Wayland portal session did not start; capture will "
+                    "fall back to mss (likely blank/unavailable on Wayland) "
+                    "and input injection will be unavailable"
+                )
+        self.capture = ScreenCapture(synthetic=synthetic, portal=self._portal)
+        self.injector = InputInjector(enabled=inject, portal=self._portal)
         self.rate = RateController(fps, quality)
         self.budget_kbps = budget_kbps
         self.auto_consent = auto_consent

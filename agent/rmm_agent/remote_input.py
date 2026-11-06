@@ -1,22 +1,30 @@
 """Applies operator input to this machine.
 
-pynput is used on every platform; on Windows it drives SendInput, on macOS
-CGEvent and on Linux XTest, which is exactly the mapping in the specification's
-per-platform table.
+pynput is used on Windows (SendInput), macOS (CGEvent) and X11/XWayland Linux
+(XTest), exactly the mapping in the specification's per-platform table. A
+native Wayland session has no XTest - that is blocked by design, the same
+reason X11 capture does not work there either - so on Wayland this instead
+drives the already-started xdg-desktop-portal RemoteDesktop session
+(wayland_portal.PortalSession) that session.py shares with ScreenCapture.
 """
 import logging
+
+from rmm_agent import wayland_portal
 
 log = logging.getLogger(__name__)
 
 
 class InputInjector:
-    def __init__(self, enabled: bool = True) -> None:
+    def __init__(self, enabled: bool = True, portal=None) -> None:
+        """`portal`: an already-started wayland_portal.PortalSession, shared
+        with ScreenCapture, when session.py detected a Wayland session."""
         self.enabled = enabled
         self.available = False
         self._mouse = None
         self._keyboard = None
         self._Button = None
         self._Key = None
+        self._portal = None
         # What this operator is currently holding down. Nothing else records
         # this: if the connection drops between a down and its matching up -
         # mid-drag, or mid-shortcut - the button/key stayed physically pressed
@@ -27,6 +35,13 @@ class InputInjector:
         if not enabled:
             log.info("input injection disabled; operator input will only be logged")
             return
+
+        if portal is not None and getattr(portal, "available", False) and portal.session_handle:
+            self._portal = portal
+            self.available = True
+            log.info("input injection via the Wayland portal (RemoteDesktop)")
+            return
+
         try:
             from pynput.keyboard import Controller as KeyboardController, Key
             from pynput.mouse import Button, Controller as MouseController
@@ -71,6 +86,10 @@ class InputInjector:
                 )
             elif kind == "key":
                 log.info("input key %s %r", message.get("action"), message.get("key"))
+            return
+
+        if self._portal is not None:
+            self._apply_portal(message, geometry)
             return
 
         left, top, width, height = geometry
@@ -123,6 +142,52 @@ class InputInjector:
         except Exception as exc:
             log.debug("could not apply input %s: %s", message, exc)
 
+    def _apply_portal(self, message: dict, geometry: tuple[int, int, int, int]) -> None:
+        """Same semantics as the pynput path above, driving the Wayland
+        portal's RemoteDesktop Notify* calls instead of XTest."""
+        left, top, width, height = geometry
+        kind = message.get("kind")
+        try:
+            if kind == "mouse":
+                if "x" in message and "y" in message and width and height:
+                    self._portal.notify_pointer_motion_absolute(
+                        left + message["x"] * width, top + message["y"] * height
+                    )
+                action = message.get("action")
+                if action in ("down", "up"):
+                    button = {
+                        "left": wayland_portal.BTN_LEFT,
+                        "right": wayland_portal.BTN_RIGHT,
+                        "middle": wayland_portal.BTN_MIDDLE,
+                    }.get(message.get("button", "left"), wayland_portal.BTN_LEFT)
+                    pressed = action == "down"
+                    self._portal.notify_pointer_button(button, pressed)
+                    if pressed:
+                        self._pressed_buttons.add(button)
+                    else:
+                        self._pressed_buttons.discard(button)
+            elif kind == "scroll":
+                dy = message.get("dy", 0)
+                if dy == 0:
+                    steps = 0
+                else:
+                    steps = int(dy / 100) or (1 if dy < 0 else -1)
+                if steps:
+                    self._portal.notify_pointer_axis_discrete(True, -steps)
+            elif kind == "key":
+                name = message.get("key", "")
+                keysym = wayland_portal.keysym_for(name)
+                if keysym is None:
+                    return
+                pressed = message.get("action") == "down"
+                self._portal.notify_keyboard_keysym(keysym, pressed)
+                if pressed:
+                    self._pressed_keys.add(keysym)
+                else:
+                    self._pressed_keys.discard(keysym)
+        except Exception as exc:
+            log.debug("could not apply portal input %s: %s", message, exc)
+
     def release_all(self) -> None:
         """Let go of everything still held down.
 
@@ -132,6 +197,14 @@ class InputInjector:
         button or key physically stuck at the OS level with no way to clear
         it, even across a reconnect.
         """
+        if self._portal is not None:
+            for button in list(self._pressed_buttons):
+                self._portal.notify_pointer_button(button, False)
+            for keysym in list(self._pressed_keys):
+                self._portal.notify_keyboard_keysym(keysym, False)
+            self._pressed_buttons.clear()
+            self._pressed_keys.clear()
+            return
         if not self.available:
             self._pressed_buttons.clear()
             self._pressed_keys.clear()

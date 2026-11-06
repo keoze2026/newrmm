@@ -74,6 +74,13 @@ export const ChatIcon = (p: IconProps) => (
   </Svg>
 )
 
+export const SendIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4.5 12 20 4.5 13 19.5l-2.2-6.3L4.5 12Z" />
+    <path d="M10.8 13.2 15.5 8.5" />
+  </Svg>
+)
+
 export const TerminalIcon = (p: IconProps) => (
   <Svg {...p}>
     <rect x="3" y="4.5" width="18" height="15" rx="1.8" />

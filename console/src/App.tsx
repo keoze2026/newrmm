@@ -243,6 +243,8 @@ export default function App() {
         previewBitmap={frame}
         previewSeq={frameSeq}
         editRequest={renameRequest}
+        stream={streamRef.current}
+        guestConnected={streamState.guestConnected}
       />
       </div>
 

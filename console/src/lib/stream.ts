@@ -53,6 +53,7 @@ export type ControlMessage =
   | { type: 'terminal'; action: 'open' | 'input' | 'resize' | 'close'; data?: string; cols?: number; rows?: number }
   | { type: 'files'; action: 'list' | 'get' | 'put'; path?: string; data?: string; final?: boolean }
   | { type: 'clipboard'; action: 'get' | 'set'; text?: string }
+  | { type: 'chat'; action: 'message'; text: string }
   | { type: 'keyframe' }
   | { type: 'end' }
 

@@ -1,17 +1,23 @@
 /*
- * Native Linux screen capture for the endpoint agent.
+ * Native Linux screen capture for the endpoint agent - the X11 path only.
  *
- * Specification section 5: "Screen capture | ... | PipeWire (Wayland) / X11 XShm"
- * Specification section 6: "Linux in C with PipeWire/X11".
+ * Specification section 6: "Linux in C with PipeWire/X11". This module is
+ * the X11 half: MIT-SHM (XShm). The X server writes each frame straight into
+ * a shared memory segment this process already owns, so a grab costs no
+ * socket round trip for the pixels - the difference that matters at 30 fps
+ * on a large display.
  *
- * X11 path: MIT-SHM (XShm). The X server writes each frame straight into a
- * shared memory segment this process already owns, so a grab costs no socket
- * round trip for the pixels - the difference that matters at 30 fps on a large
- * display.
- *
- * Wayland path: PipeWire, compiled in when libpipewire-0.3 headers are present
- * (-DRMM_HAVE_PIPEWIRE). Wayland has no equivalent of XGetImage; capture goes
- * through the XDG desktop portal, which hands back a PipeWire stream.
+ * The Wayland half (PipeWire, via the XDG desktop portal - Wayland has no
+ * equivalent of XGetImage, so capture is only reachable through the portal)
+ * lives in Python instead, in rmm_agent/wayland_portal.py and
+ * rmm_agent/wayland_capture.py - it needs a D-Bus round trip through the
+ * compositor's own permission dialog before anything can be captured at
+ * all, which does not fit this module's open()-then-grab() shape, and is
+ * far safer to get right on top of GLib/GStreamer's own buffer negotiation
+ * than hand-rolled against libpipewire directly. An earlier version of this
+ * file claimed a "pipewire" backend here that never actually existed - only
+ * this comment and a label in backend() - so capture.py now goes to the
+ * Python portal path itself instead of asking this module for one.
  *
  * Monitors are enumerated with XRandR so a multi-head layout reports each
  * output's real geometry and origin.
@@ -490,36 +496,16 @@ static PyObject *capture_close(PyObject *self, PyObject *Py_UNUSED(ignored))
 }
 
 PyDoc_STRVAR(backend_doc,
-"backend() -> str\\n\\n"
-"Which capture path this build supports: 'x11-shm', 'x11', or 'pipewire'\\n"
-"when built with PipeWire support and running under Wayland.");
+"backend() -> str\\n\\nWhich X11 capture path this build is using: 'x11-shm' or 'x11'.\\n"
+"(The Wayland path is separate - see rmm_agent.wayland_portal.)");
 
 static PyObject *capture_backend(PyObject *self, PyObject *Py_UNUSED(ignored))
 {
     (void)self;
-#ifdef RMM_HAVE_PIPEWIRE
-    const char *wayland = getenv("WAYLAND_DISPLAY");
-    if (wayland && *wayland) {
-        return PyUnicode_FromString("pipewire");
-    }
-#endif
     if (!state.display) {
         return PyUnicode_FromString("x11");
     }
     return PyUnicode_FromString(state.have_shm ? "x11-shm" : "x11");
-}
-
-PyDoc_STRVAR(have_pipewire_doc,
-"have_pipewire() -> bool\\n\\nWhether this build includes the PipeWire path.");
-
-static PyObject *capture_have_pipewire(PyObject *self, PyObject *Py_UNUSED(ignored))
-{
-    (void)self;
-#ifdef RMM_HAVE_PIPEWIRE
-    Py_RETURN_TRUE;
-#else
-    Py_RETURN_FALSE;
-#endif
 }
 
 static PyMethodDef methods[] = {
@@ -528,13 +514,13 @@ static PyMethodDef methods[] = {
     {"grab", (PyCFunction)(void (*)(void))capture_grab, METH_VARARGS | METH_KEYWORDS, grab_doc},
     {"close", (PyCFunction)capture_close, METH_NOARGS, close_doc},
     {"backend", (PyCFunction)capture_backend, METH_NOARGS, backend_doc},
-    {"have_pipewire", (PyCFunction)capture_have_pipewire, METH_NOARGS, have_pipewire_doc},
     {NULL, NULL, 0, NULL},
 };
 
 PyDoc_STRVAR(module_doc,
-"Native Linux screen capture (X11 XShm, and PipeWire where built in).\\n"
-"The C capture module the specification requires of the Linux endpoint.");
+"Native Linux screen capture: X11 XShm.\\n"
+"The C capture module the specification requires of the Linux endpoint.\\n"
+"The Wayland path is separate - see rmm_agent.wayland_portal.");
 
 static struct PyModuleDef module = {
     PyModuleDef_HEAD_INIT,

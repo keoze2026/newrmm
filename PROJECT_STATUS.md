@@ -83,19 +83,41 @@ on a Windows, macOS and Linux runner. Both workflows are green.
 - **Builds are unsigned.** Section 11 assumes certificates can be procured; they
   have not been. SmartScreen warns, and Gatekeeper refuses outright.
 - **Deployed** to `rmm.remotedesk247.com` behind the host nginx (earlier note "never deployed" was stale). Streaming has only been measured through that path with a synthetic and a real-capture test agent, not with a real operator browser.
-- **Chat is agent-side only - not usable end to end yet.** The endpoint-side
-  chat window (`agent/rmm_agent/chat.py`) is built and tested (2026-11-06): it
-  opens on the first incoming message, survives the session ending and a new
-  one starting in the same always-on process, and sends replies back as a
-  generic `{"type": "chat", ...}` message the relay already forwards with zero
-  relay changes needed. **But there is no console-side UI at all** - `stream.ts`
-  has no `'chat'` message type, and `DetailPanel.tsx`'s Chat tab still renders
-  `NotImplementedTab`. An operator cannot send a chat message from the console
-  today. Tools is still a placeholder, labelled as such on screen. Locate and
-  the Terminal (now a real xterm.js emulator, `vim`/`top` included) were built
-  2026-11-05 and are deployed.
-- The PipeWire capture path needs `libpipewire-0.3-dev` to compile in; without
-  it the Linux module is X11 only, and Wayland is not supported.
+- **Chat is built end to end but not yet run for real.** Agent side
+  (`agent/rmm_agent/chat.py`, 2026-11-06) and console side (`ChatTab.tsx`,
+  `stream.ts`'s `'chat'` control message, 2026-11-06) are both built, wired
+  together, type-checked and built clean. **Not yet verified against a real
+  connected guest** - `tests/e2e/console_appendix_a.py` now sends a message
+  from the console and checks it lands in the thread, but that test has not
+  been run since this change (needs the real relay + a real test agent, which
+  cannot run on this Windows laptop). Tools is still a placeholder, labelled
+  as such on screen.
+- **Linux Wayland support is built but completely unverified on real
+  hardware.** `agent/rmm_agent/wayland_portal.py` and `wayland_capture.py`
+  (2026-11-06) implement the real thing - the xdg-desktop-portal ScreenCast +
+  RemoteDesktop D-Bus interfaces for capture and input, the only door Wayland
+  actually offers for either, consumed through GStreamer's `pipewiresrc` so
+  there is no hand-rolled PipeWire buffer negotiation. Wired into
+  `capture.py`/`remote_input.py`/`session.py` with graceful fallback to mss
+  at every failure point. **This dev machine is Windows and has no Wayland
+  compositor, so none of the actual D-Bus handshake has ever run against a
+  real portal backend** - only the "PyGObject/portal absent" fallback path is
+  tested (`agent/tests/test_wayland_portal.py`, 7 tests, and CI now installs
+  PyGObject + GStreamer's pipewire plugin so at least the import path runs on
+  a real Linux box). First real test needs a real GNOME or KDE Wayland
+  session with `python3-gi` + `gstreamer1.0-pipewire` installed (now in the
+  `.deb`'s `Recommends:`), run with `--verbose`, and the first real portal
+  permission dialog answered by a person. Also unverified: whether PyInstaller
+  actually bundles PyGObject correctly into the frozen single-file binary -
+  `build.py` adds `--hidden-import`/`--collect-all gi` when PyGObject is
+  present on the build machine, but PyGObject bundling is a known fragile spot
+  for PyInstaller and has never been checked against a built artefact. Only
+  a single monitor can be shared (the portal's picker was asked for one
+  source, not multiple) - switching monitors mid-session is X11-only for now.
+  The old claim that the native C module's "pipewire" backend just needed
+  `libpipewire-0.3-dev` to compile in was wrong - that code never existed,
+  see lesson #49 - so the C module and its `setup.py`/CI steps were cleaned
+  up to stop claiming it.
 
 ## Environment this was built and tested on
 
@@ -174,8 +196,56 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 | 46 | Gave the user `docker compose build relay` for the server with no directory, and `gh run download <RUN_ID> ...` with the placeholder left literal. The compose files live at `infra/docker-compose.yml` + `infra/docker-compose.tls.yml`, not the repo root (`/opt/nermm` on the server) - the first command failed with "no configuration file provided". `<RUN_ID>` in bash is an input redirect from a file called `RUN_ID`, not a fill-in-the-blank - the second failed three times the same way. Wasted a deploy round trip the user had to paste back before either was caught. | A command handed to the user must be the literal, final line to paste - the exact working directory, both compose files together (so the TLS overlay's ports/volumes aren't seen as "removed"), and every placeholder already substituted with a real value, never shown in `<angle brackets>`. Server path: `/opt/nermm`. Compose: always `docker compose -f docker-compose.yml -f docker-compose.tls.yml ...` from `infra/`. |
 | 47 | Lessons #38/#39 already say the read-this-file rule applies to every prompt, not once per session. Mid-session tonight I treated "I read the file earlier this conversation" as satisfying it, and also made a code fix (removing `cursor-none`) and moved straight to the next investigation without recording the fix first. | The rule is per-prompt, with no exception for "we're still on the same topic" or "I already read it earlier this conversation." Read before acting, record immediately after acting - before starting the next thing, not batched at the end. |
 | 48 | The cursor fix (`console/src/components/Viewer.tsx`) got committed alongside an agent-side commit (`ad28a14`) and I only ever gave the user `docker compose build relay`/`up -d relay` commands afterward - never the matching `build console`/`up -d console`. The user kept seeing no cursor and I had to be told directly before checking which container actually serves which changed file. | Every fix's own entry must say exactly which container/image it lives in and the exact deploy command for *that* container, not a generic "not yet deployed" - and that must be checked against what was actually run, not assumed from "a deploy happened recently." |
+| 49 | This file said Wayland "needs `libpipewire-0.3-dev` to compile in," which reads as "the code exists, just not linked in." It didn't: `rmm_capture_linux.c` only ever had a `backend()` string that printed `"pipewire"` when a macro was set - zero real PipeWire calls anywhere. I repeated that claim to the user instead of opening the file, the same mistake as #14/#46 (trusting a written claim over checking what is actually there), until asked directly for a universal Linux agent forced reading the source. | A claim that a capability "just needs a flag/package to turn on" is a claim that the code is already there - verify that by opening the file, not by trusting the comment or this file's own wording, before repeating it to the user. |
 
 ## Change log
+
+- **Linux Wayland: real portal-based capture + input, unverified on real
+  hardware (2026-11-06).** User asked for a "universal" Linux agent; X11-only
+  was the actual state despite this file's stale claim (lesson #49). Built
+  `agent/rmm_agent/wayland_portal.py` (the xdg-desktop-portal ScreenCast +
+  RemoteDesktop D-Bus handshake over PyGObject's `Gio`/`GLib` - one combined
+  session so capture and input share a single compositor permission prompt;
+  `NotifyPointerMotionAbsolute`/`NotifyPointerButton`/`NotifyPointerAxisDiscrete`/
+  `NotifyKeyboardKeysym` for input, X11 keysyms not evdev keycodes so the
+  existing named-key table in `remote_input.py` ports over almost unchanged)
+  and `agent/rmm_agent/wayland_capture.py` (decodes the resulting PipeWire
+  stream via GStreamer's `pipewiresrc` + `appsink`, rather than hand-rolling
+  PipeWire's own buffer negotiation against libpipewire directly - far more
+  likely to be correct without a way to test it live). Wired in: `session.py`
+  builds one shared `PortalSession` when `WAYLAND_DISPLAY` is set and hands
+  it to both `ScreenCapture(portal=...)` and `InputInjector(portal=...)`;
+  both fall back to their existing X11/mss/pynput paths on any failure, so a
+  Wayland box with no working portal degrades exactly like it did before this
+  change. Removed the misleading fake "pipewire" backend label and
+  `libpipewire-0.3` linkage from `rmm_capture_linux.c`/`setup.py` (lesson #49
+  - that macro never gated any real PipeWire code, only a string). `.deb`
+  `Recommends:` and both CI workflows (`agents.yml`, `tests.yml`) now install
+  `python3-gi` + GStreamer's pipewire plugin so the import path gets real
+  Linux coverage; `build.py` bundles PyGObject into the PyInstaller build
+  when it is present on the build machine. New tests:
+  `agent/tests/test_wayland_portal.py` (7, all pass - but only exercise the
+  "no portal backend available" fallback, since nothing here can reach a
+  real compositor). **Not verified**: the actual D-Bus handshake against a
+  real GNOME/KDE portal, the PipeWire frame decode, RemoteDesktop input
+  actually moving a cursor, or whether PyInstaller's frozen binary can
+  actually load PyGObject at runtime. See "What does NOT work yet."
+
+- **Console: Chat UI, wired to the already-built agent side (2026-11-06).**
+  Agent side (`chat.py`) was already done; this is the other half. Added
+  `ChatTab.tsx` (bubble thread + input, disabled until the guest is
+  connected) and a `'chat'` entry on `stream.ts`'s `ControlMessage` union -
+  sends/receives the exact `{type: 'chat', action: 'message', text}` shape
+  `session.py`'s `_handle_chat` already expects, so no relay or agent changes
+  were needed. `App.tsx` already opens a `SessionStream` the moment a session
+  is selected (not only when the full viewer is open), so Chat works without
+  joining the full-screen viewer - passed that `stream` and
+  `streamState.guestConnected` down through `DetailPanel` into `ChatTab`.
+  Updated `tests/e2e/console_appendix_a.py`'s A.6 step, which used to assert
+  Chat showed "Not yet implemented" - now sends a real message and checks it
+  appears in the thread; Tools keeps the old not-implemented assertion.
+  Verified: `tsc -b --noEmit` clean, `vite build` clean. **Not verified**
+  against a real connected guest - see "What does NOT work yet."
 
 - **Console: visual polish pass, no layout or structural changes (2026-11-06).**
   User's complaint: the console "looks too plain." Checked first whether the

@@ -22,7 +22,15 @@ log = logging.getLogger(__name__)
 
 
 class ScreenCapture:
-    def __init__(self, synthetic: bool = False, size: tuple[int, int] = (1280, 800)) -> None:
+    def __init__(
+        self,
+        synthetic: bool = False,
+        size: tuple[int, int] = (1280, 800),
+        portal=None,
+    ) -> None:
+        """`portal`: an already-started wayland_portal.PortalSession, when
+        session.py detected a Wayland session and built one (session.py owns
+        it because InputInjector shares the very same session)."""
         self.synthetic = synthetic
         self.size = size
         self.monitor_index = 0
@@ -31,11 +39,16 @@ class ScreenCapture:
         # grabbed on pool threads, so each thread needs its own capture object.
         self._local = threading.local()
         self._native = None
+        self._wayland = None
         self._monitors: list[dict] = []
         self.backend = "synthetic"
 
         if not synthetic and self._open_native():
             return
+
+        if not synthetic and portal is not None and getattr(portal, "pipewire_fd", None):
+            if self._open_wayland(portal):
+                return
 
         if not synthetic:
             try:
@@ -99,6 +112,28 @@ class ScreenCapture:
             self._native = None
             return False
 
+    def _open_wayland(self, portal) -> bool:
+        """Decode the PipeWire stream the Wayland portal session already
+        negotiated (session.py calls portal.start() before constructing
+        this). Only reached when the X11 native module could not open -
+        i.e. this is really a Wayland session, not Xorg/XWayland."""
+        try:
+            from rmm_agent.wayland_capture import WaylandCapture
+
+            capture = WaylandCapture(portal)
+            if not capture.ok:
+                return False
+            self._wayland = capture
+            if portal.monitors:
+                self._monitors = [dict(m) for m in portal.monitors]
+            self.backend = "wayland-portal"
+            log.info("capturing through the Wayland portal (PipeWire)")
+            return True
+        except Exception as exc:
+            log.warning("Wayland portal capture did not start (%s); using mss", exc)
+            self._wayland = None
+            return False
+
     @property
     def monitors(self) -> list[dict]:
         return self._monitors
@@ -127,6 +162,9 @@ class ScreenCapture:
         if self._native is not None:
             data, width, height = self._native.grab(self.monitor_index)
             return Image.frombytes("RGB", (width, height), data)
+        if self._wayland is not None:
+            data, width, height = self._wayland.grab()
+            return Image.frombytes("RGB", (width, height), data)
         if self.synthetic or self._sct is None:
             return self._generated()
         sct = self._thread_sct()
@@ -151,6 +189,12 @@ class ScreenCapture:
             except Exception:
                 pass
             self._native = None
+        if self._wayland is not None:
+            try:
+                self._wayland.close()
+            except Exception:
+                pass
+            self._wayland = None
 
     def encode(self, image: Image.Image, quality: int) -> bytes:
         buffer = io.BytesIO()

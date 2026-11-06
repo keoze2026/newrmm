@@ -1,5 +1,6 @@
 import TabStrip, { type TabKey } from './TabStrip'
 import SessionTab from './tabs/SessionTab'
+import ChatTab from './tabs/ChatTab'
 import {
   HistoryTab,
   LaunchTab,
@@ -9,7 +10,7 @@ import {
   SystemInfoTab,
 } from './tabs/OtherTabs'
 import type { Session } from '../lib/api'
-import type { FrameSource } from '../lib/stream'
+import type { FrameSource, SessionStream } from '../lib/stream'
 
 /** Column 4 (Appendix A.2, A.4-A.6). */
 export default function DetailPanel({
@@ -21,6 +22,8 @@ export default function DetailPanel({
   previewBitmap,
   previewSeq,
   editRequest,
+  stream,
+  guestConnected,
 }: {
   session: Session | null
   tab: TabKey
@@ -30,6 +33,8 @@ export default function DetailPanel({
   previewBitmap: FrameSource | null
   previewSeq: number
   editRequest: number
+  stream: SessionStream | null
+  guestConnected: boolean
 }) {
   if (!session) {
     return (
@@ -81,10 +86,7 @@ export default function DetailPanel({
           />
         )}
         {tab === 'chat' && (
-          <NotImplementedTab
-            title="Chat"
-            note="In-session chat with the guest is not built yet."
-          />
+          <ChatTab session={session} stream={stream} guestConnected={guestConnected} />
         )}
         {tab === 'tools' && (
           <NotImplementedTab

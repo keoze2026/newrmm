@@ -226,11 +226,24 @@ with sync_playwright() as p:
 
     step("A.6 Session history renders", history_tab)
 
-    def unimplemented_labelled():
+    def chat_tab():
         page.get_by_test_id("tab-chat").click()
+        expect(page.get_by_role("heading", name="Chat")).to_be_visible()
+        message = f"hello from the console e2e test {GUEST_CODE}"
+        box = page.get_by_test_id("chat-input")
+        expect(box).to_be_enabled()
+        box.fill(message)
+        page.get_by_test_id("chat-send").click()
+        expect(page.get_by_test_id("chat-history").get_by_text(message)).to_be_visible()
+        expect(box).to_have_value("")
+
+    step("A.6 Chat sends a message to the guest and shows it in the thread", chat_tab)
+
+    def tools_unimplemented():
+        page.get_by_test_id("tab-tools").click()
         expect(page.get_by_text("Not yet implemented.")).to_be_visible()
 
-    step("A.6 Chat/Tools/Locate are clearly labelled as not implemented", unimplemented_labelled)
+    step("A.6 Tools is clearly labelled as not implemented", tools_unimplemented)
 
     # ---------------------------------------------------------------- A.7
     def open_viewer():
