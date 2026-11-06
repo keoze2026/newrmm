@@ -197,7 +197,10 @@ jobs:
 
   macos:
     name: macOS agent
-    runs-on: macos-14
+    # macos-14 was removed from GitHub's hosted-runner fleet ("configuration
+    # 'macos-14-arm64-us-default' is not supported", 2026-11-06 run), failing
+    # in 1s before any step ran - nothing to do with this repo's code.
+    runs-on: macos-15
     # Same reasoning as the Windows job above: `if:` is evaluated before a
     # step's own `env:`, so this must be set at job level or Sign-and-notarise
     # could never run no matter what secrets exist.
