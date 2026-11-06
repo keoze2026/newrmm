@@ -307,6 +307,7 @@ def test_a_restart_of_an_enrolled_computer_goes_straight_back_to_always_online(m
     monkeypatch.setattr(agent.launcher, "hide_console_if_owned", lambda: None)
     monkeypatch.setattr(agent.background, "write_pid", lambda: None)
     monkeypatch.setattr(agent.background, "clear_pid", lambda: None)
+    monkeypatch.setattr(agent.background, "running_pid", lambda: None)
     ran = {}
     monkeypatch.setattr(agent, "_run_with_tray", lambda factory, use_tray, on_user_quit=None: ran.update(tray=use_tray) or 0)
     monkeypatch.setattr(agent, "cmd_join", lambda a: pytest.fail("rejoined an old session instead of staying online"))

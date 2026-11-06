@@ -59,9 +59,16 @@ def test_a_missing_saved_session_is_just_none(private_state, caplog):
     assert not caplog.records
 
 
-def test_resume_says_so_when_there_is_nothing_to_rejoin(private_state, caplog):
+def test_resume_says_so_when_there_is_nothing_to_rejoin(private_state, caplog, monkeypatch):
     from rmm_agent import __main__ as agent
 
+    # A machine that happens to carry a real enrolment (this one does, from
+    # earlier real device testing) would otherwise make cmd_resume start the
+    # real always-on device loop here, which never returns - hanging this
+    # test instead of failing it. private_state only redirects autostart's
+    # own session file, not this.
+    monkeypatch.setattr(agent.background, "running_pid", lambda: None)
+    monkeypatch.setattr(agent.Enrolment, "load", classmethod(lambda cls: None))
     caplog.set_level(logging.INFO, logger="rmm_agent")
     assert agent.cmd_resume(None) == 0
     assert any("nothing to resume" in r.getMessage() for r in caplog.records)

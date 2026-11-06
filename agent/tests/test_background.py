@@ -67,10 +67,16 @@ def test_a_detached_agent_outlives_its_parent_and_can_be_stopped():
         ["join", "--relay", "ws://127.0.0.1:9", "--code", "TESTCODE", "--no-tray"]
     )
     try:
-        assert os.getpgid(pid) != os.getpgid(0), (
-            "the agent is still in this terminal's process group, so Ctrl+C "
-            "or closing the terminal would still kill it"
-        )
+        # Process groups are a POSIX concept; os.getpgid does not exist on
+        # Windows at all. The Windows-equivalent protection
+        # (DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, in spawn_detached
+        # itself) is exercised either way - this one assertion just has no
+        # cross-platform equivalent to check.
+        if not background.WINDOWS:
+            assert os.getpgid(pid) != os.getpgid(0), (
+                "the agent is still in this terminal's process group, so Ctrl+C "
+                "or closing the terminal would still kill it"
+            )
 
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline and background.running_pid() != pid:
@@ -83,6 +89,13 @@ def test_a_detached_agent_outlives_its_parent_and_can_be_stopped():
             time.sleep(0.1)
         assert background.running_pid() is None
     finally:
+        # Belt and suspenders: if an earlier assertion in this test failed
+        # before reaching background.stop() above, this still clears the
+        # pid file - an untested, unmocked Windows crash here once left a
+        # real stale pid file behind that broke two unrelated tests in
+        # test_always_on.py and test_autostart.py on the next run, since
+        # neither mocks running_pid() and both trusted no agent was running.
+        background.stop()
         try:
             os.kill(pid, 9)
         except OSError:

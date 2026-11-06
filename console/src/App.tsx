@@ -65,6 +65,22 @@ export default function App() {
     return () => window.clearInterval(timer)
   }, [operator, refresh])
 
+  // A tab left open for hours accumulates stale state; a plain reload clears
+  // it and picks up whatever was deployed since. Never while a viewer is
+  // open - reloading mid-session would drop the live view and the control
+  // channel out from under whoever is actively helping someone.
+  const viewerOpenRef = useRef(viewerOpen)
+  viewerOpenRef.current = viewerOpen
+  useEffect(() => {
+    const AUTO_REFRESH_MS = 10 * 60 * 1000
+    const timer = window.setInterval(() => {
+      if (!viewerOpenRef.current) {
+        window.location.reload()
+      }
+    }, AUTO_REFRESH_MS)
+    return () => window.clearInterval(timer)
+  }, [])
+
   const visible = useMemo(() => {
     const needle = search.trim().toLowerCase()
     if (!needle) return sessions

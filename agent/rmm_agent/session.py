@@ -8,6 +8,7 @@ import websockets
 
 from rmm_agent import __version__, clipboard, files, platform_support, privacy, sysinfo
 from rmm_agent.capture import RateController, ScreenCapture
+from rmm_agent.chat import ChatWindow
 from rmm_agent.consent import ask_choice as ask_consent_choice
 from rmm_agent.remote_input import InputInjector
 from rmm_agent.terminal import RemoteTerminal, default_shell
@@ -103,6 +104,7 @@ class AgentSession:
         self._consented = False
         self._streamed_until: float | None = None
         self._terminal: RemoteTerminal | None = None
+        self._chat: ChatWindow | None = None
         self._privacy = privacy.PrivacyBlank(watchdog_seconds=blank_watchdog)
         # Changed-region streaming (specification section 10).
         self._tiles = TileEncoder()
@@ -314,6 +316,8 @@ class AgentSession:
                     await self._handle_files(message)
                 elif kind == "clipboard":
                     await self._handle_clipboard(message)
+                elif kind == "chat":
+                    await self._handle_chat(message)
                 elif kind == "end":
                     log.info("the operator ended the session")
                     self._stop.set()
@@ -339,6 +343,9 @@ class AgentSession:
         if self._terminal is not None:
             self._terminal.close()
             self._terminal = None
+        if self._chat is not None:
+            self._chat.close()
+            self._chat = None
         for upload in self._uploads.values():
             upload.abort()
         self._uploads.clear()
@@ -421,6 +428,22 @@ class AgentSession:
         elif action == "set":
             ok = await asyncio.to_thread(clipboard.set_text, str(message.get("text", "")))
             await self._send({"type": "clipboard", "action": "set", "ok": ok})
+
+    async def _handle_chat(self, message: dict) -> None:
+        if message.get("action") != "message":
+            return
+        text = str(message.get("text", "")).strip()
+        if not text:
+            return
+        loop = asyncio.get_running_loop()
+        if self._chat is None:
+            def on_reply(reply_text: str) -> None:
+                asyncio.run_coroutine_threadsafe(
+                    self._send({"type": "chat", "action": "message", "text": reply_text}), loop
+                )
+
+            self._chat = ChatWindow(on_reply)
+        self._chat.receive(text)
 
     async def _handle_blank(self, message: dict) -> None:
         wanted = bool(message.get("on"))

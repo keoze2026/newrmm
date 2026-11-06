@@ -66,6 +66,14 @@ def test_resume_with_nothing_remembered_does_nothing(monkeypatch):
     def must_not_join(_args):
         raise AssertionError("joined a session that was never remembered")
 
+    # A machine that happens to carry a real leftover enrolment (this one
+    # does, pointed at production, from earlier real device testing) would
+    # otherwise make cmd_resume start the real always-on device loop here,
+    # which never returns - hanging this test indefinitely instead of
+    # failing it. Mocked explicitly so the test means what its name says
+    # regardless of what is actually enrolled on whatever machine runs it.
+    monkeypatch.setattr(agent.background, "running_pid", lambda: None)
+    monkeypatch.setattr(agent.Enrolment, "load", classmethod(lambda cls: None))
     monkeypatch.setattr(agent, "cmd_join", must_not_join)
     assert agent.cmd_resume(None) == 0
 
@@ -75,6 +83,11 @@ def test_resume_rejoins_the_remembered_session(monkeypatch):
 
     autostart.remember("wss://relay/api", "ABCD1234", enable=Recorder())
     joined = {}
+    # Same ambient-state trap as the test above: a real leftover enrolment
+    # on the machine running this would take the always-on branch instead
+    # of ever reaching cmd_join, hanging instead of failing.
+    monkeypatch.setattr(agent.background, "running_pid", lambda: None)
+    monkeypatch.setattr(agent.Enrolment, "load", classmethod(lambda cls: None))
     monkeypatch.setattr(agent, "cmd_join", lambda args: joined.update(relay=args.relay, code=args.code) or 0)
     assert agent.cmd_resume(None) == 0
     assert joined == {"relay": "wss://relay/api", "code": "ABCD1234"}

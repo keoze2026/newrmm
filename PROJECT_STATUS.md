@@ -83,10 +83,17 @@ on a Windows, macOS and Linux runner. Both workflows are green.
 - **Builds are unsigned.** Section 11 assumes certificates can be procured; they
   have not been. SmartScreen warns, and Gatekeeper refuses outright.
 - **Deployed** to `rmm.remotedesk247.com` behind the host nginx (earlier note "never deployed" was stale). Streaming has only been measured through that path with a synthetic and a real-capture test agent, not with a real operator browser.
-- Chat, Tools and Locate are placeholders, labelled as such on screen.
-- The terminal renders colour but is not a full emulator: `vim` and `top` will
-  not display correctly.
-- The Files panel browses from the endpoint user's home with no path entry box.
+- **Chat is agent-side only - not usable end to end yet.** The endpoint-side
+  chat window (`agent/rmm_agent/chat.py`) is built and tested (2026-11-06): it
+  opens on the first incoming message, survives the session ending and a new
+  one starting in the same always-on process, and sends replies back as a
+  generic `{"type": "chat", ...}` message the relay already forwards with zero
+  relay changes needed. **But there is no console-side UI at all** - `stream.ts`
+  has no `'chat'` message type, and `DetailPanel.tsx`'s Chat tab still renders
+  `NotImplementedTab`. An operator cannot send a chat message from the console
+  today. Tools is still a placeholder, labelled as such on screen. Locate and
+  the Terminal (now a real xterm.js emulator, `vim`/`top` included) were built
+  2026-11-05 and are deployed.
 - The PipeWire capture path needs `libpipewire-0.3-dev` to compile in; without
   it the Linux module is X11 only, and Wayland is not supported.
 
@@ -169,6 +176,58 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 | 48 | The cursor fix (`console/src/components/Viewer.tsx`) got committed alongside an agent-side commit (`ad28a14`) and I only ever gave the user `docker compose build relay`/`up -d relay` commands afterward - never the matching `build console`/`up -d console`. The user kept seeing no cursor and I had to be told directly before checking which container actually serves which changed file. | Every fix's own entry must say exactly which container/image it lives in and the exact deploy command for *that* container, not a generic "not yet deployed" - and that must be checked against what was actually run, not assumed from "a deploy happened recently." |
 
 ## Change log
+
+- **Chat feature built, agent side only (2026-11-06).** New `agent/rmm_agent/chat.py`:
+  a real Tk chat window shown to the endpoint user, created on the first incoming
+  chat message and torn down with the session's other tools in `_close_tools`.
+  Wired into `session.py`'s message dispatch (`kind == "chat"`) and cleanup.
+  Needed zero relay changes - traced both `operator_socket` and `guest_socket` in
+  `relay/app/api/ws.py` and confirmed message forwarding there is already generic
+  by type. Hit a real bug along the way: an always-on device keeps one process
+  running across many sessions, and a naive "new thread, new `tk.Tk()` per
+  window" design crashed the whole process outright on the second window
+  (`Tcl_AsyncDelete: async handler deleted by the wrong thread`) - confirmed via
+  isolated repro scripts that this is about creating a second `Tk()` interpreter
+  on a second thread later in the same process, nothing to do with the widgets
+  used. Fixed by using one persistent shared GUI thread and one `Tk()` root for
+  the life of the process, with a `Toplevel` per chat window instead of a new
+  root. Covered by three new real tests in `agent/tests/test_chat.py` (no
+  tkinter mocking - run against a real window, the same approach `test_privacy.py`
+  already uses), including a direct regression test for the crash
+  (`test_two_sessions_worth_of_windows_in_the_same_process_do_not_crash_it`).
+  **Not done: the console side.** `stream.ts` has no `'chat'` message type and
+  `DetailPanel.tsx`'s Chat tab is still `NotImplementedTab` - an operator cannot
+  send a message yet. See "What does NOT work yet."
+
+- **Fixed three real pre-existing test-isolation bugs, found while running the
+  full agent suite after the Chat work (2026-11-06).** None were caused by Chat.
+  (1) `test_background.py`'s detached-agent test asserted `os.getpgid`, which
+  does not exist on Windows at all (`AttributeError`) - the crash skipped the
+  test's own cleanup and left a real stale pid file
+  (`%APPDATA%\RMMAgent\agent.pid`) behind, which then made `background.running_pid()`
+  falsely report "running" in later runs. Fixed by gating that one assertion
+  behind `if not background.WINDOWS:` (process groups are POSIX-only; the
+  Windows-equivalent protection is exercised either way) and adding
+  `background.stop()` to the test's `finally`. (2) Three separate tests across
+  `test_always_on.py`, `test_autostart.py` (x2) and `test_durable.py` called
+  `cmd_resume` without mocking `Enrolment.load()`, assuming "nothing enrolled."
+  This dev laptop actually carries a real leftover production enrolment from
+  earlier real-device testing (pointed at `wss://rmm.remotedesk247.com/api`) -
+  so instead of failing, each test silently started the real always-on device
+  loop and hung indefinitely. Fixed by explicitly mocking both
+  `background.running_pid` and `agent.Enrolment.load` to return `None` in all
+  four affected test functions. Full suite after both fixes: **147 passed, 0
+  failed, 23.51s.** Flag, not yet acted on: this laptop's leftover real
+  enrolment is worth de-enrolling from the live console so it doesn't show up
+  as a phantom device.
+
+- **Console: 10-minute auto-refresh (2026-11-06).** `console/src/App.tsx` now
+  reloads the page every 10 minutes to clear state a long-open tab accumulates
+  and pick up whatever was deployed since - but never while a live session
+  viewer is open, so an active support session is never dropped mid-view. This
+  is the console UI only, not the agent - the agent's own always-on process is
+  unaffected. Verified: `tsc -b --noEmit` clean, `vite build` clean (542.53 kB
+  bundle, same pre-existing non-blocking chunk-size advisory as before).
 
 - **Fix: the multi-operator authorization tests, run for the first time ever on the server's real CI (not locally - no Postgres here), failed on a bug in the test code itself, not the feature (2026-11-05).** `relay/tests/test_session_authorization.py`'s `other_operator_headers()` helper inserted a second operator with a hardcoded, literal email (`colleague@example.com`) on every call. That's fine the first time, but `conftest.py`'s `migrated_database` fixture is session-scoped - the whole test database is built once per full test run, never reset between individual test functions - so the 2nd, 3rd and 4th test in the file that called the same helper all hit `duplicate key value violates unique constraint "operators_email_key"` against the row the first test had already committed. Confirmed from the actual CI failure log (`gh run view 42059136012 --log-failed` on the server), not guessed. Fix: each call now generates its own email (`colleague-{uuid4}@example.com`) instead of reusing one. The authorization logic itself (`sessions.py`'s `_require_owner_or_admin`, `ws.py`'s `can_end` gate) was never the problem - this was purely the test harness tripping over the session-scoped DB fixture, something that could only ever surface by actually running it, which nothing had done until tonight.
 
