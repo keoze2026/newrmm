@@ -1,10 +1,13 @@
 """Screen capture.
 
-Two paths, in the order the documentation sets out:
+Paths, in the order they are tried:
 
+  0. Linux Wayland only: the XDG desktop portal share (wayland_portal), once
+     the person has consented and the compositor has granted it. Attached by
+     session.py with attach_portal(); X11 capture cannot see a Wayland screen.
   1. The native per-OS capture module the specification requires - C with
-     PipeWire/X11 XShm on Linux, Rust with Windows.Graphics.Capture on Windows,
-     Swift with ScreenCaptureKit on macOS. Used whenever it is built.
+     X11 XShm on Linux, Rust with Windows.Graphics.Capture on Windows, Swift
+     with ScreenCaptureKit on macOS. Used whenever it is built.
   2. mss, the cross-platform core capture named in the build prompt, used when
      the native module for this platform has not been built.
 """
@@ -28,9 +31,9 @@ class ScreenCapture:
         size: tuple[int, int] = (1280, 800),
         portal=None,
     ) -> None:
-        """`portal`: an already-started wayland_portal.PortalSession, when
-        session.py detected a Wayland session and built one (session.py owns
-        it because InputInjector shares the very same session)."""
+        """`portal`: an already-started wayland_portal.PortalSession. Normally
+        session.py attaches one later, with attach_portal(), because the
+        compositor's dialog must not appear before the person consents."""
         self.synthetic = synthetic
         self.size = size
         self.monitor_index = 0
@@ -41,20 +44,15 @@ class ScreenCapture:
         self._native = None
         self._wayland = None
         self._monitors: list[dict] = []
+        self._fallback: tuple[str, list[dict], int] | None = None
+        self._last_frame: tuple[bytes, Image.Image] | None = None
         self.backend = "synthetic"
 
-        # The portal, when session.py built and started one, must be tried
-        # BEFORE the X11 native module - not after. On a real Wayland session
-        # with XWayland present (virtually every desktop), X11's open() still
-        # succeeds and enumerates monitors just fine, so it used to win this
-        # race every time; it just cannot see any Wayland-composited content
-        # through the X11 root window, so every frame it grabbed was black.
-        # Trying the portal first is what actually makes a Wayland session
-        # use the Wayland path, instead of an X11 fallback that only ever
-        # looked like it worked.
-        if not synthetic and portal is not None and getattr(portal, "pipewire_fd", None):
-            if self._open_wayland(portal):
-                return
+        # A started portal wins over the X11 module, never the other way
+        # round: under Wayland, X11's open() succeeds through XWayland and
+        # every frame it grabs is black (lesson #50).
+        if not synthetic and portal is not None and self.attach_portal(portal):
+            return
 
         if not synthetic and self._open_native():
             return
@@ -121,27 +119,30 @@ class ScreenCapture:
             self._native = None
             return False
 
-    def _open_wayland(self, portal) -> bool:
-        """Decode the PipeWire stream the Wayland portal session already
-        negotiated (session.py calls portal.start() before constructing
-        this). Only reached when the X11 native module could not open -
-        i.e. this is really a Wayland session, not Xorg/XWayland."""
-        try:
-            from rmm_agent.wayland_capture import WaylandCapture
-
-            capture = WaylandCapture(portal)
-            if not capture.ok:
-                return False
-            self._wayland = capture
-            if portal.monitors:
-                self._monitors = [dict(m) for m in portal.monitors]
-            self.backend = "wayland-portal"
-            log.info("capturing through the Wayland portal (PipeWire)")
-            return True
-        except Exception as exc:
-            log.warning("Wayland portal capture did not start (%s); using mss", exc)
-            self._wayland = None
+    def attach_portal(self, portal) -> bool:
+        """Capture through a started Wayland portal share from now on."""
+        if not getattr(portal, "started", False) or not portal.monitors:
             return False
+        if self._wayland is None:
+            self._fallback = (self.backend, self._monitors, self.monitor_index)
+        self._wayland = portal
+        self._monitors = [dict(m) for m in portal.monitors]
+        self.monitor_index = 0
+        self.backend = "wayland-portal"
+        self._last_frame = None
+        log.info("capturing through the Wayland portal (PipeWire)")
+        return True
+
+    def detach_portal(self) -> None:
+        """Stop using the portal share (its owner closes it) and go back to
+        what was in use before, so the next session starts the same way."""
+        if self._wayland is None:
+            return
+        self._wayland = None
+        self._last_frame = None
+        if self._fallback is not None:
+            self.backend, self._monitors, self.monitor_index = self._fallback
+            self._fallback = None
 
     @property
     def monitors(self) -> list[dict]:
@@ -168,11 +169,16 @@ class ScreenCapture:
         return False
 
     def grab(self) -> Image.Image:
-        if self._native is not None:
-            data, width, height = self._native.grab(self.monitor_index)
-            return Image.frombytes("RGB", (width, height), data)
         if self._wayland is not None:
             data, width, height = self._wayland.grab()
+            # A still screen hands back the same frame; do not rebuild it.
+            if self._last_frame is not None and self._last_frame[0] is data:
+                return self._last_frame[1]
+            image = Image.frombytes("RGB", (width, height), data)
+            self._last_frame = (data, image)
+            return image
+        if self._native is not None:
+            data, width, height = self._native.grab(self.monitor_index)
             return Image.frombytes("RGB", (width, height), data)
         if self.synthetic or self._sct is None:
             return self._generated()
@@ -198,12 +204,8 @@ class ScreenCapture:
             except Exception:
                 pass
             self._native = None
-        if self._wayland is not None:
-            try:
-                self._wayland.close()
-            except Exception:
-                pass
-            self._wayland = None
+        # The portal share belongs to session.py, which closes it.
+        self.detach_portal()
 
     def encode(self, image: Image.Image, quality: int) -> bytes:
         buffer = io.BytesIO()

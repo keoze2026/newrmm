@@ -14,6 +14,38 @@ from rmm_agent import wayland_portal
 log = logging.getLogger(__name__)
 
 
+def scroll_steps(dy) -> int:
+    """Browser deltaY -> whole wheel notches; positive means down.
+
+    About 100 is one notch. A smaller delta (trackpads, line-mode wheels
+    sending 3) still scrolls one notch, in its own direction - it used to go
+    the opposite way. Zero scrolls nothing."""
+    try:
+        dy = float(dy)
+    except (TypeError, ValueError):
+        return 0
+    if dy == 0:
+        return 0
+    return int(dy / 100) or (1 if dy > 0 else -1)
+
+
+def _held_variant(target, pressed: set):
+    """The key actually held for a release. Press "a", then Shift, then let
+    go of the letter: the browser reports "A", and releasing "A" left "a"
+    held down. Case is matched for letters and their keysyms."""
+    if target in pressed:
+        return target
+    if isinstance(target, str) and len(target) == 1:
+        for held in pressed:
+            if isinstance(held, str) and held.lower() == target.lower():
+                return held
+    if isinstance(target, int) and target < 0x100:
+        for held in pressed:
+            if isinstance(held, int) and held < 0x100 and chr(held).lower() == chr(target).lower():
+                return held
+    return target
+
+
 class InputInjector:
     def __init__(self, enabled: bool = True, portal=None) -> None:
         """`portal`: an already-started wayland_portal.PortalSession, shared
@@ -36,7 +68,7 @@ class InputInjector:
             log.info("input injection disabled; operator input will only be logged")
             return
 
-        if portal is not None and getattr(portal, "available", False) and portal.session_handle:
+        if portal is not None and getattr(portal, "input_available", False):
             self._portal = portal
             self.available = True
             log.info("input injection via the Wayland portal (RemoteDesktop)")
@@ -116,17 +148,9 @@ class InputInjector:
                         self._mouse.release(button)
                         self._pressed_buttons.discard(button)
             elif kind == "scroll":
-                dy = message.get("dy", 0)
-                # A small nonzero delta still rounds to int(dy/100) == 0, and
-                # that case is meant to fall through to a minimum one-notch
-                # scroll in the right direction - but int(0/100) is also 0,
-                # so a *zero*-delta event used to hit that same fallback and
-                # produce an unasked-for one-notch scroll on every such event.
-                if dy == 0:
-                    steps = 0
-                else:
-                    steps = int(dy / 100) or (1 if dy < 0 else -1)
+                steps = scroll_steps(message.get("dy", 0))
                 if steps:
+                    # pynput: positive scrolls up, so a downward step is negative.
                     self._mouse.scroll(0, -steps)
             elif kind == "key":
                 name = message.get("key", "")
@@ -137,6 +161,7 @@ class InputInjector:
                     self._keyboard.press(target)
                     self._pressed_keys.add(target)
                 else:
+                    target = _held_variant(target, self._pressed_keys)
                     self._keyboard.release(target)
                     self._pressed_keys.discard(target)
         except Exception as exc:
@@ -150,9 +175,13 @@ class InputInjector:
         try:
             if kind == "mouse":
                 if "x" in message and "y" in message and width and height:
-                    self._portal.notify_pointer_motion_absolute(
-                        left + message["x"] * width, top + message["y"] * height
-                    )
+                    # The portal's absolute motion is in the shared stream's
+                    # own space (0..width), not desktop coordinates - adding
+                    # the monitor's left/top pushed every move off a monitor
+                    # that is not at the origin.
+                    x = min(max(float(message["x"]), 0.0), 1.0)
+                    y = min(max(float(message["y"]), 0.0), 1.0)
+                    self._portal.notify_pointer_motion_absolute(x * width, y * height)
                 action = message.get("action")
                 if action in ("down", "up"):
                     button = {
@@ -167,19 +196,18 @@ class InputInjector:
                     else:
                         self._pressed_buttons.discard(button)
             elif kind == "scroll":
-                dy = message.get("dy", 0)
-                if dy == 0:
-                    steps = 0
-                else:
-                    steps = int(dy / 100) or (1 if dy < 0 else -1)
+                steps = scroll_steps(message.get("dy", 0))
                 if steps:
-                    self._portal.notify_pointer_axis_discrete(True, -steps)
+                    # Wayland's axis: positive scrolls down, like the browser.
+                    self._portal.notify_pointer_axis_discrete(True, steps)
             elif kind == "key":
                 name = message.get("key", "")
                 keysym = wayland_portal.keysym_for(name)
                 if keysym is None:
                     return
                 pressed = message.get("action") == "down"
+                if not pressed:
+                    keysym = _held_variant(keysym, self._pressed_keys)
                 self._portal.notify_keyboard_keysym(keysym, pressed)
                 if pressed:
                     self._pressed_keys.add(keysym)

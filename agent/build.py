@@ -77,19 +77,12 @@ HIDDEN = {
     ],
 }
 
-# PyGObject (the Wayland portal path's D-Bus/GStreamer binding) is optional
-# and lazily imported, so PyInstaller only has a chance to see and bundle it
-# when it is actually installed on the build machine - same reasoning as the
-# native capture module above. When it is missing, Wayland falls back to mss
-# at runtime exactly as if this were never added, so skipping it here cannot
-# break a build that does not have it.
-GI_MODULES = ["gi", "gi.repository.Gio", "gi.repository.GLib", "gi.repository.Gst"]
-
-
-def gi_available() -> bool:
-    import importlib.util
-
-    return all(importlib.util.find_spec(m.split(".")[0]) is not None for m in ["gi"])
+# Wayland: the portal work runs in rmm_agent/wayland_helper.py under the
+# endpoint's own python3, so it uses that machine's PyGObject, GStreamer and
+# PipeWire. Nothing of PyGObject is bundled - copies from the build machine
+# did not match other machines, and CI could not even build them. The helper
+# is shipped as a plain file next to the agent's own modules.
+WAYLAND_HELPER = ROOT / "rmm_agent" / "wayland_helper.py"
 
 
 def check_dependencies() -> bool:
@@ -156,17 +149,8 @@ def build(app_bundle: bool, windowed: bool) -> int:
         command += ["--hidden-import", module]
     if (ROOT / "rmm_agent" / "_baked.py").exists():
         command += ["--hidden-import", "rmm_agent._baked"]
-    if SYSTEM == "Linux" and gi_available():
-        for module in GI_MODULES:
-            command += ["--hidden-import", module]
-        command += ["--collect-all", "gi"]
-        print("PyGObject found: bundling it for the Wayland portal path")
-    elif SYSTEM == "Linux":
-        print(
-            "PyGObject not found on this build machine: the built agent will "
-            "fall back to mss on Wayland. Install python3-gi + pygobject to "
-            "include the portal-based Wayland path.",
-        )
+    if SYSTEM == "Linux":
+        command += ["--add-data", f"{WAYLAND_HELPER}:rmm_agent"]
 
     for binary in native_binaries():
         command += ["--add-binary", binary]

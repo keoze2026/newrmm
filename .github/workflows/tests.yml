@@ -83,7 +83,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             python3-tk xvfb libx11-dev libxext-dev libxrandr-dev libxfixes-dev \
             libgirepository1.0-dev gobject-introspection libcairo2-dev pkg-config \
-            gir1.2-glib-2.0 gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-pipewire
+            gir1.2-glib-2.0 gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-pipewire \
+            python3-gi dbus
 
       - name: Install
         run: |
@@ -91,11 +92,6 @@ jobs:
           # Python 3.13 no longer bundles setuptools, and setup.py needs it.
           pip install setuptools
           pip install -r agent/requirements.txt pytest
-          # Optional: exercises the real gi/Gio/GLib import path in
-          # test_wayland_portal.py on a real Linux box, which this repo has
-          # no other way to do. A build failure here is not fatal to the
-          # job - those tests already tolerate PyGObject being absent.
-          pip install pygobject || echo "PyGObject did not build; Wayland portal tests will exercise the no-gi fallback path only"
 
       - name: Build the native capture module
         working-directory: agent/native/linux

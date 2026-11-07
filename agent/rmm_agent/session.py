@@ -74,26 +74,21 @@ class AgentSession:
         self.code = code.upper()
         self.tray = tray
         platform_support.prepare()
-        # On a real Wayland session neither the X11 capture module nor
-        # XTest-based input works at all (Wayland blocks both by design) -
-        # the only door is the XDG portal, and one portal session covers
-        # both halves since RemoteDesktop's input calls are scoped to a
-        # session that also has an active ScreenCast stream. Built once here
-        # and handed to both, rather than each opening (and prompting for)
-        # its own.
-        self._portal = None
-        if not synthetic and platform_support.LINUX and wayland_portal.session_is_wayland():
-            portal = wayland_portal.PortalSession()
-            if portal.available and portal.start(want_input=inject):
-                self._portal = portal
-            else:
-                log.warning(
-                    "the Wayland portal session did not start; capture will "
-                    "fall back to mss (likely blank/unavailable on Wayland) "
-                    "and input injection will be unavailable"
-                )
-        self.capture = ScreenCapture(synthetic=synthetic, portal=self._portal)
-        self.injector = InputInjector(enabled=inject, portal=self._portal)
+        # On Wayland neither X11 capture nor XTest input can see the real
+        # desktop; the only door is the XDG portal (wayland_portal). It is
+        # opened per connection, only AFTER the person consents - the
+        # compositor's own dialog and its "screen is being shared" indicator
+        # must never appear before that - and closed when the connection ends.
+        self._inject = inject
+        self._wayland = (
+            not synthetic and platform_support.LINUX and wayland_portal.session_is_wayland()
+        )
+        self._portal: wayland_portal.PortalSession | None = None
+        # Lets a reconnect (and, for an enrolled device, the next session)
+        # reuse the person's approval instead of showing the dialog again.
+        self._restore_token: str | None = None
+        self.capture = ScreenCapture(synthetic=synthetic)
+        self.injector = InputInjector(enabled=inject)
         self.rate = RateController(fps, quality)
         self.budget_kbps = budget_kbps
         self.auto_consent = auto_consent
@@ -267,6 +262,8 @@ class AgentSession:
                 return
 
             self._consented = True
+            if self._wayland:
+                await self._open_portal()
             self._tiles.request_keyframe()
             log.info("consent granted; streaming starts now")
             if self.tray:
@@ -283,9 +280,67 @@ class AgentSession:
                 self._streamed_until = time.monotonic()
                 receiver.cancel()
                 self._close_tools()
+                await self._close_portal()
                 if self.tray:
                     self.tray.set_state(IDLE, "Not in a session")
                     self.tray.notify("The remote session has ended.", "Session ended")
+
+    async def _open_portal(self) -> None:
+        """Wayland: ask the compositor for the screen and input. Runs after
+        consent. Blocks (off the event loop) while the person answers the
+        compositor's dialog; an enrolled device keeps the approval so later
+        sessions start without it."""
+        token = self._restore_token
+        if token is None and self.standing_consent:
+            token = wayland_portal.load_restore_token()
+        # 2 = keep the approval until revoked (enrolled device); 1 = while
+        # this agent runs (reconnects within an attended session).
+        persist = 2 if self.standing_consent else 1
+        portal = wayland_portal.PortalSession()
+        if self.tray:
+            self.tray.set_state(CONNECTED, "Choose the screen to share")
+        try:
+            ok = await asyncio.to_thread(portal.start, self._inject, token, persist)
+        except BaseException:
+            # Stopped while the dialog was up: never leave the helper behind.
+            portal.close()
+            raise
+        if not ok or not self.capture.attach_portal(portal):
+            await asyncio.to_thread(portal.close)
+            log.error(
+                "Wayland screen share unavailable (%s). Without it a Wayland "
+                "desktop cannot be seen or controlled. Run `rmm-agent status` "
+                "to check python3-gi and the GStreamer pipewire plugin.",
+                portal.error or "the portal share could not be used",
+            )
+            if self.tray:
+                self.tray.notify(
+                    "The screen could not be shared on this Wayland desktop. "
+                    + ("You declined the screen share." if portal.denied
+                       else "Run 'rmm-agent status' for details."),
+                    "Screen share failed",
+                )
+            return
+        self._portal = portal
+        if portal.input_available:
+            self.injector = InputInjector(enabled=self._inject, portal=portal)
+        else:
+            log.warning("this desktop's portal shares the screen without remote control")
+        if portal.restore_token:
+            self._restore_token = portal.restore_token
+            if self.standing_consent:
+                await asyncio.to_thread(wayland_portal.save_restore_token, portal.restore_token)
+
+    async def _close_portal(self) -> None:
+        """End the Wayland share with the connection: no capture outside a
+        live, consented session."""
+        portal, self._portal = self._portal, None
+        if portal is None:
+            return
+        self.capture.detach_portal()
+        self.injector = InputInjector(enabled=self._inject)
+        await asyncio.to_thread(portal.close)
+        log.info("Wayland screen share closed")
 
     async def _stream(self, socket) -> None:
         while not self._stop.is_set():

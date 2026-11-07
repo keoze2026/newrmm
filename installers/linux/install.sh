@@ -27,32 +27,46 @@ if [[ "$(id -u)" -ne 0 ]]; then
     exit 1
 fi
 
+# Every required step ends in `|| return 1`: this function is called as an
+# `if` condition, and bash switches `set -e` off inside such a call, so a
+# failed install used to carry on silently - the exact failure this script
+# exists to prevent.
 install_packages() {
     if command -v apt-get >/dev/null 2>&1; then
         echo "Debian/Ubuntu family (apt) detected"
-        apt-get update
+        apt-get update || return 1
         apt-get install -y --no-install-recommends \
             libx11-6 libxext6 libxrandr2 libxfixes3 x11-xserver-utils \
-            python3-gi gir1.2-glib-2.0 gir1.2-gstreamer-1.0 \
-            gstreamer1.0-plugins-base gstreamer1.0-pipewire
+            python3 python3-gi gir1.2-glib-2.0 gir1.2-gstreamer-1.0 \
+            gstreamer1.0-plugins-base gstreamer1.0-pipewire || return 1
         apt-get install -y --no-install-recommends python3-tk gir1.2-appindicator3-0.1 || true
     elif command -v dnf >/dev/null 2>&1; then
         echo "Fedora/RHEL family (dnf) detected"
         dnf install -y \
-            libX11 libXext libXrandr libXfixes xorg-x11-server-utils \
-            python3-gobject glib2 gstreamer1 gstreamer1-plugins-base gstreamer1-plugin-pipewire
+            libX11 libXext libXrandr libXfixes \
+            python3 python3-gobject glib2 gstreamer1 gstreamer1-plugins-base \
+            pipewire-gstreamer || return 1
+        # xrandr (the Linux privacy blank dims with it) is its own package on
+        # current Fedora and part of xorg-x11-server-utils on older RHEL.
+        dnf install -y xrandr || dnf install -y xorg-x11-server-utils || return 1
         dnf install -y python3-tkinter libappindicator-gtk3 || true
     elif command -v pacman >/dev/null 2>&1; then
         echo "Arch family (pacman) detected"
-        pacman -Sy --noconfirm \
-            libx11 libxext libxrandr libxfixes xorg-xset \
-            python-gobject glib2 gstreamer gst-plugins-base gst-plugin-pipewire
+        # No -y: refreshing the database without upgrading (-Sy) is the
+        # partial upgrade Arch warns can break the system.
+        if ! pacman -S --noconfirm --needed \
+                libx11 libxext libxrandr libxfixes xorg-xrandr \
+                python python-gobject glib2 gstreamer gst-plugins-base gst-plugin-pipewire; then
+            echo "pacman could not install the packages; run 'pacman -Syu' first, then this again." >&2
+            return 1
+        fi
         pacman -S --noconfirm --needed tk libappindicator-gtk3 || true
     elif command -v zypper >/dev/null 2>&1; then
         echo "openSUSE family (zypper) detected"
         zypper --non-interactive install \
-            libX11-6 libXext6 libXrandr2 libXfixes3 xorg-x11-server-utils \
-            python3-gobject typelib-1_0-Gst-1_0 gstreamer-plugins-base gstreamer-plugin-pipewire
+            libX11-6 libXext6 libXrandr2 libXfixes3 xrandr \
+            python3 python3-gobject typelib-1_0-Gst-1_0 gstreamer-plugins-base \
+            gstreamer-plugin-pipewire || return 1
         zypper --non-interactive install python3-tk typelib-1_0-AppIndicator3-0_1 || true
     else
         echo "No known package manager (apt/dnf/pacman/zypper) found." >&2
@@ -64,7 +78,28 @@ install_packages() {
     fi
 }
 
-install_packages || echo "WARNING: continuing without confirmed native dependencies - see above." >&2
+PACKAGES_OK=1
+if ! install_packages; then
+    PACKAGES_OK=0
+    echo "WARNING: the required packages did not all install - see above." >&2
+fi
+
+# Wayland desktops are shared through rmm_agent/wayland_helper.py running
+# under this machine's own python3. Check that python3 really has what the
+# helper needs, rather than trusting the package names above.
+WAYLAND_OK=1
+if ! python3 - <<'PYCHECK'
+import gi
+gi.require_version("Gio", "2.0")
+gi.require_version("Gst", "1.0")
+from gi.repository import Gio, Gst
+Gst.init(None)
+for element in ("pipewiresrc", "videoconvert", "appsink"):
+    assert Gst.ElementFactory.find(element), f"GStreamer element {element} is missing"
+PYCHECK
+then
+    WAYLAND_OK=0
+fi
 
 install -d /usr/lib/rmm-agent /usr/bin /usr/share/applications /usr/lib/systemd/user
 install -m 0755 "$BINARY" /usr/lib/rmm-agent/rmm-agent
@@ -129,3 +164,15 @@ echo "  Attended:   rmm-agent join --relay wss://<host>/api --code <CODE>"
 echo "  Unattended: put RMM_DEVICE_ID, RMM_SECRET and RMM_RELAY in"
 echo "              ~/.config/rmm-agent/env, then"
 echo "              systemctl --user enable --now rmm-agent"
+
+if [[ "$WAYLAND_OK" -ne 1 ]]; then
+    echo >&2
+    echo "ERROR: python3 cannot load PyGObject + GStreamer's pipewire plugin." >&2
+    echo "       X11 desktops will work, but a Wayland desktop cannot be shared" >&2
+    echo "       until they are installed (see the messages above)." >&2
+    exit 1
+fi
+if [[ "$PACKAGES_OK" -ne 1 ]]; then
+    exit 1
+fi
+echo "Checked: X11 and Wayland desktops can both be shared."

@@ -171,6 +171,10 @@ def turn_off(code: str | None = None) -> None:
     """The person's off switch: stop starting at login and forget the enrolment."""
     autostart.forget(code, always=True)
     Enrolment.delete()
+    # The kept Wayland screen-share approval belongs to the enrolment.
+    from rmm_agent import wayland_portal
+
+    wayland_portal.forget_restore_token()
 
 
 async def run_device(tray, holder, enrolment, args) -> None:
@@ -364,6 +368,22 @@ def cmd_status(_args) -> int:
 
     if platform_support.LINUX:
         print(f"session type  : {platform_support.session_type()}")
+        from rmm_agent import wayland_portal
+
+        report = wayland_portal.diagnose()
+        if "error" in report and not report.get("pygobject"):
+            print(f"wayland       : unavailable - {report['error']}")
+        else:
+            print(
+                "wayland       : "
+                f"helper {'bundled' if wayland_portal.helper_path().exists() else 'MISSING'}, "
+                f"python {report.get('python', '?')}, "
+                f"PyGObject {'yes' if report.get('pygobject') else 'no'}, "
+                f"{report.get('gstreamer') or 'GStreamer no'}, "
+                f"pipewiresrc {'yes' if report.get('pipewiresrc') else 'no'}, "
+                f"portal ScreenCast v{report.get('screencast', 0)} "
+                f"RemoteDesktop v{report.get('remote_desktop', 0)}"
+            )
     if platform_support.MACOS:
         print(f"screen record : {_permission(platform_support.screen_recording_permission())}")
         print(f"accessibility : {_permission(platform_support.accessibility_permission())}")

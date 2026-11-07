@@ -117,7 +117,9 @@ def session_type() -> str:
     """Linux only: X11 or Wayland, which decide what capture can do."""
     if not LINUX:
         return platform.system()
-    if os.environ.get("WAYLAND_DISPLAY"):
+    from rmm_agent.wayland_portal import session_is_wayland
+
+    if session_is_wayland():
         return "wayland"
     if os.environ.get("DISPLAY"):
         return "x11"
@@ -144,15 +146,27 @@ def warnings() -> list[str]:
     elif LINUX:
         kind = session_type()
         if kind == "wayland":
-            notes.append(
-                "This is a Wayland session. Capture and input go through the "
-                "XDG desktop portal, which needs PyGObject and GStreamer's "
-                "pipewire plugin installed (python3-gi, gstreamer1.0-pipewire "
-                "or your distro's equivalent) and will show the compositor's "
-                "own permission/picker dialog the first time. Without those "
-                "packages this falls back to mss, which cannot read a "
-                "Wayland screen at all."
-            )
+            from rmm_agent.wayland_portal import diagnose
+
+            report = diagnose()
+            missing = []
+            if not report.get("pygobject"):
+                missing.append("PyGObject for the system python3 (python3-gi / python3-gobject)")
+            if not report.get("pipewiresrc"):
+                missing.append("GStreamer's pipewire plugin (gstreamer1.0-pipewire / pipewire-gstreamer)")
+            if not report.get("screencast"):
+                missing.append("a running xdg-desktop-portal with a ScreenCast backend")
+            if missing:
+                notes.append(
+                    "This is a Wayland session, and the screen cannot be shared "
+                    "until these are installed: " + "; ".join(missing) + ". "
+                    "installers/linux/install.sh installs them on any distro."
+                )
+            elif not report.get("remote_desktop"):
+                notes.append(
+                    "This desktop's portal can share the screen but offers no "
+                    "remote control (no RemoteDesktop portal)."
+                )
         elif kind == "headless":
             notes.append("No display was found; capture will be a generated image.")
 

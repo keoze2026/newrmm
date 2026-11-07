@@ -92,47 +92,27 @@ on a Windows, macOS and Linux runner. Both workflows are green.
   been run since this change (needs the real relay + a real test agent, which
   cannot run on this Windows laptop). Tools is still a placeholder, labelled
   as such on screen.
-- **Linux Wayland support is built, one real bug already found and fixed by
-  real testing, still not fully verified.** `agent/rmm_agent/wayland_portal.py`
-  and `wayland_capture.py` (2026-11-06) implement the real thing - the
-  xdg-desktop-portal ScreenCast + RemoteDesktop D-Bus interfaces for capture
-  and input, the only door Wayland actually offers for either, consumed
-  through GStreamer's `pipewiresrc` so there is no hand-rolled PipeWire
-  buffer negotiation. **Real bug found 2026-11-07 on a real Parrot OS
-  Wayland session: `capture.py` tried the X11 native module before the
-  portal, and X11's `open()` succeeds even under Wayland (XWayland is almost
-  always present) - it just can't see any Wayland-composited content, so
-  every frame came back black.** Fixed by trying a working portal first;
-  regression test added (`test_screen_capture_prefers_a_working_portal_over_x11`).
-  Also found on the same real test: the `.deb`'s Wayland packages were only
-  `Recommends:`, so a plain install could silently end up on the broken path
-  with zero warning - promoted to `Depends:` so installing the package
-  guarantees the real dependencies are there. Added
-  `installers/linux/install.sh`: the `.deb` only covers Debian-family distros
-  (Ubuntu/Debian/Mint/Parrot/Kali); this detects apt/dnf/pacman/zypper and
-  installs each distro's own package names for the same X11 + PyGObject +
-  GStreamer-pipewire dependencies, so "universal" isn't Debian-only. Wired
-  into `capture.py`/`remote_input.py`/`session.py` with graceful fallback to
-  mss at every failure point - but mss (and X11) genuinely cannot capture a
-  real Wayland session correctly at all, with or without this fix, if
-  PyGObject/GStreamer-pipewire are missing; there is no other path Wayland
-  allows. **Still unverified**: the actual D-Bus handshake end to end
-  (RestartCount/import-level checks pass, but no confirmation yet that a
-  frame actually arrives and a click actually lands through the portal on
-  real hardware), and whether PyInstaller's frozen single-file binary can
-  actually load PyGObject at runtime (`build.py` adds
-  `--hidden-import`/`--collect-all gi` when present at build time, but
-  PyGObject bundling is a known fragile spot for PyInstaller, never checked
-  against a built artefact). Only a single monitor can be shared (the
-  portal's picker was asked for one source, not multiple) - switching
-  monitors mid-session is X11-only for now. The old claim that the native C
-  module's "pipewire" backend just needed `libpipewire-0.3-dev` to compile in
-  was wrong - that code never existed, see lesson #49 - so the C module and
-  its `setup.py`/CI steps were cleaned up to stop claiming it.
+- **Linux Wayland: rebuilt 2026-11-07 so it can actually work; still not
+  run on a real Wayland desktop.** The old in-process portal code could never
+  start (D-Bus options passed in a form PyGObject rejects) and CI shipped
+  agents with no PyGObject at all. Now `rmm_agent/wayland_helper.py` runs
+  under the machine's OWN python3 (python3-gi + gstreamer1.0-pipewire, which
+  the `.deb` depends on and `install.sh` installs on other distros), and the
+  agent talks to it over a pipe. Verified here against a fake
+  xdg-desktop-portal on a private D-Bus bus (real Request/Response signals,
+  real fd passing, GStreamer test source standing in for PipeWire at 1366
+  px). **Still unverified on hardware**: a real compositor's dialog, a real
+  PipeWire frame, and a click landing through the portal - needs a fresh CI
+  build installed on the Parrot Wayland laptop. Only one monitor can be
+  shared per session (the compositor's picker); monitor switching mid-session
+  is X11-only.
 
 ## Environment this was built and tested on
 
 - Linux (Parrot), Python 3.13, Node 24
+- 2026-11-07: this Kali laptop (X11/XFCE) got `gh` 2.103.3 from GitHub's
+  apt repo (`/etc/apt/sources.list.d/github-cli.list`); not logged in yet
+  (`gh auth login`). No relay venv, Node or Postgres here.
 - PostgreSQL 17 in a container on `127.0.0.1:55433`; the host's own cluster
   fails to start, which the container sidesteps
 - Redis 8 on the host
@@ -209,8 +189,83 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 | 48 | The cursor fix (`console/src/components/Viewer.tsx`) got committed alongside an agent-side commit (`ad28a14`) and I only ever gave the user `docker compose build relay`/`up -d relay` commands afterward - never the matching `build console`/`up -d console`. The user kept seeing no cursor and I had to be told directly before checking which container actually serves which changed file. | Every fix's own entry must say exactly which container/image it lives in and the exact deploy command for *that* container, not a generic "not yet deployed" - and that must be checked against what was actually run, not assumed from "a deploy happened recently." |
 | 49 | This file said Wayland "needs `libpipewire-0.3-dev` to compile in," which reads as "the code exists, just not linked in." It didn't: `rmm_capture_linux.c` only ever had a `backend()` string that printed `"pipewire"` when a macro was set - zero real PipeWire calls anywhere. I repeated that claim to the user instead of opening the file, the same mistake as #14/#46 (trusting a written claim over checking what is actually there), until asked directly for a universal Linux agent forced reading the source. | A claim that a capability "just needs a flag/package to turn on" is a claim that the code is already there - verify that by opening the file, not by trusting the comment or this file's own wording, before repeating it to the user. |
 | 50 | Built the Wayland portal path and had `ScreenCapture` try the X11 native module first, same priority order it already had. Never considered that X11's `open()` succeeds under Wayland too, through XWayland, which is present on almost every real desktop - so it "worked" (no error) while capturing nothing real, a black screen, and the portal I had just built never got a chance to run at all. Only found because the user actually ran it on a real Parrot OS Wayland session and reported a black screen; nothing I could run here (Windows, no compositor) could have caught it. The `.deb`'s Wayland packages were also only `Recommends:`, so even a correct capture order could have silently had nothing to use. | A fallback chain's *order* is part of its correctness, not just whether each path works alone - check what the earlier path does on the case the later path exists for, not only whether the earlier path errors. When a capability has a hard native dependency, ship it as `Depends:`, not `Recommends:`, or a plain install can silently land on the broken path. |
+| 51 | The Wayland path ran PyGObject/GStreamer inside the PyInstaller binary, and CI installed it with `pip install pygobject \|\| echo ...`. That build failed silently (PyGObject now needs girepository-2.0), so every shipped Linux agent had no Wayland path at all, and the portal code itself could never start (nested `GLib.Variant` in an `a{sv}` slot). Its tests only covered "no portal available", so nothing noticed. | A dependency that must match the user's machine (D-Bus, GStreamer, PipeWire) runs under that machine's own interpreter, not a bundled copy. A build step for a required feature never ends in `\|\| echo`; CI checks the built artefact for it. Test the real protocol against a fake peer, and run each new check once against the old bug to see it fail. |
 
 ## Change log
+
+- **Universal Linux agent: Wayland rebuilt around the system's own python3,
+  plus the Linux input/install fixes from the scan (2026-11-07). Pushed to
+  main for a CI build; not yet run on a Wayland desktop.**
+  The user's requirement (stated again today): one Linux agent that works on
+  any machine, X11 or Wayland, any distro.
+
+  *What was wrong:* `wayland_portal.py` nested a built `GLib.Variant` inside
+  the D-Bus argument tuple, which PyGObject rejects - the portal could never
+  start, so Wayland always fell back to a black X11 frame (166951e could not
+  help). CI's `pip install pygobject || echo` failed silently, so shipped
+  binaries had no PyGObject anyway (lesson #51). Also: no `handle_token`
+  (race), signals subscribed on a context nothing iterated, the portal opened
+  in `AgentSession.__init__` (compositor dialog before consent) and was never
+  closed, padded GStreamer rows sheared the picture at e.g. 1366 px, a still
+  screen ended the session after 2 s, Wayland pointer moves were offset by
+  the monitor's position, Wayland scrolling was reversed.
+
+  *Changed:*
+  - New `agent/rmm_agent/wayland_helper.py`: the whole portal + GStreamer side,
+    run by `/usr/bin/python3 -I` (never imports rmm_agent). Request
+    handle_tokens; Response signals read on its own main context; reads the
+    portal's AvailableCursorModes; falls back to screen-only when a desktop
+    has no RemoteDesktop portal (wlroots, older KDE); handles row stride;
+    returns "same frame" for a still screen; reports stream end; `--check`
+    for diagnostics.
+  - `wayland_portal.py` rewritten as the client: starts the helper with a
+    clean environment, binary pipe protocol, grab/notify/close, restore-token
+    save/load/forget (file `wayland_restore_token`, mode 600), better
+    Wayland detection (`XDG_SESSION_TYPE`, compositor socket - an agent
+    started by systemd at login may not see `WAYLAND_DISPLAY`), keysyms above
+    Latin-1. `wayland_capture.py` deleted.
+  - `session.py`: the portal opens only after consent and closes at the end
+    of every connection; an enrolled device keeps the approval (persist mode
+    2) so later sessions need no click; attended sessions persist only while
+    the agent runs (mode 1). `capture.py`: `attach_portal`/`detach_portal`.
+  - `remote_input.py`: small scroll deltas no longer go the wrong way (this is
+    shared code, so it also changes Windows/macOS scrolling - same arithmetic
+    bug there); Wayland axis sign fixed; Wayland motion in stream space;
+    releasing a letter after Shift releases the key actually held.
+  - `__main__.py`: `status` prints a `wayland :` readiness line; `turn_off`
+    forgets the kept approval. `platform_support.py`: same Wayland detection;
+    `status` names exactly what is missing.
+  - `build.py`: no more PyGObject bundling; ships the helper (`--add-data`).
+    `agents.yml`: drops the pip PyGObject build, installs `python3-gi xvfb`,
+    and **fails the Linux build unless the built agent's `status` says
+    `helper bundled ... PyGObject yes ... pipewiresrc yes`**; C-module step
+    no longer says PipeWire. `tests.yml`: system `python3-gi` + `dbus` so the
+    fake-portal tests run in CI.
+  - `installers/linux/install.sh`: required-package failures now stop it
+    (`|| return 1`; `set -e` is off inside an `if` condition); Fedora uses
+    `pipewire-gstreamer` and `xrandr`; Arch uses `xorg-xrandr` and no `-Sy`
+    partial upgrade; openSUSE `xrandr`; finally checks python3 really loads
+    PyGObject + pipewiresrc and exits 1 with a clear message if not.
+
+  *Verified here (X11 XFCE laptop, no compositor):* new
+  `agent/tests/test_wayland_portal.py` (18 tests) all pass, including three
+  that run the real helper against `agent/tests/fake_portal.py` on a private
+  D-Bus bus - never the real desktop. Each was checked to FAIL when the old
+  bug is put back (padded-row shear, missing handle_token, nested Variant).
+  Rest of the agent suite: 151 passed (`test_privacy.py`,
+  `test_privacy_input_block.py`, `test_chat.py` deliberately not run - they
+  draw on the real desktop and none of their code changed). `rmm-agent
+  status` from source prints the new line correctly. `bash -n install.sh`
+  and `py_compile` clean. **Not verified:** a PyInstaller build (CI's new
+  check is the first), `install.sh` on Fedora/Arch/openSUSE, and a real
+  Wayland session.
+
+  *Next task:* user decides whether to commit and push (CI then builds and
+  runs the new check). Then install that CI build on the Parrot Wayland
+  laptop and run `rmm-agent status` (expect `pipewiresrc yes`, `ScreenCast
+  v4+`) and a real session: expect the consent window first, then the
+  compositor's share dialog, a live picture, working clicks and scrolling.
+  If it fails, the agent log now has `wayland helper:` lines saying where.
 
 - **Linux Wayland: fixed a real black-screen bug found on real hardware,
   made the Wayland deps hard-required, added a universal (non-.deb)

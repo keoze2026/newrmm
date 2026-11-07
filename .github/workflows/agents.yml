@@ -45,7 +45,8 @@ jobs:
             python3-tk libx11-dev libxext-dev libxrandr-dev libxfixes-dev \
             gir1.2-appindicator3-0.1 \
             libgirepository1.0-dev gobject-introspection libcairo2-dev pkg-config \
-            gir1.2-glib-2.0 gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-pipewire
+            gir1.2-glib-2.0 gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-pipewire \
+            python3-gi xvfb
 
       - name: Install
         run: |
@@ -53,15 +54,8 @@ jobs:
           # Python 3.13 no longer bundles setuptools, and setup.py needs it.
           pip install setuptools
           pip install -r agent/requirements.txt pyinstaller
-          # Optional: the Wayland portal path. Built from source against this
-          # job's own Python (the apt python3-gi package is tied to the
-          # system python3's ABI, not this one) so build.py can actually see
-          # and bundle it. A failure here must not fail the build - Wayland
-          # just falls back to mss, same as any other build machine without
-          # this installed.
-          pip install pygobject || echo "PyGObject did not build; Wayland portal support will be skipped in this build"
 
-      - name: Native capture module (C, X11 XShm / PipeWire)
+      - name: Native capture module (C, X11 XShm)
         working-directory: agent/native/linux
         run: |
           python setup.py build_ext --inplace
@@ -74,6 +68,17 @@ jobs:
           # Override with a repository variable named RMM_DEFAULT_RELAY.
           RMM_DEFAULT_RELAY: ${{ vars.RMM_DEFAULT_RELAY || 'wss://rmm.remotedesk247.com/api' }}
         run: python build.py
+
+      - name: Check the built agent can share a Wayland screen
+        # Wayland capture runs in rmm_agent/wayland_helper.py under the
+        # machine's own python3. Fail the build if the helper is not inside
+        # the binary or cannot reach the system's PyGObject and GStreamer
+        # pipewire plugin - the agent used to ship with no Wayland path at
+        # all and nothing noticed.
+        run: |
+          set -o pipefail
+          timeout 120 xvfb-run -a agent/dist/rmm-agent-linux status | tee status.txt
+          grep -E '^wayland +: helper bundled, .*PyGObject yes, .*pipewiresrc yes' status.txt
 
       - name: Package (.deb)
         # Section 8: "installs without manual steps". A bare executable does

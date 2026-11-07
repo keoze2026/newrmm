@@ -1,46 +1,32 @@
 """Screen share and remote input on Linux Wayland, through the XDG desktop
-portal (org.freedesktop.portal.ScreenCast + org.freedesktop.portal.RemoteDesktop).
+portal (org.freedesktop.portal.ScreenCast + RemoteDesktop).
 
-Wayland compositors do not let any process read the screen or inject input
-directly - that is the whole point of Wayland's security model, and exactly
-why the X11 module (rmm_capture_linux.c) and pynput's XTest backend both do
-nothing there. The portal is the one door every compositor (GNOME, KDE, ...)
-agreed to open: an app asks for it, the *compositor* shows its own picker/
-permission dialog, and only after the person approves does the app get a
-PipeWire video stream and permission to call the RemoteDesktop "Notify*"
-methods. This is unavoidable - it is not an API this agent chose, it is the
-only API Wayland offers for this at all.
+Wayland lets no process read the screen or inject input directly - that is
+its security model, and why the X11 module (rmm_capture_linux.c) and pynput's
+XTest backend see only a black XWayland root window there. The portal is the
+one door every compositor (GNOME, KDE, wlroots, ...) opens: the compositor
+shows its own dialog, and only after the person approves does the app get a
+PipeWire video stream and permission to send pointer/keyboard events.
 
-One combined session covers both halves (capture and input) because
-RemoteDesktop's Notify* calls are scoped to a session that also has an active
-ScreenCast stream; asking for them separately would show two separate
-permission prompts and still need the two session handles reconciled.
-
-Needs PyGObject (`python3-gi`) and, for actually decoding frames out of the
-PipeWire stream, GStreamer's pipewire plugin (`gstreamer1.0-pipewire` /
-`gst-plugin-pipewire`). Neither is a hard dependency of the agent as a whole -
-exactly like the native capture modules, this degrades to "unavailable" and
-logs why, rather than failing the whole agent, when either is missing.
+The portal work itself runs in `wayland_helper.py`, started with the
+machine's own python3 (see that file for why: the system's PyGObject,
+GStreamer and PipeWire always match each other and the running PipeWire
+daemon; copies bundled into the agent did not, and CI could not even build
+them). This module starts that helper, talks to it, and gives the rest of the
+agent the same small interface it always had.
 """
+import json
 import logging
+import os
+import select
+import shutil
+import struct
+import subprocess
+import sys
 import threading
+from pathlib import Path
 
 log = logging.getLogger(__name__)
-
-PORTAL_BUS = "org.freedesktop.portal.Desktop"
-PORTAL_PATH = "/org/freedesktop/portal/desktop"
-REQUEST_IFACE = "org.freedesktop.portal.Request"
-SESSION_IFACE = "org.freedesktop.portal.Session"
-SCREENCAST_IFACE = "org.freedesktop.portal.ScreenCast"
-REMOTE_DESKTOP_IFACE = "org.freedesktop.portal.RemoteDesktop"
-
-# org.freedesktop.portal.ScreenCast SourceType / CursorMode bitmasks.
-SOURCE_TYPE_MONITOR = 1
-CURSOR_MODE_EMBEDDED = 2  # the compositor draws the cursor into the frame itself
-
-# org.freedesktop.portal.RemoteDesktop DeviceType bitmask.
-DEVICE_KEYBOARD = 1
-DEVICE_POINTER = 2
 
 # Linux evdev button codes (linux/input-event-codes.h) - what
 # NotifyPointerButton expects, not a browser/X11 button number.
@@ -48,24 +34,22 @@ BTN_LEFT = 0x110
 BTN_RIGHT = 0x111
 BTN_MIDDLE = 0x112
 
-# X11 keysyms (X11/keysymdef.h). NotifyKeyboardKeysym takes a keysym, not an
-# evdev keycode, which is why this table mirrors remote_input.py's _special()
-# almost exactly instead of needing a keymap: printable ASCII already equals
-# its own keysym value.
+# X11 keysyms (X11/keysymdef.h) for NotifyKeyboardKeysym.
 KEYSYMS = {
     "Enter": 0xFF0D, "Backspace": 0xFF08, "Tab": 0xFF09, "Escape": 0xFF1B,
     "Delete": 0xFFFF, "Home": 0xFF50, "End": 0xFF57,
     "PageUp": 0xFF55, "PageDown": 0xFF56,
     "ArrowUp": 0xFF52, "ArrowDown": 0xFF54, "ArrowLeft": 0xFF51, "ArrowRight": 0xFF53,
     "Shift": 0xFFE1, "Control": 0xFFE3, "Alt": 0xFFE9, "Meta": 0xFFEB,
-    "CapsLock": 0xFFE5, " ": 0x0020,
+    "CapsLock": 0xFFE5, " ": 0x0020, "Insert": 0xFF63,
     "F1": 0xFFBE, "F2": 0xFFBF, "F3": 0xFFC0, "F4": 0xFFC1,
     "F5": 0xFFC2, "F6": 0xFFC3, "F7": 0xFFC4, "F8": 0xFFC5,
     "F9": 0xFFC6, "F10": 0xFFC7, "F11": 0xFFC8, "F12": 0xFFC9,
 }
 
-_PRESSED = 1
-_RELEASED = 0
+# How long the person may take over the compositor's own dialog.
+START_TIMEOUT = 200.0
+RESTORE_TOKEN_FILE = "wayland_restore_token"
 
 
 def keysym_for(name: str) -> int | None:
@@ -73,332 +57,304 @@ def keysym_for(name: str) -> int | None:
     if name in KEYSYMS:
         return KEYSYMS[name]
     if len(name) == 1:
-        return ord(name)
+        code = ord(name)
+        # Latin-1 keysyms equal their code point; everything above is the
+        # Unicode keysym range (keysymdef.h: 0x01000000 + code point).
+        return code if code <= 0xFF else 0x01000000 | code
     return None
 
 
-class PortalSession:
-    """One combined ScreenCast + RemoteDesktop portal session.
+def session_is_wayland(env=None) -> bool:
+    """Whether this desktop is Wayland.
 
-    Every method here blocks the calling thread until the portal backend
-    replies - including, the first time, however long it takes the person to
-    answer the compositor's own permission/picker dialog. That is deliberate:
-    callers (ScreenCapture, InputInjector) already construct synchronously at
-    session start, the same point X11's open() blocks briefly on the X
-    connection.
+    WAYLAND_DISPLAY alone is not enough: an agent started by the systemd user
+    service at login only sees it if the desktop exported it to systemd, and
+    several do not. Missing it means trying X11 capture on XWayland, which
+    "works" and returns black frames. The session type and the compositor's
+    socket are checked too.
     """
+    env = os.environ if env is None else env
+    if env.get("WAYLAND_DISPLAY"):
+        return True
+    if env.get("XDG_SESSION_TYPE", "").lower() == "wayland":
+        return True
+    if not env.get("DISPLAY"):
+        runtime = env.get("XDG_RUNTIME_DIR")
+        if runtime:
+            try:
+                return any(
+                    p.name.startswith("wayland-") and not p.name.endswith(".lock")
+                    for p in Path(runtime).iterdir()
+                )
+            except OSError:
+                return False
+    return False
+
+
+def helper_path() -> Path:
+    return Path(__file__).with_name("wayland_helper.py")
+
+
+def system_python() -> str | None:
+    """The distribution's python3 - the one its python3-gi belongs to."""
+    override = os.environ.get("RMM_SYSTEM_PYTHON")
+    if override:
+        return override
+    for candidate in ("/usr/bin/python3", "/usr/local/bin/python3", "/bin/python3"):
+        if os.access(candidate, os.X_OK):
+            return candidate
+    from rmm_agent.environment import system_environment
+
+    return shutil.which("python3", path=system_environment().get("PATH"))
+
+
+def _helper_env() -> dict:
+    from rmm_agent.environment import system_environment
+
+    env = system_environment()
+    # A frozen agent's own Python settings must not leak into the system one.
+    for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "RMM_BACKGROUND",
+                 "PYINSTALLER_RESET_ENVIRONMENT", "GST_PLUGIN_PATH",
+                 "GST_PLUGIN_SYSTEM_PATH", "GI_TYPELIB_PATH", "GIO_MODULE_DIR"):
+        env.pop(name, None)
+    return env
+
+
+def diagnose() -> dict:
+    """What this machine can do for Wayland, as the helper sees it."""
+    python = system_python()
+    if not helper_path().exists():
+        return {"error": "the Wayland helper is missing from this build"}
+    if not python:
+        return {"error": "no system python3 found"}
+    try:
+        result = subprocess.run(
+            [python, "-I", str(helper_path()), "--check"],
+            capture_output=True, text=True, timeout=20, env=_helper_env(),
+        )
+        return json.loads(result.stdout.strip().splitlines()[-1])
+    except Exception as exc:
+        return {"python": python, "error": f"helper check failed: {exc}"}
+
+
+def load_restore_token() -> str | None:
+    from rmm_agent.config import state_dir
+
+    try:
+        token = (state_dir() / RESTORE_TOKEN_FILE).read_text().strip()
+        return token or None
+    except OSError:
+        return None
+
+
+def save_restore_token(token: str) -> None:
+    from rmm_agent import durable
+    from rmm_agent.config import state_dir
+
+    path = state_dir() / RESTORE_TOKEN_FILE
+    try:
+        durable.write_text(path, token)
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        log.warning("could not keep the Wayland screen-share permission: %s", exc)
+
+
+def forget_restore_token() -> None:
+    from rmm_agent.config import state_dir
+
+    try:
+        (state_dir() / RESTORE_TOKEN_FILE).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+class PortalSession:
+    """One portal screen share (plus input, when the portal grants it),
+    owned by a helper process running under the system python3.
+
+    Every method is safe to call on a session that never started or has
+    closed: it does nothing, so teardown never has to check first."""
 
     def __init__(self) -> None:
-        self.available = False
-        self.session_handle: str | None = None
-        self.node_id: int | None = None
-        self.pipewire_fd: int | None = None
+        self.python = system_python() if sys.platform.startswith("linux") else None
+        self.available = bool(self.python and helper_path().exists())
+        self.started = False
+        self.input_available = False
         self.monitors: list[dict] = []
-        self._bus = None
-        self._context = None
-        self._loop = None
-        self._thread: threading.Thread | None = None
-        self._sender_token = ""
-        self._token_counter = 0
-        self._lock = threading.Lock()
+        self.restore_token: str | None = None
+        self.denied = False
+        self.error: str | None = None
+        self._proc: subprocess.Popen | None = None
+        self._write_lock = threading.Lock()
+        self._grab_lock = threading.Lock()
+        self._last: tuple[bytes, int, int] | None = None
+        self._buffer = bytearray()
 
-        try:
-            import gi
+    # ------------------------------------------------------------ lifecycle
 
-            gi.require_version("Gio", "2.0")
-            gi.require_version("GLib", "2.0")
-            from gi.repository import Gio, GLib
-        except Exception as exc:
-            log.info("PyGObject not installed; the Wayland portal path is unavailable (%s)", exc)
-            return
-
-        self._Gio = Gio
-        self._GLib = GLib
-
-        try:
-            self._bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-            # The Request object path the portal replies on is predictable
-            # from the caller's own unique bus name (":1.42" -> "1_42"), per
-            # the portal spec - this lets us subscribe *before* calling, so
-            # there is no window where a fast reply could arrive unheard.
-            self._sender_token = self._bus.get_unique_name().lstrip(":").replace(".", "_")
-        except Exception as exc:
-            log.info("could not reach the session D-Bus; Wayland portal unavailable (%s)", exc)
-            self._bus = None
-            return
-
-        # Signal delivery needs a pumped GLib main context; nothing else in
-        # this process runs one (session.py is asyncio, not GLib), so this
-        # owns a dedicated context/thread for its whole lifetime rather than
-        # fighting over the global default one.
-        self._context = GLib.MainContext.new()
-        self._loop = GLib.MainLoop.new(self._context, False)
-        self._thread = threading.Thread(target=self._run_loop, name="wayland-portal", daemon=True)
-        self._thread.start()
-        self.available = True
-
-    def _run_loop(self) -> None:
-        self._context.push_thread_default()
-        try:
-            self._loop.run()
-        finally:
-            self._context.pop_thread_default()
-
-    def _next_token(self, prefix: str) -> str:
-        with self._lock:
-            self._token_counter += 1
-            return f"rmm_{prefix}_{self._token_counter}"
-
-    def _await_request(self, handle_path: str, timeout: float) -> dict:
-        """Block until the Request at `handle_path` emits its Response
-        signal, and return its results dict. Raises on refusal or timeout."""
-        GLib = self._GLib
-        event = threading.Event()
-        outcome: dict = {}
-
-        def on_response(_conn, _sender, _path, _iface, _signal, parameters) -> None:
-            code, results = parameters.unpack()
-            outcome["code"] = code
-            outcome["results"] = results
-            event.set()
-
-        sub_id = self._bus.signal_subscribe(
-            None, REQUEST_IFACE, "Response", handle_path, None,
-            self._Gio.DBusSignalFlags.NONE, on_response,
-        )
-        try:
-            if not event.wait(timeout):
-                raise TimeoutError("the portal did not respond in time")
-        finally:
-            self._bus.signal_unsubscribe(sub_id)
-
-        if outcome.get("code") != 0:
-            # 1 = the person cancelled/declined; 2 = the backend ended it.
-            raise PermissionError(f"the portal request was not approved (code {outcome.get('code')})")
-        return outcome.get("results") or {}
-
-    def _call(self, iface: str, method: str, variant, reply_signature: str):
-        GLib = self._GLib
-        return self._bus.call_sync(
-            PORTAL_BUS, PORTAL_PATH, iface, method, variant,
-            GLib.VariantType.new(reply_signature),
-            self._Gio.DBusCallFlags.NONE, -1, None,
-        )
-
-    def _call_request(self, iface: str, method: str, variant, timeout: float = 120.0) -> dict:
-        """Call a portal method whose OUT is a Request object path (`o`), and
-        wait for that Request's Response. `timeout` is generous because the
-        first call of each kind is answered by a *person*, not the backend."""
-        GLib = self._GLib
-        token = self._next_token(method)
-        handle_path = f"/org/freedesktop/portal/desktop/request/{self._sender_token}/{token}"
-
-        # Subscribing before the call closes the race where a reply lands
-        # before a subscription made afterward could ever see it.
-        event_box: dict = {}
-
-        def on_response(_conn, _sender, _path, _iface, _signal, parameters) -> None:
-            code, results = parameters.unpack()
-            event_box["code"] = code
-            event_box["results"] = results
-            event_box["event"].set()
-
-        waiter = threading.Event()
-        event_box["event"] = waiter
-        sub_id = self._bus.signal_subscribe(
-            None, REQUEST_IFACE, "Response", handle_path, None,
-            self._Gio.DBusSignalFlags.NONE, on_response,
-        )
-        try:
-            reply = self._call(iface, method, variant, "(o)")
-            actual_path = reply.unpack()[0]
-            if actual_path != handle_path:
-                # The portal spec allows this only on a token collision,
-                # which _next_token's monotonic counter should never hit -
-                # but if it ever does, resubscribe on the path actually used
-                # rather than silently waiting on the wrong one forever.
-                self._bus.signal_unsubscribe(sub_id)
-                sub_id = self._bus.signal_subscribe(
-                    None, REQUEST_IFACE, "Response", actual_path, None,
-                    self._Gio.DBusSignalFlags.NONE, on_response,
-                )
-            if not waiter.wait(timeout):
-                raise TimeoutError(f"the portal did not answer {method} in time")
-        finally:
-            self._bus.signal_unsubscribe(sub_id)
-
-        if event_box.get("code") != 0:
-            raise PermissionError(f"{method} was not approved (code {event_box.get('code')})")
-        return event_box.get("results") or {}
-
-    def start(self, want_input: bool = True) -> bool:
-        """Run the whole handshake: create one session, ask for a monitor
-        share and (optionally) keyboard/pointer, then open the PipeWire
-        stream. This is the call that pops the compositor's own picker/
-        permission dialog. Returns False (never raises) on any failure, so a
-        Wayland box with no working portal just falls back to mss like any
-        other capture failure."""
+    def start(self, want_input: bool = True, restore_token: str | None = None,
+              persist_mode: int = 0, timeout: float = START_TIMEOUT) -> bool:
+        """Ask the compositor for the screen (and input). Blocks until the
+        person answers its dialog. Returns False, never raises."""
         if not self.available:
+            self.error = "no system python3 or helper"
             return False
-        GLib = self._GLib
         try:
-            session_token = self._next_token("session")
-            options = GLib.Variant("a{sv}", {"session_handle_token": GLib.Variant("s", session_token)})
-            create_iface = REMOTE_DESKTOP_IFACE if want_input else SCREENCAST_IFACE
-            results = self._call_request(
-                create_iface, "CreateSession", GLib.Variant("(a{sv})", (options,))
+            self._proc = subprocess.Popen(
+                [self.python, "-I", str(helper_path())],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=_helper_env(), close_fds=True, bufsize=0,
             )
-            self.session_handle = results.get("session_handle")
-            if not self.session_handle:
-                raise RuntimeError("CreateSession returned no session_handle")
-
-            if want_input:
-                device_options = GLib.Variant(
-                    "a{sv}", {"types": GLib.Variant("u", DEVICE_KEYBOARD | DEVICE_POINTER)}
-                )
-                self._call_request(
-                    REMOTE_DESKTOP_IFACE, "SelectDevices",
-                    GLib.Variant("(oa{sv})", (self.session_handle, device_options)),
-                )
-
-            source_options = GLib.Variant(
-                "a{sv}",
-                {
-                    "types": GLib.Variant("u", SOURCE_TYPE_MONITOR),
-                    "multiple": GLib.Variant("b", False),
-                    "cursor_mode": GLib.Variant("u", CURSOR_MODE_EMBEDDED),
-                },
-            )
-            self._call_request(
-                SCREENCAST_IFACE, "SelectSources",
-                GLib.Variant("(oa{sv})", (self.session_handle, source_options)),
-            )
-
-            start_iface = REMOTE_DESKTOP_IFACE if want_input else SCREENCAST_IFACE
-            start_results = self._call_request(
-                start_iface, "Start",
-                GLib.Variant("(osa{sv})", (self.session_handle, "", GLib.Variant("a{sv}", {}))),
-            )
-            streams = start_results.get("streams") or []
-            if not streams:
-                raise RuntimeError("Start() returned no screen-cast stream")
-            self._apply_streams(streams)
-
-            pipewire_reply, fd_list = self._bus.call_with_unix_fd_list_sync(
-                PORTAL_BUS, PORTAL_PATH, SCREENCAST_IFACE, "OpenPipeWireRemote",
-                GLib.Variant("(oa{sv})", (self.session_handle, GLib.Variant("a{sv}", {}))),
-                GLib.VariantType.new("(h)"),
-                self._Gio.DBusCallFlags.NONE, -1, None, None,
-            )
-            fd_index = pipewire_reply.unpack()[0]
-            self.pipewire_fd = fd_list.get(fd_index)
-            log.info(
-                "Wayland portal session started: node=%s monitors=%d",
-                self.node_id, len(self.monitors),
-            )
-            return True
+            self._buffer = bytearray()
+        except OSError as exc:
+            self.error = f"could not start the Wayland helper: {exc}"
+            log.warning(self.error)
+            return False
+        threading.Thread(target=self._drain_stderr, name="wayland-helper-log", daemon=True).start()
+        try:
+            self._write({"want_input": bool(want_input), "persist_mode": int(persist_mode),
+                         "restore_token": restore_token})
+            kind, payload = self._read(timeout)
+            if kind != b"J":
+                raise RuntimeError(f"unexpected first reply {kind!r}")
+            message = json.loads(payload)
         except Exception as exc:
-            log.warning("could not start the Wayland portal session: %s", exc)
+            self.error = f"the Wayland helper did not answer: {exc}"
+            log.warning(self.error)
             self.close()
             return False
-
-    def _apply_streams(self, streams) -> None:
-        self.monitors = []
-        for i, (node_id, props) in enumerate(streams):
-            if self.node_id is None:
-                self.node_id = node_id
-            size = props.get("size")
-            position = props.get("position")
-            width, height = (size if size else (1920, 1080))
-            left, top = (position if position else (0, 0))
-            self.monitors.append(
-                {"index": i, "label": f"Monitor {i + 1}", "width": int(width),
-                 "height": int(height), "left": int(left), "top": int(top)}
-            )
-
-    # ------------------------------------------------------------- input
-    # Every Notify* call is fire-and-forget (no reply to wait for beyond the
-    # ordinary D-Bus method return), unlike Start()/CreateSession(), so these
-    # never touch the Request/Response machinery above.
-
-    def notify_pointer_motion_absolute(self, x: float, y: float) -> None:
-        if not self.available or self.node_id is None:
-            return
-        GLib = self._GLib
-        try:
-            self._bus.call_sync(
-                PORTAL_BUS, PORTAL_PATH, REMOTE_DESKTOP_IFACE, "NotifyPointerMotionAbsolute",
-                GLib.Variant(
-                    "(oa{sv}udd)",
-                    (self.session_handle, {}, self.node_id, float(x), float(y)),
-                ),
-                None, self._Gio.DBusCallFlags.NONE, -1, None,
-            )
-        except Exception as exc:
-            log.debug("NotifyPointerMotionAbsolute failed: %s", exc)
-
-    def notify_pointer_button(self, button: int, pressed: bool) -> None:
-        if not self.available:
-            return
-        GLib = self._GLib
-        try:
-            self._bus.call_sync(
-                PORTAL_BUS, PORTAL_PATH, REMOTE_DESKTOP_IFACE, "NotifyPointerButton",
-                GLib.Variant(
-                    "(oa{sv}iu)",
-                    (self.session_handle, {}, button, _PRESSED if pressed else _RELEASED),
-                ),
-                None, self._Gio.DBusCallFlags.NONE, -1, None,
-            )
-        except Exception as exc:
-            log.debug("NotifyPointerButton failed: %s", exc)
-
-    def notify_pointer_axis_discrete(self, vertical: bool, steps: int) -> None:
-        if not self.available or steps == 0:
-            return
-        GLib = self._GLib
-        try:
-            self._bus.call_sync(
-                PORTAL_BUS, PORTAL_PATH, REMOTE_DESKTOP_IFACE, "NotifyPointerAxisDiscrete",
-                GLib.Variant(
-                    "(oa{sv}ui)", (self.session_handle, {}, 0 if vertical else 1, int(steps)),
-                ),
-                None, self._Gio.DBusCallFlags.NONE, -1, None,
-            )
-        except Exception as exc:
-            log.debug("NotifyPointerAxisDiscrete failed: %s", exc)
-
-    def notify_keyboard_keysym(self, keysym: int, pressed: bool) -> None:
-        if not self.available:
-            return
-        GLib = self._GLib
-        try:
-            self._bus.call_sync(
-                PORTAL_BUS, PORTAL_PATH, REMOTE_DESKTOP_IFACE, "NotifyKeyboardKeysym",
-                GLib.Variant(
-                    "(oa{sv}iu)",
-                    (self.session_handle, {}, int(keysym), _PRESSED if pressed else _RELEASED),
-                ),
-                None, self._Gio.DBusCallFlags.NONE, -1, None,
-            )
-        except Exception as exc:
-            log.debug("NotifyKeyboardKeysym failed: %s", exc)
+        if message.get("event") != "ready":
+            self.denied = bool(message.get("denied"))
+            self.error = message.get("detail") or "the portal share failed"
+            log.warning("Wayland screen share did not start: %s", self.error)
+            self.close()
+            return False
+        self.monitors = [dict(m) for m in message.get("monitors") or []]
+        self.input_available = bool(message.get("input"))
+        self.restore_token = message.get("restore_token")
+        self.started = True
+        log.info(
+            "Wayland portal share started (%s, input %s)",
+            ", ".join(f"{m['width']}x{m['height']}" for m in self.monitors) or "?",
+            "granted" if self.input_available else "not available",
+        )
+        return True
 
     def close(self) -> None:
-        if self.session_handle and self._bus is not None:
+        proc, self._proc = self._proc, None
+        self.started = False
+        self.input_available = False
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                with self._write_lock:
+                    proc.stdin.write(b'{"op": "close"}\n')
+                    proc.stdin.flush()
+                proc.wait(timeout=3)
+        except Exception:
+            pass
+        if proc.poll() is None:
+            proc.terminate()
             try:
-                self._bus.call_sync(
-                    PORTAL_BUS, self.session_handle, SESSION_IFACE, "Close",
-                    None, None, self._Gio.DBusCallFlags.NONE, -1, None,
-                )
-            except Exception as exc:
-                log.debug("portal Session.Close failed: %s", exc)
-        self.session_handle = None
-        if self._loop is not None:
-            self._loop.quit()
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        for stream in (proc.stdin, proc.stdout):
+            try:
+                stream.close()
+            except Exception:
+                pass
 
+    # ------------------------------------------------------------ pipes
 
-def session_is_wayland() -> bool:
-    import os
+    def _drain_stderr(self) -> None:
+        proc = self._proc
+        if proc is None:
+            return
+        for line in proc.stderr:
+            text = line.decode(errors="replace").rstrip()
+            if text:
+                log.info("wayland helper: %s", text)
 
-    return bool(os.environ.get("WAYLAND_DISPLAY"))
+    def _write(self, obj: dict) -> None:
+        proc = self._proc
+        if proc is None or proc.poll() is not None:
+            raise RuntimeError("the Wayland helper is not running")
+        with self._write_lock:
+            proc.stdin.write((json.dumps(obj) + "\n").encode())
+            proc.stdin.flush()
+
+    def _read_exact(self, size: int, timeout: float | None) -> bytes:
+        """Exactly `size` bytes from the helper. Reads the raw pipe with its
+        own buffer, so select() never misses data already read ahead."""
+        proc = self._proc
+        if proc is None:
+            raise RuntimeError("the Wayland helper is not running")
+        fd = proc.stdout.fileno()
+        while len(self._buffer) < size:
+            if timeout is not None:
+                ready, _, _ = select.select([fd], [], [], timeout)
+                if not ready:
+                    raise TimeoutError("the Wayland helper did not reply in time")
+            chunk = os.read(fd, max(1 << 20, size - len(self._buffer)))
+            if not chunk:
+                raise RuntimeError("the Wayland helper exited")
+            self._buffer += chunk
+        data = bytes(self._buffer[:size])
+        del self._buffer[:size]
+        return data
+
+    def _read(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+        header = self._read_exact(5, timeout)
+        kind = header[:1]
+        (length,) = struct.unpack("<I", header[1:])
+        return kind, self._read_exact(length, timeout) if length else b""
+
+    # ------------------------------------------------------------ capture
+
+    def grab(self, timeout: float = 10.0) -> tuple[bytes, int, int]:
+        """The newest frame as packed RGB. A still screen returns the last
+        frame again rather than failing - PipeWire only sends on change."""
+        if not self.started:
+            raise RuntimeError("the Wayland screen share is not running")
+        with self._grab_lock:
+            self._write({"op": "grab"})
+            kind, payload = self._read(timeout)
+        if kind == b"F":
+            width, height = struct.unpack("<II", payload[:8])
+            self._last = (payload[8:], width, height)
+        elif kind == b"S":
+            if self._last is None:
+                raise RuntimeError("no picture from the Wayland screen share yet")
+        else:
+            raise RuntimeError(payload.decode(errors="replace") or "the Wayland screen share ended")
+        return self._last
+
+    # ------------------------------------------------------------ input
+    # Fire-and-forget: the helper never answers these, so they cannot
+    # interleave with a grab's reply.
+
+    def _send_input(self, obj: dict) -> None:
+        if not (self.started and self.input_available):
+            return
+        try:
+            self._write(obj)
+        except Exception as exc:
+            log.debug("could not send Wayland input: %s", exc)
+
+    def notify_pointer_motion_absolute(self, x: float, y: float) -> None:
+        """x/y in the shared stream's own space: 0..width, 0..height."""
+        self._send_input({"op": "motion", "x": float(x), "y": float(y)})
+
+    def notify_pointer_button(self, button: int, pressed: bool) -> None:
+        self._send_input({"op": "button", "button": int(button), "pressed": bool(pressed)})
+
+    def notify_pointer_axis_discrete(self, vertical: bool, steps: int) -> None:
+        """Positive steps scroll down, as Wayland's own axis does."""
+        if steps and vertical:
+            self._send_input({"op": "axis", "steps": int(steps)})
+
+    def notify_keyboard_keysym(self, keysym: int, pressed: bool) -> None:
+        self._send_input({"op": "key", "keysym": int(keysym), "pressed": bool(pressed)})
