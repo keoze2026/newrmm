@@ -73,3 +73,25 @@ def test_input_injector_falls_back_when_the_portal_is_unavailable():
     injector = InputInjector(enabled=True, portal=portal)
     if not portal.available:
         assert injector._portal is None
+
+
+def test_screen_capture_prefers_a_working_portal_over_x11(monkeypatch):
+    """Regression: on a real Wayland session with XWayland present, the X11
+    native module's open() succeeds (it can always open the XWayland
+    display and enumerate monitors) even though it cannot see any
+    Wayland-composited content - every frame it grabs is black. ScreenCapture
+    must try a working portal BEFORE falling to X11, not after, or the
+    portal never gets a chance no matter how well it works."""
+    monkeypatch.setattr(ScreenCapture, "_open_native", lambda self: True)
+
+    def fake_open_wayland(self, portal):
+        self._wayland = object()
+        self.backend = "wayland-portal"
+        return True
+
+    monkeypatch.setattr(ScreenCapture, "_open_wayland", fake_open_wayland)
+
+    fake_portal = type("FakePortal", (), {"pipewire_fd": 99})()
+    capture = ScreenCapture(synthetic=False, portal=fake_portal)
+    assert capture.backend == "wayland-portal"
+    assert capture._native is None

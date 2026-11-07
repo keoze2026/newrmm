@@ -43,12 +43,21 @@ class ScreenCapture:
         self._monitors: list[dict] = []
         self.backend = "synthetic"
 
-        if not synthetic and self._open_native():
-            return
-
+        # The portal, when session.py built and started one, must be tried
+        # BEFORE the X11 native module - not after. On a real Wayland session
+        # with XWayland present (virtually every desktop), X11's open() still
+        # succeeds and enumerates monitors just fine, so it used to win this
+        # race every time; it just cannot see any Wayland-composited content
+        # through the X11 root window, so every frame it grabbed was black.
+        # Trying the portal first is what actually makes a Wayland session
+        # use the Wayland path, instead of an X11 fallback that only ever
+        # looked like it worked.
         if not synthetic and portal is not None and getattr(portal, "pipewire_fd", None):
             if self._open_wayland(portal):
                 return
+
+        if not synthetic and self._open_native():
+            return
 
         if not synthetic:
             try:
