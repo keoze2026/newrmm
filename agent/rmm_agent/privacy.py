@@ -113,10 +113,17 @@ class PrivacyBlank:
     # power cycle, so there is always a ceiling.
     DEFAULT_WATCHDOG_SECONDS = 120.0
 
-    def __init__(self, watchdog_seconds: float = 0.0) -> None:
-        self.watchdog_seconds = (
-            watchdog_seconds if watchdog_seconds > 0 else self.DEFAULT_WATCHDOG_SECONDS
-        )
+    def __init__(self, watchdog_seconds: float = 0.0, on_release=None) -> None:
+        # 0 (or less) means "the default", never "no limit": see above. The
+        # command line used to promise "0 = off" while this quietly made it
+        # 120 s; the promise is what was wrong, and it now says this.
+        if watchdog_seconds <= 0:
+            watchdog_seconds = self.DEFAULT_WATCHDOG_SECONDS
+        self.watchdog_seconds = watchdog_seconds
+        # Called as on_release(reason, state) when the blank ends without the
+        # operator asking (watchdog, Escape at the endpoint), from whichever
+        # thread noticed. Without it the console kept showing "blanked".
+        self.on_release = on_release
         self.mode = supported_mode()
         # Only Linux darkens the display; Windows and macOS exclude a window.
         self._dimmer = dimmer.Dimmer() if (self.mode == MODE_EXCLUDED and not WINDOWS and not MACOS) else None
@@ -249,7 +256,12 @@ class PrivacyBlank:
                 ).pack(side="bottom", pady=40)
                 # The overlay itself also honours Escape, in case the global
                 # listener never started.
-                root.bind("<Escape>", lambda _event: self._stop.set())
+                root.bind(
+                    "<Escape>",
+                    lambda _event: threading.Thread(
+                        target=self._release, args=("escape",), daemon=True
+                    ).start(),
+                )
                 root.focus_force()
 
             self._root = root
@@ -424,7 +436,9 @@ class PrivacyBlank:
 
             callbacks = suppressing_callbacks(
                 escape_key=keyboard.Key.esc,
-                on_escape=lambda: threading.Thread(target=self.disable, daemon=True).start(),
+                on_escape=lambda: threading.Thread(
+                    target=self._release, args=("escape",), daemon=True
+                ).start(),
             )
             key_listener = keyboard.Listener(
                 on_press=callbacks["on_press"],
@@ -457,7 +471,9 @@ class PrivacyBlank:
 
             callback = dimmer.escape_counter(
                 escape_key=keyboard.Key.esc,
-                on_escape=lambda: threading.Thread(target=self.disable, daemon=True).start(),
+                on_escape=lambda: threading.Thread(
+                    target=self._release, args=("escape",), daemon=True
+                ).start(),
                 clock=time.monotonic,
             )
             listener = keyboard.Listener(on_press=callback)
@@ -492,9 +508,20 @@ class PrivacyBlank:
                     "privacy blank released by the watchdog after %.0fs",
                     self.watchdog_seconds,
                 )
-                self.disable()
+                self._release("watchdog")
                 return
             time.sleep(0.25)
+
+    def _release(self, reason: str) -> None:
+        """End the blank on the endpoint's side and say so."""
+        if not self.active:
+            return
+        state = self.disable()
+        if self.on_release is not None:
+            try:
+                self.on_release(reason, state)
+            except Exception as exc:
+                log.warning("could not report the blank ending: %s", exc)
 
     def overlay_covers_the_screen(self) -> bool:
         """Whether the overlay really filled the display, measured inside the

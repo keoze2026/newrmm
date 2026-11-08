@@ -14,7 +14,7 @@ from rmm_agent.remote_input import InputInjector
 from rmm_agent.terminal import RemoteTerminal, default_shell
 from rmm_agent.tiles import TileEncoder
 from rmm_agent.tray import CONNECTED, IDLE, SHARING, Tray
-from rmm_agent import wayland_portal
+from rmm_agent import guest_token, wayland_portal
 
 log = logging.getLogger(__name__)
 
@@ -25,8 +25,12 @@ BACKOFF_MAX = 30.0
 # relay or this machine is turning it away, so the delay must keep growing.
 HEALTHY_SECONDS = 30.0
 # Retrying cannot fix these: the session ended (4404), consent was refused
-# (4403), or the device credentials were rejected (4401).
+# (4403), or the credentials were rejected (4401: wrong device secret, or the
+# session belongs to another computer).
 GIVE_UP_CODES = (4401, 4403, 4404)
+# How long to wait for the relay's "welcome" after the hello. A relay older
+# than the welcome never sends one; the session still works, just unbound.
+WELCOME_SECONDS = 3.0
 # A link that drops during a consented session and comes back within this long
 # is the same session carrying on. Asking again would put a window in front of
 # someone who is not there, and an unanswered window ends the agent for good.
@@ -119,12 +123,27 @@ class AgentSession:
         self._streamed_until: float | None = None
         self._terminal: RemoteTerminal | None = None
         self._chat: ChatWindow | None = None
-        self._privacy = privacy.PrivacyBlank(watchdog_seconds=blank_watchdog)
+        self._privacy = privacy.PrivacyBlank(
+            watchdog_seconds=blank_watchdog, on_release=self._blank_released
+        )
+        self._loop: asyncio.AbstractEventLoop | None = None
         # Changed-region streaming (specification section 10).
         self._tiles = TileEncoder()
         self._blank_blocks_input = blank_blocks_input
         self._uploads: dict[str, files.Upload] = {}
         self._socket = None
+
+    def _blank_released(self, reason: str, state: dict) -> None:
+        """The blank ended at the endpoint (watchdog or Escape): tell the
+        operator, whose console would otherwise keep saying "blanked"."""
+        log.info("privacy blank released at the endpoint (%s)", reason)
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        payload = {"type": "blank", "action": "state", **state, "released_by": reason}
+        asyncio.run_coroutine_threadsafe(self._send(payload), loop)
+        if self.tray:
+            self.tray.notify("Your screen is visible again.", "Privacy blank off")
 
     def _over(self) -> None:
         """The session ended for good, or consent was refused: nothing to rejoin."""
@@ -165,14 +184,77 @@ class AgentSession:
 
     @property
     def endpoint(self) -> str:
-        url = f"{self.relay_url}/ws/guest/{self.code}"
-        if self.device_id and self.device_secret:
-            from urllib.parse import quote
+        """The session URL. Credentials go in the hello, never in the URL,
+        because URLs are written to the reverse proxy's access log."""
+        return f"{self.relay_url}/ws/guest/{self.code}"
 
-            url += f"?device_id={quote(self.device_id)}&secret={quote(self.device_secret)}"
-        return url
+    def _legacy_endpoint(self) -> str:
+        """The URL form a relay older than hello-credentials insists on."""
+        from urllib.parse import quote
+
+        return (
+            f"{self.endpoint}?device_id={quote(self.device_id)}"
+            f"&secret={quote(self.device_secret)}"
+        )
+
+    async def _connect(self):
+        """Open the session socket; returns (context manager, socket)."""
+        options = {"max_size": None, "ping_interval": 20}
+        connection = websockets.connect(self.endpoint, **options)
+        try:
+            return connection, await connection.__aenter__()
+        except websockets.InvalidStatus as exc:
+            # An older relay checks device credentials in the URL before the
+            # handshake and refuses it with 403 when they are not there.
+            if not (self.device_id and self.device_secret) or exc.response.status_code != 403:
+                raise
+            log.info("this relay wants the device credentials in the URL; using that")
+            connection = websockets.connect(self._legacy_endpoint(), **options)
+            return connection, await connection.__aenter__()
+
+    def _hello(self, info: dict) -> dict:
+        hello = {
+            "host_name": info["hostname"],
+            "system_info": info,
+            "monitors": self.capture.monitors,
+            "agent_version": __version__,
+            "privacy_mode": privacy.supported_mode(),
+            # This agent keeps the secret the relay binds the session with.
+            "token_aware": True,
+        }
+        token = guest_token.load(self.code)
+        if token:
+            hello["guest_token"] = token
+        if self.device_id and self.device_secret:
+            hello["device_id"] = self.device_id
+            hello["secret"] = self.device_secret
+        return hello
+
+    async def _await_welcome(self, socket) -> None:
+        """Read the relay's welcome and keep the session secret it hands over."""
+        try:
+            raw = await asyncio.wait_for(socket.recv(), timeout=WELCOME_SECONDS)
+        except asyncio.TimeoutError:
+            log.info("this relay sends no welcome; the session is not bound to this computer")
+            return
+        if isinstance(raw, bytes):
+            return
+        try:
+            message = json.loads(raw)
+        except ValueError:
+            return
+        if message.get("type") != "welcome":
+            # Only an older relay sends anything else first, and nothing it
+            # sends before consent needs acting on (a keyframe is requested
+            # again when streaming starts).
+            return
+        token = message.get("guest_token")
+        if token:
+            guest_token.save(self.code, str(token))
+            log.info("this computer is now bound to session %s", self.code)
 
     async def run_forever(self) -> None:
+        self._loop = asyncio.get_running_loop()
         backoff = BACKOFF_START
         while not self._stop.is_set():
             started = time.monotonic()
@@ -210,80 +292,81 @@ class AgentSession:
                 pass
 
     async def _run_once(self) -> None:
-        log.info("connecting to %s", self.endpoint.split("?")[0])
-        async with websockets.connect(self.endpoint, max_size=None, ping_interval=20) as socket:
-            self._socket = socket
-            info = sysinfo.collect()
-            await socket.send(
-                json.dumps(
-                    {
-                        "host_name": info["hostname"],
-                        "system_info": info,
-                        "monitors": self.capture.monitors,
-                        "agent_version": __version__,
-                        "privacy_mode": privacy.supported_mode(),
-                    }
-                )
+        self._loop = asyncio.get_running_loop()
+        log.info("connecting to %s", self.endpoint)
+        connection, socket = await self._connect()
+        try:
+            await self._session(socket)
+        except BaseException as exc:
+            if not await connection.__aexit__(type(exc), exc, exc.__traceback__):
+                raise
+        else:
+            await connection.__aexit__(None, None, None)
+
+    async def _session(self, socket) -> None:
+        self._socket = socket
+        info = sysinfo.collect()
+        await socket.send(json.dumps(self._hello(info)))
+        await self._await_welcome(socket)
+        log.info("attached to session %s as %s", self.code, info["hostname"])
+        if self.tray:
+            self.tray.set_state(CONNECTED, "Waiting for your decision")
+            self.tray.notify(
+                f"A support operator is requesting session {self.code}.",
+                "Session requested",
             )
-            log.info("attached to session %s as %s", self.code, info["hostname"])
+
+        choice = "once"
+        by = "endpoint user"
+        if self.standing_consent:
+            log.info("starting under the permission given when this computer was enrolled")
+            by = "standing permission"
+        elif can_resume(self._streamed_until, time.monotonic()):
+            log.info("reconnected during a consented session; continuing without asking again")
+        else:
+            choice = await asyncio.to_thread(
+                ask_consent_choice, self.code, None, 120.0, self.auto_consent,
+                self.standing_allowed,
+            )
+        granted = choice != "deny"
+        await socket.send(json.dumps({"type": "consent", "granted": granted, "by": by}))
+
+        if choice == "always" and self.on_standing is not None:
+            await self._enrol()
+
+        if not granted:
+            log.info("consent denied; nothing will be captured")
+            self._streamed_until = None
+            self._over()
             if self.tray:
-                self.tray.set_state(CONNECTED, "Waiting for your decision")
-                self.tray.notify(
-                    f"A support operator is requesting session {self.code}.",
-                    "Session requested",
-                )
+                self.tray.set_state(IDLE, "Session denied")
+                self.tray.notify("You denied the session. Nothing was shared.", "Session denied")
+            self._stop.set()
+            return
 
-            choice = "once"
-            by = "endpoint user"
-            if self.standing_consent:
-                log.info("starting under the permission given when this computer was enrolled")
-                by = "standing permission"
-            elif can_resume(self._streamed_until, time.monotonic()):
-                log.info("reconnected during a consented session; continuing without asking again")
-            else:
-                choice = await asyncio.to_thread(
-                    ask_consent_choice, self.code, None, 120.0, self.auto_consent,
-                    self.standing_allowed,
-                )
-            granted = choice != "deny"
-            await socket.send(json.dumps({"type": "consent", "granted": granted, "by": by}))
+        self._consented = True
+        if self._wayland:
+            await self._open_portal()
+        self._tiles.request_keyframe()
+        log.info("consent granted; streaming starts now")
+        if self.tray:
+            self.tray.set_state(SHARING, f"Sharing your screen — session {self.code}")
+            self.tray.notify(
+                "Your screen is being shared. End the session from this menu at any time.",
+                "Session started",
+            )
 
-            if choice == "always" and self.on_standing is not None:
-                await self._enrol()
-
-            if not granted:
-                log.info("consent denied; nothing will be captured")
-                self._streamed_until = None
-                self._over()
-                if self.tray:
-                    self.tray.set_state(IDLE, "Session denied")
-                    self.tray.notify("You denied the session. Nothing was shared.", "Session denied")
-                self._stop.set()
-                return
-
-            self._consented = True
-            if self._wayland:
-                await self._open_portal()
-            self._tiles.request_keyframe()
-            log.info("consent granted; streaming starts now")
+        receiver = asyncio.create_task(self._receive(socket))
+        try:
+            await self._stream(socket)
+        finally:
+            self._streamed_until = time.monotonic()
+            receiver.cancel()
+            self._close_tools()
+            await self._close_portal()
             if self.tray:
-                self.tray.set_state(SHARING, f"Sharing your screen — session {self.code}")
-                self.tray.notify(
-                    "Your screen is being shared. End the session from this menu at any time.",
-                    "Session started",
-                )
-
-            receiver = asyncio.create_task(self._receive(socket))
-            try:
-                await self._stream(socket)
-            finally:
-                self._streamed_until = time.monotonic()
-                receiver.cancel()
-                self._close_tools()
-                await self._close_portal()
-                if self.tray:
-                    self.tray.set_state(IDLE, "Not in a session")
-                    self.tray.notify("The remote session has ended.", "Session ended")
+                self.tray.set_state(IDLE, "Not in a session")
+                self.tray.notify("The remote session has ended.", "Session ended")
 
     async def _open_portal(self) -> None:
         """Wayland: ask the compositor for the screen and input. Runs after
@@ -516,7 +599,9 @@ class AgentSession:
                     self._send({"type": "chat", "action": "message", "text": reply_text}), loop
                 )
 
-            self._chat = ChatWindow(on_reply)
+            # Off the event loop: starting the GUI thread the first time can
+            # take a moment, and frames and input must not wait for it.
+            self._chat = await asyncio.to_thread(ChatWindow, on_reply)
         self._chat.receive(text)
 
     async def _handle_blank(self, message: dict) -> None:

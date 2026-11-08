@@ -5,7 +5,7 @@
  *  click to the same point regardless of how the canvas is letterboxed.
  */
 import { FrameAssembler } from './frames'
-import { operatorSocketUrl, type Monitor, type SystemInfo } from './api'
+import { operatorAuthMessage, operatorSocketUrl, type Monitor, type SystemInfo } from './api'
 
 export interface StreamStats {
   fps: number
@@ -100,6 +100,8 @@ export class SessionStream {
     this.socket = socket
 
     socket.onopen = () => {
+      // Authenticate before anything else; the relay reads this first.
+      socket.send(operatorAuthMessage())
       // A reconnect starts a new picture: the old one cannot be patched.
       this.assembler.reset()
       this.state = { ...this.state, connected: true }

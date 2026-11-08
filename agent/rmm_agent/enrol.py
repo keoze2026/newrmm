@@ -13,7 +13,7 @@ import time
 import urllib.error
 import urllib.request
 
-from rmm_agent import sysinfo
+from rmm_agent import guest_token, sysinfo
 from rmm_agent.config import Enrolment
 from rmm_agent.launcher import to_http
 
@@ -22,9 +22,13 @@ log = logging.getLogger(__name__)
 
 def enrol(relay_url: str, code: str, attempts: int = 5, wait: float = 1.0) -> Enrolment | None:
     """Enrol this computer through its live session. None if it did not work."""
-    body = json.dumps(
-        {"code": code, "name": socket.gethostname(), "os": sysinfo.platform_key()}
-    ).encode()
+    fields = {"code": code, "name": socket.gethostname(), "os": sysinfo.platform_key()}
+    # Proves this is the computer actually in the session; the relay refuses
+    # the code alone once the session is bound to a computer.
+    token = guest_token.load(code)
+    if token:
+        fields["guest_token"] = token
+    body = json.dumps(fields).encode()
     url = f"{to_http(relay_url)}/connector/enrol"
 
     for attempt in range(attempts):

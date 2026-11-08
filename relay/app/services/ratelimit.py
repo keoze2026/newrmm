@@ -74,8 +74,9 @@ async def hit(key: str, limit: int, window: int) -> tuple[bool, int]:
                 await client.expire(bucket, window * 2)
             return count <= limit, int(count)
         except Exception as exc:
-            log.debug("rate limit check failed, allowing: %s", exc)
-            return True, 0
+            # Fall back to counting in memory rather than letting everything
+            # through: a Redis hiccup must not switch the limits off.
+            log.warning("rate limit store failed, counting in memory: %s", exc)
 
     now = time.monotonic()
     attempts = _memory[key]
@@ -106,8 +107,7 @@ async def hit_distinct(key: str, member: str, limit: int, window: int) -> tuple[
             count = int(await client.scard(bucket))
             return count <= limit, count
         except Exception as exc:
-            log.debug("rate limit check failed, allowing: %s", exc)
-            return True, 0
+            log.warning("rate limit store failed, counting in memory: %s", exc)
 
     now = time.monotonic()
     seen = _distinct[key]

@@ -55,4 +55,5 @@ every box there passes, Phase 2 is not done.
 - Privacy blank — received and logged, blanks nothing. **Phase 5.**
 - Terminal, Files, clipboard, file transfer. **Phase 4.**
 - macOS and Linux endpoint parity. **Phase 3.**
-- Installer, auto-start, code signing. **Phase 6.**
+- Installer and auto-start: built in Phase 6. Code signing: not used, the system
+  is for in-house use (decided 2026-11-07).

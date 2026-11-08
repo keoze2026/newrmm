@@ -48,6 +48,25 @@ Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; \
     ValueData: "{olddata};{app}"; Check: NeedsAddPath('{app}')
 
+[UninstallRun]
+; Uninstalling must leave nothing running and nothing that starts again. The
+; agent creates its restart entry and watchdog task itself at run time, so the
+; installer never knew about them and used to leave them behind (scan finding).
+; The watchdog's scheduled task (autostart.WATCHDOG_TASK) goes first, so it
+; cannot start the agent again in between; then both programs are stopped, or
+; their files could not be removed.
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN RMMAgentWatchdog /F"; \
+    Flags: runhidden waituntilterminated; RunOnceId: "DeleteWatchdogTask"
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /T /IM rmm-agent-watchdog.exe"; \
+    Flags: runhidden waituntilterminated; RunOnceId: "StopWatchdog"
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /T /IM rmm-agent.exe"; \
+    Flags: runhidden waituntilterminated; RunOnceId: "StopAgent"
+
+[UninstallDelete]
+; The agent's own state (config.state_dir): enrolment.json with the device
+; secret, the saved session, session secrets, logs and the pid file.
+Type: filesandordirs; Name: "{userappdata}\RMMAgent"
+
 [Run]
 ; Opens the agent as soon as it is installed. runasoriginaluser keeps it running
 ; as the person at the keyboard, not as whoever launched the installer.
@@ -66,6 +85,41 @@ begin
   end;
   Result := Pos(';' + Uppercase(ExpandConstant(Param)) + ';',
                 ';' + Uppercase(Existing) + ';') = 0;
+end;
+
+{ Takes the install directory back out of the user's PATH, which the
+  [Registry] entry above added. Only that one entry is removed. }
+procedure RemoveFromPath(Dir: string);
+var
+  Existing, Rebuilt, Item, Upper: string;
+  Sep: Integer;
+begin
+  if not RegQueryStringValue(HKCU, 'Environment', 'Path', Existing) then exit;
+  Upper := Uppercase(Dir);
+  Rebuilt := '';
+  Existing := Existing + ';';
+  while Length(Existing) > 0 do
+  begin
+    Sep := Pos(';', Existing);
+    Item := Copy(Existing, 1, Sep - 1);
+    Existing := Copy(Existing, Sep + 1, Length(Existing));
+    if (Item <> '') and (Uppercase(Item) <> Upper) and (Uppercase(Item) <> Upper + '\') then
+    begin
+      if Rebuilt <> '' then Rebuilt := Rebuilt + ';';
+      Rebuilt := Rebuilt + Item;
+    end;
+  end;
+  RegWriteExpandStringValue(HKCU, 'Environment', 'Path', Rebuilt);
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+  begin
+    { The restart-at-login entry the agent writes (autostart.RUN_NAME). }
+    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'RMMAgentResume');
+    RemoveFromPath(ExpandConstant('{app}'));
+  end;
 end;
 
 function IsCodeChar(C: Char): Boolean;

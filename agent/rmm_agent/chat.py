@@ -32,6 +32,10 @@ _gui_thread: threading.Thread | None = None
 _gui_lock = threading.Lock()
 _gui_available = threading.Event()
 _gui_unavailable = threading.Event()
+# Set once the GUI thread has decided either way, so a caller waits only as
+# long as that takes. Waiting on _gui_unavailable alone always ran the full
+# timeout when the GUI was fine, stalling the session 3 s per chat window.
+_gui_decided = threading.Event()
 
 
 def _ensure_gui_thread() -> None:
@@ -49,6 +53,7 @@ def _gui_main() -> None:
     except Exception as exc:  # no display, or tkinter not installed
         log.debug("tkinter unavailable, chat windows disabled: %s", exc)
         _gui_unavailable.set()
+        _gui_decided.set()
         return
 
     try:
@@ -57,9 +62,11 @@ def _gui_main() -> None:
     except Exception as exc:
         log.debug("could not create the chat GUI root: %s", exc)
         _gui_unavailable.set()
+        _gui_decided.set()
         return
 
     _gui_available.set()
+    _gui_decided.set()
 
     def poll() -> None:
         try:
@@ -93,7 +100,8 @@ class ChatWindow:
         self._history = None
         self._closed = threading.Event()
         _ensure_gui_thread()
-        self.available = not _gui_unavailable.wait(timeout=3.0)
+        _gui_decided.wait(timeout=3.0)
+        self.available = not _gui_unavailable.is_set()
         if self.available:
             _commands.put(("create", self))
         else:
@@ -115,12 +123,16 @@ class ChatWindow:
         frame = ttk.Frame(top, padding=10)
         frame.pack(fill="both", expand=True)
 
-        history = tk.Text(frame, state="disabled", wrap="word")
-        history.pack(fill="both", expand=True)
-        self._history = history
-
+        # The reply row is packed first, at the bottom, so it always has room.
+        # Packed after the history (whose default height is 24 lines), it was
+        # pushed off the bottom of the 380 px window: the person could read
+        # the operator but had nowhere to type an answer.
         entry_row = ttk.Frame(frame)
-        entry_row.pack(fill="x", pady=(8, 0))
+        entry_row.pack(side="bottom", fill="x", pady=(8, 0))
+
+        history = tk.Text(frame, state="disabled", wrap="word", height=10)
+        history.pack(side="top", fill="both", expand=True)
+        self._history = history
         entry = ttk.Entry(entry_row)
         entry.pack(side="left", fill="x", expand=True)
         entry.focus_set()

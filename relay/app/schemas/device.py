@@ -32,6 +32,10 @@ class EnrolByCode(BaseModel):
     code: str = Field(min_length=4, max_length=16)
     name: str = Field(min_length=1, max_length=255)
     os: Literal["windows", "macos", "linux"]
+    # The secret the relay gave this computer when it joined the session.
+    # Required once the session is bound to a computer, so only the computer
+    # actually in the session can enrol itself.
+    guest_token: str | None = Field(default=None, max_length=128)
 
 
 class EnrolledByCode(BaseModel):

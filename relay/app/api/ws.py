@@ -8,6 +8,7 @@ Nothing is relayed to the operator until the endpoint user has granted consent
 misbehaving or modified agent still cannot stream without a decision on record.
 """
 import asyncio
+import json
 import time
 import uuid
 from datetime import datetime, timezone
@@ -20,7 +21,7 @@ from app.db.session import SessionLocal
 from app.models import Device, Operator, Session
 from app.services import audit, ratelimit
 from app.services.hub import hub
-from app.services.sessions import is_joinable
+from app.services.sessions import guest_token_matches, is_joinable, new_guest_token
 
 router = APIRouter(tags=["session-transport"])
 
@@ -32,6 +33,21 @@ CONSENT_DENIED = "session.consent_denied"
 OPERATOR_ATTACHED = "session.operator_attached"
 DEVICE_ONLINE = "device.online"
 DEVICE_OFFLINE = "device.offline"
+GUEST_REFUSED = "session.guest_refused"
+
+# How long a freshly opened socket may take to say who it is. Credentials now
+# travel in this first message instead of the URL, because URLs end up in the
+# reverse proxy's access log.
+HELLO_SECONDS = 30.0
+
+
+async def _first_message(websocket: WebSocket) -> dict | None:
+    """The first JSON object a socket sends, or None if it sends none in time."""
+    try:
+        message = await asyncio.wait_for(websocket.receive_json(), timeout=HELLO_SECONDS)
+    except Exception:
+        return None
+    return message if isinstance(message, dict) else None
 
 
 async def _authenticate_device(device_id: str, secret: str) -> Device | None:
@@ -89,23 +105,51 @@ async def guest_socket(
         needs_device = session.mode == "unattended"
         expected_device_id = str(session.device_id) if session.device_id else None
 
+    await websocket.accept()
+    hello = await _first_message(websocket)
+    if hello is None:
+        await websocket.close(code=4400, reason="No hello")
+        return
+
     if needs_device:
-        device = await _authenticate_device(device_id, secret)
+        # Older agents put the device credentials in the URL; newer ones send
+        # them in the hello so they never reach an access log.
+        device = await _authenticate_device(
+            str(hello.get("device_id") or device_id), str(hello.get("secret") or secret)
+        )
         if device is None or (expected_device_id and str(device.id) != expected_device_id):
             await websocket.close(code=4401, reason="Device authentication failed")
             return
+    else:
+        # An attended session belongs to the first computer that joined it.
+        # Holding the code is not enough to replace that computer, nor to
+        # report consent in its name.
+        async with SessionLocal() as db:
+            bound = await db.scalar(select(Session).where(Session.code == code))
+            if bound is None:
+                await websocket.close(code=4404, reason="Unknown or ended session")
+                return
+            if not guest_token_matches(bound, hello.get("guest_token")):
+                await audit.record(
+                    db,
+                    action=GUEST_REFUSED,
+                    actor_type="guest",
+                    actor_label=str(hello.get("host_name", "unknown"))[:255],
+                    target_type="session",
+                    target_id=str(bound.id),
+                    ip=ratelimit.caller(websocket),
+                    detail={"code": code, "reason": "session belongs to another computer"},
+                )
+                await db.commit()
+                await websocket.close(code=4401, reason="This session belongs to another computer")
+                return
 
-    await websocket.accept()
     channel = hub.channel(code)
     if channel.guest is not None:
         # The previous connection may already be dead - TCP teardown is not
-        # instant, and the agent's own reconnect (the watchdog/self-heal work
-        # relies on exactly this) can easily beat the old socket's read loop
-        # to noticing. Rejecting the new one outright used to make a
-        # legitimate reconnect fail until the stale socket's own cleanup
-        # eventually ran, sometimes well after the agent had given up
-        # retrying. Close the stale one and take over instead, the same
-        # pattern already used for a device's socket being replaced.
+        # instant, and the agent's own reconnect can easily beat the old
+        # socket's read loop to noticing. Only a connection that proved it is
+        # the same computer (above) gets this far, so taking over is safe.
         stale = channel.guest
         try:
             await stale.close(code=4409, reason="Replaced by a new connection")
@@ -117,13 +161,9 @@ async def guest_socket(
     # Enrolling ("Always allow") can happen mid-session, on a different HTTP
     # request, while this same socket keeps streaming - so the device this
     # session belongs to is re-checked each tick below rather than captured
-    # once at connect time. Kept online the same way a standing device's own
-    # /ws/device socket does, since that one does not open until this session
-    # ends and would otherwise leave a freshly-enrolled, actively-streaming
-    # device shown as offline for the rest of it.
+    # once at connect time.
     last_device_ping = 0.0
     try:
-        hello = await websocket.receive_json()
         async with SessionLocal() as db:
             live = await db.scalar(select(Session).where(Session.code == code))
             if live is None:
@@ -136,6 +176,11 @@ async def guest_socket(
             live.agent_version = str(hello.get("agent_version", ""))[:32] or None
             live.guest_last_seen_at = datetime.now(timezone.utc)
             live.consent_state = "pending"
+            issued_token = None
+            if live.mode == "attended" and not live.guest_token_hash and hello.get("token_aware"):
+                # First computer in: bind the session to it. Agents too old to
+                # keep a secret never ask, and keep the old behaviour.
+                issued_token, live.guest_token_hash = new_guest_token()
             await audit.record(
                 db,
                 action=GUEST_ATTACHED,
@@ -155,6 +200,10 @@ async def guest_socket(
                 "system_info": live.system_info,
                 "monitors": live.monitors,
             }
+
+        # Tells the agent it is in, and hands a newly bound computer the secret
+        # it must present on every reconnect and when it enrols.
+        await websocket.send_json({"type": "welcome", "guest_token": issued_token})
 
         # The operator sees the endpoint attach, but no screen until consent.
         await hub.to_operator_json(
@@ -182,8 +231,6 @@ async def guest_socket(
                                 await db.commit()
 
             if (text := message.get("text")) is not None:
-                import json
-
                 try:
                     payload = json.loads(text)
                 except ValueError:
@@ -295,13 +342,19 @@ async def device_socket(websocket: WebSocket, device_id: str, secret: str = "") 
 
     The agent holds this socket open so the console can see the device online.
     Starting a session still goes through /ws/guest with the session code.
+
+    Newer agents send `{"type": "auth", "secret": ...}` as the first message;
+    older ones put the secret in the URL, which still works.
     """
+    await websocket.accept()
+    if not secret:
+        first = await _first_message(websocket)
+        secret = str((first or {}).get("secret") or "")
     device = await _authenticate_device(device_id, secret)
     if device is None:
         await websocket.close(code=4401, reason="Device authentication failed")
         return
 
-    await websocket.accept()
     await hub.attach_device(str(device.id), websocket)
     async with SessionLocal() as db:
         live = await db.scalar(select(Device).where(Device.id == device.id))
@@ -356,10 +409,16 @@ async def device_socket(websocket: WebSocket, device_id: str, secret: str = "") 
 async def operator_socket(websocket: WebSocket, code: str, token: str = "") -> None:
     """The console attaches here to receive frames and send input.
 
-    The token travels as a query parameter because a browser cannot set headers
-    on a WebSocket handshake.
+    A browser cannot set headers on a WebSocket handshake, so the console sends
+    `{"type": "auth", "token": ...}` as its first message. The token used to
+    travel in the URL, which put a working login in the proxy's access log;
+    that form is still accepted from an older console.
     """
     code = code.upper()
+    await websocket.accept()
+    if not token:
+        first = await _first_message(websocket)
+        token = str((first or {}).get("token") or "")
     payload = decode_access_token(token)
     if not payload or not payload.get("sub"):
         await websocket.close(code=4401, reason="Not authenticated")
@@ -402,7 +461,6 @@ async def operator_socket(websocket: WebSocket, code: str, token: str = "") -> N
         )
         guest_already_here = bool(session.guest_connected)
 
-    await websocket.accept()
     channel = hub.channel(code)
     await hub.attach_operator(code, websocket)
 

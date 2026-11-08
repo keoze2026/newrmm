@@ -113,39 +113,44 @@ async def main():
         # ---- 6. unattended sessions demand device credentials
         dev = (await http.post("/devices", json={"name": "Bench Windows", "os": "windows"}, headers=H)).json()
         s3 = (await http.post("/sessions", json={"mode": "unattended", "device_id": dev["id"]}, headers=H)).json()
-        refused = False
-        try:
-            async with websockets.connect(f"{WS}/ws/guest/{s3['code']}") as g:
-                await g.send(json.dumps({"host_name": "impostor", "system_info": {}, "monitors": []}))
-                await asyncio.wait_for(g.recv(), timeout=2)
-        except Exception:
-            refused = True
-        step("an unattended session refuses a guest with no device credentials", refused)
+        async def close_code(url, hello):
+            """The close code the relay ends the socket with, or None if it
+            stays open (a refusal must be a 4401, not just any error: a
+            timeout or a crash used to count as "refused", so these checks
+            could never fail)."""
+            try:
+                async with websockets.connect(url) as g:
+                    await g.send(json.dumps(hello))
+                    while True:
+                        await asyncio.wait_for(g.recv(), timeout=3)
+            except websockets.ConnectionClosed as exc:
+                return exc.rcvd.code if exc.rcvd else None
+            except asyncio.TimeoutError:
+                return None
+
+        code = await close_code(f"{WS}/ws/guest/{s3['code']}",
+                                {"host_name": "impostor", "system_info": {}, "monitors": []})
+        step("an unattended session refuses a guest with no device credentials", code == 4401, f"close code {code}")
 
         accepted = False
-        try:
-            url = f"{WS}/ws/guest/{s3['code']}?device_id={dev['id']}&secret={dev['enrollment_secret']}"
-            async with websockets.connect(url) as g:
-                await g.send(json.dumps({"host_name": "Bench Windows", "system_info": {"os": "Windows"}, "monitors": []}))
-                await asyncio.sleep(0.6)
-                accepted = (await get(s3["id"]))["host_name"] == "Bench Windows"
-        except Exception:
-            accepted = False
-        step("the enrolled device is accepted with its secret", accepted)
+        async with websockets.connect(f"{WS}/ws/guest/{s3['code']}") as g:
+            await g.send(json.dumps({"host_name": "Bench Windows", "system_info": {"os": "Windows"},
+                                     "monitors": [], "device_id": dev["id"],
+                                     "secret": dev["enrollment_secret"]}))
+            welcome = json.loads(await asyncio.wait_for(g.recv(), timeout=3))
+            await asyncio.sleep(0.6)
+            accepted = welcome.get("type") == "welcome" and (await get(s3["id"]))["host_name"] == "Bench Windows"
+        step("the enrolled device is accepted with its secret (sent in the hello, not the URL)", accepted)
 
-        bad = False
-        try:
-            url = f"{WS}/ws/guest/{s3['code']}?device_id={dev['id']}&secret=wrong-secret"
-            async with websockets.connect(url) as g:
-                await g.send(json.dumps({"host_name": "x", "system_info": {}, "monitors": []}))
-                await asyncio.wait_for(g.recv(), timeout=2)
-        except Exception:
-            bad = True
-        step("a wrong device secret is refused", bad)
+        code = await close_code(f"{WS}/ws/guest/{s3['code']}",
+                                {"host_name": "x", "system_info": {}, "monitors": [],
+                                 "device_id": dev["id"], "secret": "wrong-secret"})
+        step("a wrong device secret is refused", code == 4401, f"close code {code}")
 
         # ---- 7. device presence socket
         online = False
-        async with websockets.connect(f"{WS}/ws/device/{dev['id']}?secret={dev['enrollment_secret']}") as d:
+        async with websockets.connect(f"{WS}/ws/device/{dev['id']}") as d:
+            await d.send(json.dumps({"type": "auth", "secret": dev["enrollment_secret"]}))
             await d.send(json.dumps({"type": "heartbeat"}))
             await asyncio.sleep(0.6)
             devices = (await http.get("/devices", headers=H)).json()

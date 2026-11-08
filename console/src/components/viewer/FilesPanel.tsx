@@ -10,6 +10,14 @@ interface Entry {
 
 const CHUNK = 256 * 1024
 
+/** One base64 chunk to its bytes. Exported for the test. */
+export function decodeChunk(data: string): Uint8Array<ArrayBuffer> {
+  const binary = atob(data)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return bytes
+}
+
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
@@ -23,7 +31,7 @@ export default function FilesPanel({ stream }: { stream: SessionStream }) {
   const [entries, setEntries] = useState<Entry[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
-  const download = useRef<{ name: string; parts: string[] } | null>(null)
+  const download = useRef<{ name: string; parts: Uint8Array<ArrayBuffer>[] } | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
 
   const pathRef = useRef(path)
@@ -73,17 +81,20 @@ export default function FilesPanel({ stream }: { stream: SessionStream }) {
         if (!download.current || download.current.name !== name) {
           download.current = { name, parts: [] }
         }
-        download.current.parts.push(String(message.data ?? ''))
+        // Each chunk is its own base64 string, padded on its own (the agent's
+        // 256 KB chunks are not a multiple of 3 bytes). Joining the strings
+        // first put padding in the middle, so atob() threw and every download
+        // over 256 KB failed. Decode chunk by chunk instead.
+        download.current.parts.push(decodeChunk(String(message.data ?? '')))
         if (message.final) {
-          const binary = atob(download.current.parts.join(''))
-          const bytes = new Uint8Array(binary.length)
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-          const url = URL.createObjectURL(new Blob([bytes]))
+          const url = URL.createObjectURL(new Blob(download.current.parts))
           const link = document.createElement('a')
           link.href = url
           link.download = name
           link.click()
-          URL.revokeObjectURL(url)
+          // Revoking straight away can cancel the download before the
+          // browser has read the blob.
+          window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
           download.current = null
           setBusy(null)
         }

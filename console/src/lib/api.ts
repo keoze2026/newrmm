@@ -148,11 +148,17 @@ export function joinLink(code: string): string {
   return `${window.location.origin}/join?code=${code}`
 }
 
+/** The operator socket's URL. The login token is NOT in it: URLs are written
+ * to the reverse proxy's access log, so the token is sent as the socket's
+ * first message instead (operatorAuthMessage). */
 export function operatorSocketUrl(code: string): string {
   const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${scheme}://${window.location.host}/api/ws/operator/${code}?token=${encodeURIComponent(
-    authToken ?? '',
-  )}`
+  return `${scheme}://${window.location.host}/api/ws/operator/${code}`
+}
+
+/** The first message the operator socket sends, carrying the login token. */
+export function operatorAuthMessage(): string {
+  return JSON.stringify({ type: 'auth', token: authToken ?? '' })
 }
 
 /** Whether Join can start a session now: a guest is already in, or the session

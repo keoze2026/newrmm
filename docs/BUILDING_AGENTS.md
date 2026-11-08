@@ -31,7 +31,7 @@ The agent marks itself DPI-aware at startup. Without that, a display at 125% or
 lands at the wrong place — so this matters on most modern laptops.
 
 The `.exe` is unsigned, so SmartScreen warns on first run: **More info → Run
-anyway**. Signing is Phase 6.
+anyway**. Code signing is not used: the system is for in-house use (decided 2026-11-07).
 
 ## macOS
 
@@ -63,7 +63,8 @@ build on the machine, or clear the quarantine flag:
 xattr -dr com.apple.quarantine dist/rmm-agent
 ```
 
-Signing and notarisation are Phase 6.
+Signing and notarisation are not used: the system is for in-house use (decided
+2026-11-07).
 
 ## Linux
 

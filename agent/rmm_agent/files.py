@@ -8,9 +8,16 @@ agent runs as that user and grants no more than their own access.
 import base64
 import logging
 import os
+import shutil
+import tempfile
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+# Read once at import, on the main thread: os.umask() can only be read by
+# setting it, which is unsafe once other threads are creating files.
+_UMASK = os.umask(0)
+os.umask(_UMASK)
 
 CHUNK = 256 * 1024
 MAX_ENTRIES = 2000
@@ -78,12 +85,22 @@ def read_chunks(path: str):
 
 
 class Upload:
-    """Accumulates chunks the operator sends, writing them straight to disk."""
+    """Accumulates chunks the operator sends, writing them straight to disk.
+
+    The chunks go to a temporary file next to the target, which replaces the
+    target only once the last chunk is in. Writing into the target directly
+    emptied an existing file on the first chunk, and an interrupted re-upload
+    then deleted it: the original was gone, not just the new copy.
+    """
 
     def __init__(self, path: str) -> None:
         self.path = Path(path).expanduser().resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.handle = self.path.open("wb")
+        handle, temporary = tempfile.mkstemp(
+            prefix=f".{self.path.name}.", suffix=".part", dir=self.path.parent
+        )
+        self.temporary = Path(temporary)
+        self.handle = os.fdopen(handle, "wb")
         self.written = 0
 
     def write(self, data_b64: str) -> None:
@@ -92,13 +109,29 @@ class Upload:
         self.written += len(block)
 
     def finish(self) -> dict:
+        self.handle.flush()
+        os.fsync(self.handle.fileno())
         self.handle.close()
+        if self.path.exists():
+            # Keep the permissions of the file being replaced.
+            try:
+                shutil.copymode(self.path, self.temporary)
+            except OSError:
+                pass
+        else:
+            # mkstemp makes it owner-only; give it what a new file normally gets.
+            os.chmod(self.temporary, 0o666 & ~_UMASK)
+        os.replace(self.temporary, self.path)
         log.info("received %s (%d bytes)", self.path, self.written)
         return {"path": str(self.path), "size": self.written}
 
     def abort(self) -> None:
+        """Drop the partial copy. The original, if any, is untouched."""
         try:
             self.handle.close()
-            self.path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        try:
+            self.temporary.unlink(missing_ok=True)
         except OSError:
             pass

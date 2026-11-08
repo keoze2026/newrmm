@@ -36,10 +36,15 @@ def step(name, ok, extra=""):
 
 
 def relay_pids() -> list[int]:
+    """The process listening on the relay port this test talks to - and only
+    that one. Matching every "uvicorn app.main" on the machine used to SIGTERM
+    any other relay running there too (another checkout, a dev server)."""
+    import re
+
     found = subprocess.run(
-        ["pgrep", "-f", "[u]vicorn app.main"], capture_output=True, text=True
+        ["ss", "-Hltnp", "sport = :8000"], capture_output=True, text=True
     )
-    return [int(line) for line in found.stdout.split() if line.isdigit()]
+    return sorted({int(pid) for pid in re.findall(r"pid=(\d+)", found.stdout)})
 
 
 def start_relay(log_dir: str) -> None:
@@ -52,7 +57,7 @@ def start_relay(log_dir: str) -> None:
     out = open(Path(log_dir) / "reconnect-relay.log", "ab")
     subprocess.Popen(
         [str(ROOT / ".venv" / "bin" / "python"), "-m", "uvicorn", "app.main:app",
-         "--host", "0.0.0.0", "--port", "8000"],
+         "--host", "127.0.0.1", "--port", "8000"],
         cwd=str(ROOT / "relay"),
         env={**os.environ, "LOG_DIR": log_dir},
         stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,

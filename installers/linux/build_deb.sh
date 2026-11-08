@@ -86,7 +86,9 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/rmm-agent enrol --device-id ${RMM_DEVICE_ID} --secret ${RMM_SECRET} --relay ${RMM_RELAY}
+# RMM_SECRET reaches the agent through the environment (EnvironmentFile),
+# never the command line, which every user on the machine can read.
+ExecStart=/usr/bin/rmm-agent enrol --device-id ${RMM_DEVICE_ID} --relay ${RMM_RELAY}
 EnvironmentFile=%h/.config/rmm-agent/env
 Restart=on-failure
 RestartSec=5

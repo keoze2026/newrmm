@@ -74,6 +74,41 @@ blank is released when its session ends.
 
 ---
 
+### 5. Anyone holding a session code could take the session over — HIGH (2026-11-08)
+
+The guest socket replaced whatever computer was connected with any new
+connection that presented the code, and that connection could then report
+consent itself. `/connector/enrol` likewise accepted the code alone, so someone
+who had seen it could enrol their own machine into a session another person had
+consented to.
+
+**Fixed.** The first agent to join an attended session is handed a random
+secret (only its SHA-256 is stored, `sessions.guest_token_hash`). From then on
+a reconnect and an enrolment must present it; anything else is closed with 4401
+and recorded as `session.guest_refused`. Agents older than this never ask for a
+secret and keep the old behaviour. *Tests:* `relay/tests/test_ws_transport.py`.
+
+### 6. A session consented once stayed joinable for ever — HIGH (2026-11-08)
+
+**Fixed.** Once its guest has gone, a consented session can be rejoined for
+`SESSION_REJOIN_MINUTES` (24 h by default) after the guest was last seen, then
+the code is dead. A standing (enrolled) session still has no expiry: the device
+secret protects it.
+
+### 7. Secrets travelled in URLs — MEDIUM (2026-11-08)
+
+The device secret and the operator's login token were query parameters, so the
+reverse proxy wrote them to its access log; the device secret was also on the
+systemd command line, readable by every user. **Fixed.** Agents and the console
+send them in the socket's first message; the service passes the secret in its
+environment (`RMM_SECRET`). The relay still accepts the old URL form from agents
+already installed.
+
+### 8. The rate limiter switched itself off when Redis failed — MEDIUM (2026-11-08)
+
+**Fixed.** A Redis error mid-run now falls back to counting in memory instead
+of allowing every attempt.
+
 ## Reviewed and sound
 
 - **Passwords and device secrets** are Argon2 hashes. The enrolment secret is
@@ -123,12 +158,13 @@ out would be worse than the risk the timer guards against.
 
 *Tests:* `relay/tests/test_session_expiry.py` (9).
 
-### TLS is configured but has never been run — MEDIUM
+### TLS — RUNNING, through the host's nginx
 
-`infra/nginx-tls.conf` and the compose overlay exist and are correct as written,
-but no deployment has used them. Section 9 requires encrypted transport, and
-until a deployment actually serves TLS this is unverified. Agents must use
-`wss://`; nothing currently stops an operator pointing one at `ws://`.
+The deployment at `rmm.remotedesk247.com` serves TLS from the server's own nginx
+(Certbot certificate), which proxies to the console container; the compose TLS
+overlay (`infra/nginx-tls.conf`) is not used on that server. Agents built in CI
+default to `wss://`. Nothing stops someone pointing an agent at a `ws://` relay
+by hand.
 
 ### The remote terminal is a full shell as the endpoint user — BY DESIGN
 
@@ -142,12 +178,12 @@ and the audit trail rather than by permissions.
 Paths are resolved before use, so no traversal trick reaches beyond what that
 user could already open themselves. Same bound as the terminal.
 
-### Unsigned builds — MEDIUM
+### Unsigned builds — ACCEPTED
 
-Section 11 assumes code-signing certificates can be procured; they have not
-been. The Windows build triggers SmartScreen and macOS Gatekeeper refuses an
-unsigned download outright. CI signs automatically once the certificates are
-added as repository secrets.
+The system is for in-house use, so code signing is not used (decided
+2026-11-07). The Windows build triggers SmartScreen ("More info → Run anyway")
+and macOS Gatekeeper refuses an unsigned download. CI would sign automatically
+if certificates were ever added as repository secrets.
 
 ### No account lockout or password policy — LOW
 

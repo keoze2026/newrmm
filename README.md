@@ -7,12 +7,12 @@ Built phase by phase against `Remote_Desktop_Platform_Specification.docx`.
 | Phase | Scope | Status |
 | --- | --- | --- |
 | P1 | Relay, auth, session model, audit log, console shell | **Done — checkpoint passing** |
-| — | Operator console rebuilt to Appendix A, plus the session transport | **Done — 32/32 conformance checks** |
+| — | Operator console rebuilt to Appendix A, plus the session transport | **Done — 33/33 conformance checks** |
 | P2 | Core session on Windows: capture, control, tray/consent | Code complete, verified on Linux — **Windows checkpoint open** |
 | P3 | Cross-platform core: macOS and Linux | **Linux verified (11/11)**; Windows and macOS support written, not yet run there |
 | P4 | Tools: file transfer, terminal, clipboard, multi-monitor, screenshot/zoom/annotate | **Done — 13/13 tool checks, 9/9 through the console** |
 | P5 | Privacy blank screen | **Linux guest-lock verified (14/14)**; Windows/macOS capture-exclusion written, untested |
-| P6 | Hardening, signed installers, deployment | Not started |
+| P6 | Hardening, installers, deployment | **Deployed** (`rmm.remotedesk247.com`); Linux `.deb` and Windows installer built in CI. Signing not used: in-house system |
 
 Read `PROJECT_STATUS.md` for what actually works right now.
 
@@ -84,7 +84,7 @@ with `--relay ws://<relay-host>:8000`.
 ## Tests
 
 ```bash
-cd relay && ../.venv/bin/python -m pytest        # 33 API and database tests
+cd relay && ../.venv/bin/python -m pytest        # 90 API, database and WebSocket transport tests
 
 # Phase 2 session flow: the consent gate and device authentication
 .venv/bin/python tests/e2e/p2_session_flow.py    # relay must be running

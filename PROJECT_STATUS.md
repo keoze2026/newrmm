@@ -5,12 +5,12 @@ Updated after every change. Read this before claiming anything works.
 ## Where the build is
 
 Every phase is built. Phases 1 and 4 are complete and verified. Phases 2, 3 and
-5 are complete and verified **on Linux only** — their checkpoints name Windows
-and macOS, and no code has run on either. Phase 6 is built except for signed
-installers, and the stack has never been deployed.
+5 are complete and verified **on Linux**; Windows has run on one real laptop
+and is not yet clean, macOS has never run. Phase 6 is built and the stack is
+deployed (`rmm.remotedesk247.com`). Code signing is not used: the system is for
+in-house use (decided 2026-11-07).
 
-The open work is not writing code. It is running what exists on Windows and
-macOS, procuring signing certificates, and deploying.
+The open work is running what exists on Windows (and later macOS) hardware.
 
 | Phase | Scope | State |
 | --- | --- | --- |
@@ -20,15 +20,15 @@ macOS, procuring signing certificates, and deploying.
 | P3 | Cross-platform core | Linux verified. Windows and macOS **compile in CI**, never executed |
 | P4 | Tools: file transfer, terminal, clipboard, multi-monitor, screenshot/zoom/annotate | **Done, verified** |
 | P5 | Privacy blank | Linux screen-dimming verified (operator keeps live view); guest-lock only on Wayland. Windows/macOS capture-exclusion **untested** |
-| P6 | Hardening and release | CI, TLS, Redis fan-out, logging, security review, session expiry done. Linux `.deb` done. **Windows and macOS installers, signing and deployment open** |
+| P6 | Hardening and release | CI, TLS, Redis fan-out, logging, security review, session expiry done. Linux `.deb` and Windows installer built in CI. Deployed. Signing not used (in-house). **macOS installer open** |
 
 ## Test counts
 
 | Suite | Count | What it covers |
 | --- | --- | --- |
-| `relay/tests` | 68 | API, database, consent gate, append-only audit, rate limiting, session expiry |
-| `agent/tests` | 135 | Coordinate mapping, privacy blank, input block, tile encoder |
-| `tests/e2e/console_appendix_a.py` | 32 | Appendix A conformance in a real browser |
+| `relay/tests` | 90 | API, database, consent gate, append-only audit, rate limiting, session expiry, and the `/ws/*` transport over real sockets (`test_ws_transport.py`) |
+| `agent/tests` | 176 (175 + 1 skipped) | Coordinate mapping, privacy blank, input block, tile encoder, Wayland portal, session secret, uploads, chat |
+| `tests/e2e/console_appendix_a.py` | 33 | Appendix A conformance in a real browser |
 | `tests/e2e/console_phone.py` | 23 | Login, join page and console at five phone sizes (portrait and sideways): no overflow, no clipped control; create, open, leave, viewer controls on screen |
 | `tests/e2e/p2_session_flow.py` | 13 | Consent gate and device authentication |
 | `tests/e2e/p3_linux_endpoint.py` | 12 | Real capture and real input injection |
@@ -40,7 +40,8 @@ macOS, procuring signing certificates, and deploying.
 | `tests/e2e/p6_reconnect.py` | 9 | Section 8's reconnect-after-drop criterion. Passing: the relay is killed under a running agent, which reconnects and streams again unaided |
 
 CI runs the relay, agent and console suites on every push, and builds an agent
-on a Windows, macOS and Linux runner. Both workflows are green.
+on a Windows, macOS and Linux runner. Both workflows were green on build 83
+(`f10cb1c`, 2026-11-07); the changes of 2026-11-08 have not been through CI yet.
 
 ## What works, and how it was verified
 
@@ -80,20 +81,24 @@ on a Windows, macOS and Linux runner. Both workflows are green.
 - **No macOS installer.** The macOS agent still ships as a zipped `.app`. A
   `.pkg` script was attempted and the writes were stopped by an automated safety
   filter, so none exists. Linux has a `.deb` (`installers/linux/build_deb.sh`).
-- **Builds are unsigned.** Section 11 assumes certificates can be procured; they
-  have not been. SmartScreen warns, and Gatekeeper refuses outright.
+- **Builds are unsigned, by decision.** In-house system, so no signing
+  (2026-11-07). SmartScreen warns ("More info → Run anyway"); Gatekeeper
+  refuses an unsigned macOS download.
 - **Deployed** to `rmm.remotedesk247.com` behind the host nginx (earlier note "never deployed" was stale). Streaming has only been measured through that path with a synthetic and a real-capture test agent, not with a real operator browser.
-- **Chat is built end to end but not yet run for real.** Agent side
-  (`agent/rmm_agent/chat.py`, 2026-11-06) and console side (`ChatTab.tsx`,
-  `stream.ts`'s `'chat'` control message, 2026-11-06) are both built, wired
-  together, type-checked and built clean. **Not yet verified against a real
-  connected guest** - `tests/e2e/console_appendix_a.py` now sends a message
-  from the console and checks it lands in the thread, but that test has not
-  been run since this change (needs the real relay + a real test agent, which
-  cannot run on this Windows laptop). Tools is still a placeholder, labelled
-  as such on screen.
-- **Linux Wayland: rebuilt 2026-11-07 so it can actually work; still not
-  run on a real Wayland desktop.** The old in-process portal code could never
+- **Chat: run for real on Linux (2026-11-08), not yet on Windows.** Console
+  sends (Appendix A 33/33 in Chrome), the guest's window opens in 0.2 s while
+  frames keep flowing, and a reply typed into that window with real key
+  presses reaches the operator. That run found the reply box was pushed off
+  the bottom of the window - the guest could never answer; fixed. Tools is
+  still a placeholder, labelled as such on screen.
+- **Linux Wayland: rebuilt 2026-11-07; run on a REAL compositor 2026-11-08
+  (headless sway 1.12 + xdg-desktop-portal 1.20.3 + xdg-desktop-portal-wlr +
+  PipeWire, private session on this Kali laptop): consent first, then the
+  portal, pixel-exact 1366x768 frames to the operator (412 frames, still
+  screen kept streaming), portal session closed when the agent stopped.
+  wlroots has no RemoteDesktop portal, so input there is (correctly)
+  unavailable; input through a real RemoteDesktop portal (GNOME/KDE) is still
+  only proven against the fake portal. Still to do: the Parrot laptop.** The old in-process portal code could never
   start (D-Bus options passed in a form PyGObject rejects) and CI shipped
   agents with no PyGObject at all. Now `rmm_agent/wayland_helper.py` runs
   under the machine's OWN python3 (python3-gi + gstreamer1.0-pipewire, which
@@ -111,8 +116,10 @@ on a Windows, macOS and Linux runner. Both workflows are green.
 
 - Linux (Parrot), Python 3.13, Node 24
 - 2026-11-07: this Kali laptop (X11/XFCE) got `gh` 2.103.3 from GitHub's
-  apt repo (`/etc/apt/sources.list.d/github-cli.list`); not logged in yet
-  (`gh auth login`). No relay venv, Node or Postgres here.
+  apt repo (`/etc/apt/sources.list.d/github-cli.list`), logged in as
+  `keoze2026`. No relay venv, Node or Postgres installed system-wide; the
+  2026-11-08 session ran everything from a throwaway scratch environment
+  (Postgres 18 cluster, Redis, venvs, Node 22) - see that change-log entry.
 - PostgreSQL 17 in a container on `127.0.0.1:55433`; the host's own cluster
   fails to start, which the container sidesteps
 - Redis 8 on the host
@@ -122,15 +129,23 @@ on a Windows, macOS and Linux runner. Both workflows are green.
 ## How to revert
 
 ```bash
-git checkout native-capture-modules   # before the join flow and P6
-git checkout p4-tools                 # before the privacy blank
-git checkout p3-cross-platform        # before the tools
-git checkout p1-foundation            # before the Appendix A console
-git checkout p0-docs                  # before any code
+git checkout native-capture-modules   # 2026-09-08: native modules, before the join flow and P6
+git checkout p3-cross-platform        # 2026-09-08: cross-platform core (contains the P4 tools)
+git checkout p4-tools                 # 2026-09-08: P4 tools, before the privacy blank
+git checkout p2-agent-linux-verified  # 2026-09-08: P2 verified on Linux, before the tools
+git checkout console-appendix-a       # 2026-09-07: the Appendix A console
+git checkout p1-foundation            # 2026-09-07: before the Appendix A console
+git checkout p0-docs                  # 2026-09-07: before any code
 ```
+
+There are no tags after 2026-09-08. To go back further than a tag allows, use
+the commit hashes named in the change log below (`git checkout <hash>`), e.g.
+`f10cb1c` for build 83.
 
 Database migrations roll back with
 `cd relay && ../.venv/bin/python -m alembic downgrade <revision>`.
+`downgrade 0005_guest_ip` removes the 2026-11-08 `sessions.guest_token_hash`
+column (agents then fall back to the old, unbound behaviour).
 
 ## Mistakes and lessons
 
@@ -184,18 +199,115 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 | 43 | Asked to fix one thing, I made unrequested changes across the relay, the remote terminal, macOS and CI, and committed files I had not written. A working agent stopped working and nobody could say which change did it. Five hours were lost. | Change only what the message asks for. Mention anything else and wait. Never treat "continue" as permission to pick the next task. When something that worked breaks, list every commit since it last worked before touching anything. Saved to memory as a standing rule. |
 | 44 | The user said several times that the agent must run once installed, always, unless he turns it off. I treated each report as a separate bug and patched the temporary code-based session mode, instead of seeing that the requirement is the spec's unattended access, which the installer never built. Hours were spent on fixes that could only ever be temporary. | When a requirement is repeated, restate it in one sentence, check it against the spec and against what is built, and say plainly if the built thing cannot meet it. Do not patch around a mismatch. |
 | 45 | While writing the off-switch test I found it would have deleted the real saved enrolment from the user's state folder. A test of a destructive action must replace the destructive call. Two new tests also failed only because my fakes were wrong (a global timer I replaced hit my own timeout). | Any test that deletes, forgets or enrols patches the real call. When a test fails, find out whether the code or the test is wrong before touching either. |
-| 46 | Gave the user `docker compose build relay` for the server with no directory, and `gh run download <RUN_ID> ...` with the placeholder left literal. The compose files live at `infra/docker-compose.yml` + `infra/docker-compose.tls.yml`, not the repo root (`/opt/nermm` on the server) - the first command failed with "no configuration file provided". `<RUN_ID>` in bash is an input redirect from a file called `RUN_ID`, not a fill-in-the-blank - the second failed three times the same way. Wasted a deploy round trip the user had to paste back before either was caught. | A command handed to the user must be the literal, final line to paste - the exact working directory, both compose files together (so the TLS overlay's ports/volumes aren't seen as "removed"), and every placeholder already substituted with a real value, never shown in `<angle brackets>`. Server path: `/opt/nermm`. Compose: always `docker compose -f docker-compose.yml -f docker-compose.tls.yml ...` from `infra/`. |
+| 46 | Gave the user `docker compose build relay` for the server with no directory, and `gh run download <RUN_ID> ...` with the placeholder left literal. The compose files live at `infra/docker-compose.yml` + `infra/docker-compose.tls.yml`, not the repo root (`/opt/nermm` on the server) - the first command failed with "no configuration file provided". `<RUN_ID>` in bash is an input redirect from a file called `RUN_ID`, not a fill-in-the-blank - the second failed three times the same way. Wasted a deploy round trip the user had to paste back before either was caught. | A command handed to the user must be the literal, final line to paste - the exact working directory, both compose files together (so the TLS overlay's ports/volumes aren't seen as "removed"), and every placeholder already substituted with a real value, never shown in `<angle brackets>`. Server path: `/opt/nermm`. Compose, from `infra/`: the relay with `docker compose -f docker-compose.yml -f docker-compose.tls.yml ...`; the console with `docker compose -f docker-compose.yml ...` only (the TLS overlay binds 80/443, which the server's own nginx holds - see the 2026-11-02 console deploy entry). *(Corrected 2026-11-08: this row used to say both files for everything, contradicting that entry.)* |
 | 47 | Lessons #38/#39 already say the read-this-file rule applies to every prompt, not once per session. Mid-session tonight I treated "I read the file earlier this conversation" as satisfying it, and also made a code fix (removing `cursor-none`) and moved straight to the next investigation without recording the fix first. | The rule is per-prompt, with no exception for "we're still on the same topic" or "I already read it earlier this conversation." Read before acting, record immediately after acting - before starting the next thing, not batched at the end. |
 | 48 | The cursor fix (`console/src/components/Viewer.tsx`) got committed alongside an agent-side commit (`ad28a14`) and I only ever gave the user `docker compose build relay`/`up -d relay` commands afterward - never the matching `build console`/`up -d console`. The user kept seeing no cursor and I had to be told directly before checking which container actually serves which changed file. | Every fix's own entry must say exactly which container/image it lives in and the exact deploy command for *that* container, not a generic "not yet deployed" - and that must be checked against what was actually run, not assumed from "a deploy happened recently." |
 | 49 | This file said Wayland "needs `libpipewire-0.3-dev` to compile in," which reads as "the code exists, just not linked in." It didn't: `rmm_capture_linux.c` only ever had a `backend()` string that printed `"pipewire"` when a macro was set - zero real PipeWire calls anywhere. I repeated that claim to the user instead of opening the file, the same mistake as #14/#46 (trusting a written claim over checking what is actually there), until asked directly for a universal Linux agent forced reading the source. | A claim that a capability "just needs a flag/package to turn on" is a claim that the code is already there - verify that by opening the file, not by trusting the comment or this file's own wording, before repeating it to the user. |
 | 50 | Built the Wayland portal path and had `ScreenCapture` try the X11 native module first, same priority order it already had. Never considered that X11's `open()` succeeds under Wayland too, through XWayland, which is present on almost every real desktop - so it "worked" (no error) while capturing nothing real, a black screen, and the portal I had just built never got a chance to run at all. Only found because the user actually ran it on a real Parrot OS Wayland session and reported a black screen; nothing I could run here (Windows, no compositor) could have caught it. The `.deb`'s Wayland packages were also only `Recommends:`, so even a correct capture order could have silently had nothing to use. | A fallback chain's *order* is part of its correctness, not just whether each path works alone - check what the earlier path does on the case the later path exists for, not only whether the earlier path errors. When a capability has a hard native dependency, ship it as `Depends:`, not `Recommends:`, or a plain install can silently land on the broken path. |
 | 51 | The Wayland path ran PyGObject/GStreamer inside the PyInstaller binary, and CI installed it with `pip install pygobject \|\| echo ...`. That build failed silently (PyGObject now needs girepository-2.0), so every shipped Linux agent had no Wayland path at all, and the portal code itself could never start (nested `GLib.Variant` in an `a{sv}` slot). Its tests only covered "no portal available", so nothing noticed. | A dependency that must match the user's machine (D-Bus, GStreamer, PipeWire) runs under that machine's own interpreter, not a bundled copy. A build step for a required feature never ends in `\|\| echo`; CI checks the built artefact for it. Test the real protocol against a fake peer, and run each new check once against the old bug to see it fail. |
+| 52 | Drove a test chat window with `xdotool` on the user's real display at night without looking first. The screen was locked, so the typed reply and Enter went into the lock screen's password box (one failed unlock). | Never send synthetic input to the user's real display. Run anything that types or clicks on a private display (`Xvfb :87`), and check what is on screen before any input. |
+| 53 | The guest chat window was built, unit-tested and "type-checked" for days, yet the reply box was pushed off the bottom of the window - the person helped could never answer. Only running it and looking at a screenshot showed it. | A UI is not verified until it has been run and seen. Every new window gets one real run with a screenshot before it is called done. |
 
 ## Change log
 
+- **All 20 open items from the 2026-11-07 list worked, on the user's order
+  ("fix all 20"), 2026-11-08. NOT committed, NOT pushed, NOT deployed.**
+  Verified on this Kali laptop in a throwaway environment (scratch Postgres 18
+  cluster on :55433, Redis, relay venv, Node 22, Xvfb :87, a private headless
+  sway + portal + PipeWire stack); nothing installed system-wide.
+
+  *Security (relay + agent + console, backward compatible with installed agents):*
+  1. Code-holder takeover: the first agent into an attended session gets a
+     random secret (`welcome` message; only its SHA-256 is stored, migration
+     `0006_guest_token`); reconnects must present it, anything else is closed
+     4401 and audited `session.guest_refused`. Checked before the old socket
+     is replaced. Agents keep it in `guest_tokens.json` (mode 600) so a
+     restart still rejoins. Old agents (no `token_aware`) keep old behaviour.
+  2. A consented session now expires `SESSION_REJOIN_MINUTES` (default 1440)
+     after its guest was last seen (`services/sessions.py`).
+  3. `/connector/enrol` requires that secret once the session is bound (403).
+  4. Secrets out of URLs: device secret and operator token go in the socket's
+     first message (agent `device.py`/`session.py`, console `api.ts`/
+     `stream.ts`); relay still accepts the URL form; an agent facing an old
+     relay falls back to it on a 403. systemd units no longer put the secret
+     on the command line (`RMM_SECRET` from the EnvironmentFile; `enrol` and
+     `join --secret` default to it).
+  5. Rate limiter falls back to in-memory counting on a Redis error.
+  *Bugs:* 6. downloads > 256 KB (console decodes each chunk; revokes the blob
+  URL later). 7. uploads write to a temp file and replace the target only on
+  finish; abort never touches the original. 8. chat no longer stalls 3 s
+  (waits for "GUI decided", and is created off the event loop). 9. chat run
+  for real - found and fixed the hidden reply box (`chat.py` layout).
+  10. privacy blank: watchdog/Escape releases now send `blank state` with
+  `released_by` to the operator (the overlay's own Escape used to leave
+  `active` stuck too); `--blank-watchdog` help now says 0 = 120 s default.
+  11. hub delivery no longer clears a socket on a failed send.
+  *Linux:* 12. Wayland run on a real compositor (see "What does NOT work
+  yet"). 13. this PC still runs build 72 - needs a new CI build and `sudo`
+  (see next task). 14. every package name in `install.sh` checked against the
+  live Fedora 43/rawhide, Arch and openSUSE Tumbleweed repositories; fixed:
+  openSUSE GLib/Gio typelibs added, Arch tray package is
+  `libayatana-appindicator` (libappindicator-gtk3 is AUR-only).
+  *Windows:* 15. NOT verifiable here (needs the Windows laptop). 16. uninstaller
+  now deletes the watchdog task, stops both programs, removes the Run value
+  and the PATH entry, and deletes `%APPDATA%\RMMAgent` (`rmm-agent.iss`;
+  compiled only by CI, never run). 17. resolved by evidence: build 83's CI
+  log shows the built Windows agent `capturing with the native module
+  (windows-graphics-capture)`; the old mss log was a build without the module
+  (lesson #33). No code change.
+  *Other:* 18. new `relay/tests/test_ws_transport.py` (16 tests, real
+  uvicorn + real sockets); `p2_session_flow.py` refusals must now be a 4401;
+  `p6_reconnect.py` kills only the process on :8000 and binds 127.0.0.1.
+  19. stale lines corrected here and in README, `docs/PHASE2_STATUS.md`,
+  `docs/BUILDING_AGENTS.md`, `docs/SECURITY_REVIEW.md`. 20. exposure in the
+  public repo: needs the user's decision (make the repo private) - not done.
+
+  *Verified:* relay 90/90 (was 74; each fix mutation-checked: putting the old
+  code back fails its test); agent 175 passed + 1 skipped with the agent's
+  real pinned requirements on Xvfb (system python lacks pynput, so one input
+  test fails there, as before); console `tsc -b` + `vite build` clean;
+  Appendix A 33/33 in Chrome; `p2_session_flow.py` 13/13; real agent from
+  source: bound on join, intruder refused 4401, rejoin after restart works;
+  700 KB download through the console byte-identical; chat round trip with
+  real typing on Xvfb; Wayland on headless sway as above.
+  **Not verified:** CI (not pushed), the Windows installer/uninstaller, any
+  Windows runtime, a GNOME/KDE RemoteDesktop portal, `install.sh` actually run
+  on Fedora/Arch/openSUSE (names checked, script not run), the deployed relay.
+  Mistakes this session: lessons #52 (typed into the locked screen) and #53.
+  *Deploy order matters:* relay first (`alembic upgrade head` runs on start,
+  adds the column), then console, then new agents. Old agents keep working
+  against the new relay.
+
+  *Next task:* the user decides (a) push + CI build (b) whether to make the
+  GitHub repo private (item 20). Then: deploy relay and console on the server,
+  install the new `.deb` here (`sudo apt install ./rmm-agent_0.2.0.<run>_amd64.deb`)
+  and on the Parrot Wayland laptop, and run the Windows installer on the
+  Windows laptop (item 15: several minutes up, blank, input, restart).
+
+- **CI fixes with no entry until now (2026-11-07):** `25380fb` - macOS job's
+  runner label (`macos-14` was retired by GitHub); `b019d96` - the macOS
+  native module failed to build on the newer runner SDK (replaced the
+  `pointPixelScale` approach described in the 10-29 entry).
+
+- **Decision recorded (2026-11-07): the system is for in-house use; code
+  signing is settled as NOT needed.** Unsigned Windows/macOS builds are
+  accepted, so signing certificates, SmartScreen and Gatekeeper are no longer
+  open work (the "Builds are unsigned" bullet and the P6 row's "signing" are
+  superseded by this). The system goes to the user's boss on 2026-11-08 as the
+  real system. macOS is out of focus for now. This Kali PC still runs agent
+  build 72 (attended `join`, connected to the relay); it went offline once
+  today and came back by itself - cause not yet read from `agent.log`.
+  *Superseded the same night by the entry above (all 20 open items worked).*
+
 - **Universal Linux agent: Wayland rebuilt around the system's own python3,
-  plus the Linux input/install fixes from the scan (2026-11-07). Pushed to
-  main for a CI build; not yet run on a Wayland desktop.**
+  plus the Linux input/install fixes from the scan (2026-11-07). Pushed as
+  `f10cb1c`; CI green (Tests run 42400064166: relay 74 passed, agent 164
+  passed / 1 skipped; Build agents run 42400064287, build 83: Linux, Windows,
+  macOS all built, and the built Linux agent reported `helper bundled,
+  PyGObject yes, GStreamer 1.24.2, pipewiresrc yes`). Package:
+  `rmm-agent_0.2.0.83_amd64.deb` in artifact `rmm-agent-linux`. Not yet run
+  on a Wayland desktop.** (The security-scan entry below was deliberately
+  left out of the pushed copy of this file - public repo.)
   The user's requirement (stated again today): one Linux agent that works on
   any machine, X11 or Wayland, any distro.
 
@@ -260,12 +372,98 @@ the rule that stops it happening again. Add one the moment something goes wrong.
   check is the first), `install.sh` on Fedora/Arch/openSUSE, and a real
   Wayland session.
 
-  *Next task:* user decides whether to commit and push (CI then builds and
-  runs the new check). Then install that CI build on the Parrot Wayland
+  *Next task:* install build 83 on the Parrot Wayland
   laptop and run `rmm-agent status` (expect `pipewiresrc yes`, `ScreenCast
   v4+`) and a real session: expect the consent window first, then the
   compositor's share dialog, a live picture, working clicks and scrolling.
   If it fails, the agent log now has `wayland helper:` lines saying where.
+  The scan entry below still describes unfixed security holes - keep it out
+  of the public repo until they are fixed, or ask the user.
+
+- **Full top-to-bottom scan, no code changed (2026-11-07).** Every one of the
+  196 tracked files was read in full (seven parallel reviewers with per-file
+  manifests, plus this file read line by line, the npm lockfile, the spec
+  `.docx` vs `.txt` (identical), all five screenshots, and a secrets scan of
+  the tree and full git history: clean). The serious findings below were
+  re-checked directly in the code; nothing was fixed - **waiting for the
+  user to choose what to fix first.** Relay and console suites were not run
+  (no `.venv`, no Node, no Postgres on this machine; installing needs the
+  user's OK). Agent unit tests run with system python3: 153 passed, 1 failed
+  (`test_the_guest_lock_blocks_input_and_always_releases_it` - pynput not
+  installed, which also shows the guest lock blocks nothing without pynput),
+  1 skipped; the run put real black overlays and Tk chat windows on the
+  desktop.
+
+  *Confirmed in code (most severe first):*
+  1. Wayland portal can never start: `wayland_portal.py:246-249` (and the
+     SelectDevices/SelectSources/Start/OpenPipeWireRemote calls) nest an
+     already-built `GLib.Variant("a{sv}")` inside a tuple Variant, which
+     PyGObject rejects (`KeyError: 0`, reproduced). So 166951e's fix cannot
+     take effect - Wayland still falls back to X11 and a black screen. The
+     reviewer also found (unverified on hardware): Response signals need the
+     global GLib loop, request `handle_token` missing (race), Wayland scroll
+     reversed, absolute pointer offset by monitor origin, GStreamer row
+     padding ignored (sheared image at e.g. 1366 px), and a still screen
+     (no damage) raises after 2 s and ends the session.
+  2. Relay: any holder of a session code can replace the connected guest
+     (`ws.py:99-113`) and self-report consent; a session consented once never
+     expires (`services/sessions.py:21`); `/connector/enrol` is not tied to
+     the connected agent.
+  3. Agent: on Wayland the portal/capture starts in `AgentSession.__init__`
+     before the consent dialog (`session.py:85-96`); `ScreenCapture.close()` /
+     `_portal.close()` are never called anywhere, so capture outlives every
+     session on all platforms.
+  4. Privacy blank: `--blank-watchdog 0` silently becomes 120 s
+     (`privacy.py:116-118`, help text says "0 = off"); watchdog/Escape
+     releases never tell the operator, so the console keeps saying
+     "blanked". macOS blank creates Tk off the main thread (expected crash).
+  5. Relay cleanup: `hub.py` delivery methods null the socket on a failed
+     send, so the handlers' `finally` thinks a newer connection took over and
+     skips cleanup (stale "connected", unattended device keeps streaming).
+  6. `files.py` `Upload` truncates the target on the first chunk and
+     `abort()` deletes it - an interrupted re-upload destroys the original.
+  7. Downloads over 256 KB always fail: per-chunk base64 padding, joined and
+     decoded once (`FilesPanel.tsx:78`).
+  8. Small positive scroll deltas scroll the wrong way
+     (`remote_input.py:128`).
+  9. `chat.py:96` waits on `_gui_unavailable`, so every chat window blocks
+     the event loop for 3 s.
+  10. Windows installer is built before the Sign step (`agents.yml:153/165`),
+      so installed binaries stay unsigned; macOS notarytool profile cannot
+      exist on a hosted runner.
+  11. Device secret on the systemd command line (`build_deb.sh:89`); secrets
+      and operator JWT in WebSocket query strings (land in nginx logs);
+      `install.sh:67` swallows a failed required-package install; Windows
+      uninstall removes no Run key, watchdog task, PATH entry or
+      `enrolment.json`; rate limiter fails open when Redis errors mid-run
+      (`ratelimit.py:76-78,108-110`).
+  12. Tests: `p2_session_flow.py` device-auth refusal checks count any
+      exception (including a timeout) as "refused", so they cannot fail;
+      `/ws/*` routes have no relay tests; `p6_reconnect.py` SIGTERMs every
+      uvicorn on the machine.
+
+  *This file itself is stale/contradictory (not yet corrected - needs the
+  user's go):* line 10 "never been deployed" vs line 85 "Deployed"; test
+  counts (relay table 68, README 33, actual 74 functions; agent table 135,
+  actual 155 incl. parametrised); "both workflows are green" vs 25380fb;
+  25380fb and b019d96 have no entries here (b019d96 replaced the
+  `pointPixelScale` Retina fix described in the 10-29 entry); revert step
+  "`p3-cross-platform # before the tools`" is wrong (that tag is after
+  p4-tools and contains the tools); revert list omits two tags and has
+  nothing after 2026-09-08; line 488 says the resume unit does not exist
+  (it does, `build_deb.sh:101`); line 482 `<pending commit>` is e09349a;
+  lesson #46 vs the line-414 compose rule contradict each other; README,
+  `docs/PHASE2_STATUS.md`, `docs/BUILDING_AGENTS.md`, `docs/SECURITY_REVIEW.md`
+  are stale in the same ways. **Public repo:** this file and the screenshots
+  publish the production domain, server path and co-hosted projects, LAN IP
+  and username.
+
+  *Next task:* the user picks what to fix. Suggested order: (1) Wayland
+  Variant bug, (2) code-holder session takeover + never-expiring codes,
+  (3) capture before consent / never closed, (4) blank watchdog and
+  operator notification, then the remaining items above. Caution: this
+  entry describes unfixed security holes - do not push it to the public
+  repo before they are fixed, or ask the user first.
 
 - **Linux Wayland: fixed a real black-screen bug found on real hardware,
   made the Wayland deps hard-required, added a universal (non-.deb)
@@ -534,13 +732,13 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
   *Console: cursor-drag lag fixed (`39f61a3`).* User report: moving the mouse while controlling a guest screen felt like the cursor was "dragging itself" slowly. Cause: `Viewer.tsx`'s `onPointerMove` sent a WebSocket message for *every* browser `pointermove` event with no throttling (`stream.send` in `stream.ts` fires immediately, no batching). A mouse/trackpad can fire pointermove far faster than the network round-trip to the guest, so a backlog of stale positions built up and the agent kept applying old ones after the real mouse had stopped - the "dragging" symptom. Fix: coalesce to the latest position only, flushed once per animation frame (`requestAnimationFrame`), dropping intermediate moves. Typechecked clean (`tsc -b`); no test runner configured for this project (`console/package.json` has no test script). **Not yet deployed** - this is a console/Docker-image change, separate from the agent binaries; the server needs `git pull && docker compose build console && docker compose up -d console`, which was given to the user as a command but not confirmed run.
 
-  *Fixed: the guest-join rate limit was keyed on nginx's address, not the real visitor's (`<pending commit>`).* After reinstalling the agent fresh, a session (`JXM786XU`) streamed normally for about a minute, then dropped ("no close frame received or sent") and every reconnect attempt after that was rejected by the relay with `HTTP 403`/`connection rejected (403 Forbidden)` (confirmed in `docker compose logs relay`), while the operator side kept reconnecting successfully on the same code. A direct DB query ruled out the session itself: `state: active`, `consent_state: granted`, `guest_connected: f`, `expires_at: NULL` - completely healthy, so `is_joinable()` (`relay/app/services/sessions.py`) was never the blocker. The actual cause, found in `relay/app/api/ws.py`'s `guest_socket`: `origin = websocket.client.host` reads the **raw TCP peer**, not `X-Forwarded-For`. Behind `infra/nginx-tls.conf`'s reverse proxy, every single guest connection's raw peer is nginx's own container address - the same for every guest on the whole platform. So the "20 guest-joins per 60 seconds" limit (`ratelimit.allowed(origin, "guest-join", ...)`) was never actually per-caller; it was one shared global bucket for every agent connecting through the relay, trivially exhausted by ordinary reconnect retries (worse now, with the faster watchdog above calling `resume` more often, and two `rmm-agent.exe` processes observed running simultaneously on the test laptop doubling the attempts). Every other rate-limited HTTP route already read `X-Forwarded-For` correctly via `ratelimit.caller()`/`deps.client_ip()`; this one WebSocket route just never called it. Fix: generalized `ratelimit.caller()` to accept `Request | WebSocket` (both expose the same `.headers`/`.client`), and `guest_socket` now calls it instead of reading the raw peer directly. New test `test_rate_limiting_uses_the_real_visitor_not_the_reverse_proxy` in `relay/tests/test_security.py`, checked standalone (no local Postgres/Redis available on this laptop to run the full relay suite - that needs the server's stack) by replicating `caller()`'s exact logic in isolation; the full suite was not run here and should be checked by CI/on the server. **Not yet deployed** - needs push, then the relay container rebuilt/restarted on the server the same way the console fix above does.
+  *Fixed: the guest-join rate limit was keyed on nginx's address, not the real visitor's (`e09349a`).* After reinstalling the agent fresh, a session (`JXM786XU`) streamed normally for about a minute, then dropped ("no close frame received or sent") and every reconnect attempt after that was rejected by the relay with `HTTP 403`/`connection rejected (403 Forbidden)` (confirmed in `docker compose logs relay`), while the operator side kept reconnecting successfully on the same code. A direct DB query ruled out the session itself: `state: active`, `consent_state: granted`, `guest_connected: f`, `expires_at: NULL` - completely healthy, so `is_joinable()` (`relay/app/services/sessions.py`) was never the blocker. The actual cause, found in `relay/app/api/ws.py`'s `guest_socket`: `origin = websocket.client.host` reads the **raw TCP peer**, not `X-Forwarded-For`. Behind `infra/nginx-tls.conf`'s reverse proxy, every single guest connection's raw peer is nginx's own container address - the same for every guest on the whole platform. So the "20 guest-joins per 60 seconds" limit (`ratelimit.allowed(origin, "guest-join", ...)`) was never actually per-caller; it was one shared global bucket for every agent connecting through the relay, trivially exhausted by ordinary reconnect retries (worse now, with the faster watchdog above calling `resume` more often, and two `rmm-agent.exe` processes observed running simultaneously on the test laptop doubling the attempts). Every other rate-limited HTTP route already read `X-Forwarded-For` correctly via `ratelimit.caller()`/`deps.client_ip()`; this one WebSocket route just never called it. Fix: generalized `ratelimit.caller()` to accept `Request | WebSocket` (both expose the same `.headers`/`.client`), and `guest_socket` now calls it instead of reading the raw peer directly. New test `test_rate_limiting_uses_the_real_visitor_not_the_reverse_proxy` in `relay/tests/test_security.py`, checked standalone (no local Postgres/Redis available on this laptop to run the full relay suite - that needs the server's stack) by replicating `caller()`'s exact logic in isolation; the full suite was not run here and should be checked by CI/on the server. **Not yet deployed** - needs push, then the relay container rebuilt/restarted on the server the same way the console fix above does.
 
   *Process notes.* The CI "Build agents" run for `f87899f` failed overall (`X`) the first time - turned out to be GitHub's hosted macOS arm64 runner hitting a capacity/queueing timeout ("job was not acquired... even after multiple attempts"), not caused by this session's code; Windows and Linux had both already succeeded in the same run. `gh run rerun 40730198693 --failed` fixed it on retry with no code changes. Separately, a `gh run download` without an explicit run ID silently re-grabbed the previous commit's artifact (identical byte sizes gave it away) because the new CI run hadn't finished yet when it ran - downloads should always pin an explicit run ID, or at minimum compare file sizes/timestamps against the previous deploy before trusting a download.
 
 - **Windows restart watchdog, built into autostart itself (2026-10-28).** User report: the enrolled device has gone offline with zero trace several more times since the 10-26 fix - once mid-session, once idle, and once this morning straight after a cold boot, in the middle of the ordinary retry backoff after a `getaddrinfo failed` (network not ready yet right after boot, a normal thing to retry through). Checked, each time: boot time, shutdown/logoff events, Defender detections, Windows Error Reporting, crash.log, the native capture module's `faulthandler` hook - nothing anywhere explains the death. **Root cause still not found.** The user confirmed the same thing happens on a second, different laptop, which rules out this one machine's hardware/drivers and points at the agent's own code or a library it depends on. A temporary exit-code watcher (`fail_watch.py`, holds an OS handle to the process so the real exit code is readable no matter how silently it dies) is left running on this laptop to catch the next occurrence with actual evidence.
 
-  Since the cause is not yet known, what shipped instead is a safety net rather than a guess at a fix: `autostart.py`'s `_windows_enable()` now registers a Scheduled Task (`RMMAgentWatchdog`, `schtasks /SC MINUTE /MO 2`) alongside the existing Run-key entry, which checks every two minutes, forever, independent of why the agent died, and restarts it if it is gone. `_windows_disable()` removes the task. For this to be safe to fire blindly on a timer, `cmd_resume` (`__main__.py`) now checks `background.running_pid()` first and is a no-op if the agent is already alive, so the watchdog can never start a second, competing instance. This is the Windows equivalent of what systemd's `Restart=` / launchd's `KeepAlive` would give the agent on the other two platforms - Linux and macOS were not touched; the Linux path assumes a real `rmm-agent-resume.service` unit file, which was searched for and does not actually exist anywhere in this repo (packaging-side gap, out of scope here, flagging it so it isn't lost). Tests: `agent/tests/test_autostart.py`, 19/19 (5 new, covering the watchdog registering, removing, not blocking autostart when `schtasks` is unavailable, and `resume`'s no-op guard), run against a throwaway venv with `APPDATA` pointed at a scratch folder.
+  Since the cause is not yet known, what shipped instead is a safety net rather than a guess at a fix: `autostart.py`'s `_windows_enable()` now registers a Scheduled Task (`RMMAgentWatchdog`, `schtasks /SC MINUTE /MO 2`) alongside the existing Run-key entry, which checks every two minutes, forever, independent of why the agent died, and restarts it if it is gone. `_windows_disable()` removes the task. For this to be safe to fire blindly on a timer, `cmd_resume` (`__main__.py`) now checks `background.running_pid()` first and is a no-op if the agent is already alive, so the watchdog can never start a second, competing instance. This is the Windows equivalent of what systemd's `Restart=` / launchd's `KeepAlive` would give the agent on the other two platforms - Linux and macOS were not touched; the Linux path assumes a real `rmm-agent-resume.service` unit file, which was searched for and does not actually exist anywhere in this repo (packaging-side gap, out of scope here, flagging it so it isn't lost). *(Correction 2026-11-08: it does exist - `installers/linux/build_deb.sh` writes `rmm-agent-resume.service`; that search was wrong.)* Tests: `agent/tests/test_autostart.py`, 19/19 (5 new, covering the watchdog registering, removing, not blocking autostart when `schtasks` is unavailable, and `resume`'s no-op guard), run against a throwaway venv with `APPDATA` pointed at a scratch folder.
 
   **A real mistake during this fix, corrected before it caused damage:** one of the *existing* tests (`test_without_systemd_the_session_is_still_remembered_and_nothing_breaks`) never pinned `sys.platform`, so running it on this real Windows machine fell through into the real `_windows_enable()` path unmocked - which, with the new watchdog code in it, made a real `schtasks /Create` and a real registry write on this laptop, bypassing Claude Code's own permission gate entirely (that gate only covers tool calls made directly, not subprocess calls a test happens to execute). It briefly replaced the real `RMMAgentResume` Run-key value with one pointing at the throwaway test venv's Python, and created a real `RMMAgentWatchdog` task pointing at the same throwaway interpreter. Caught immediately via `schtasks /Query` and the registry; both were removed/restored by hand, and the test now pins `sys.platform = "linux"` so it cannot happen again.
 

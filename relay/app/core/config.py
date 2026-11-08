@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     # How long an unused session code stays valid. A code is a credential, and
     # one shared over chat should not still work weeks later.
     session_code_ttl_minutes: int = 60
+    # How long after its guest was last seen a consented session can still be
+    # rejoined (a reboot, a dropped link). Past this the code is dead even
+    # though it was once used: a used code is still a credential.
+    session_rejoin_minutes: int = 1440
 
     # Persistent operational logging (Phase 6). An empty log_dir disables
     # the file and leaves only console output.

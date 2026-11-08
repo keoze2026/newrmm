@@ -27,7 +27,7 @@ from app.models import Device, Session
 from app.schemas.device import EnrolByCode, EnrolledByCode
 from app.services.hub import hub
 from app.services import audit, ratelimit
-from app.services.sessions import is_joinable
+from app.services.sessions import guest_token_matches, is_joinable
 
 router = APIRouter(prefix="/connector", tags=["connector"])
 
@@ -246,6 +246,10 @@ async def enrol_by_code(
         or not live
     ):
         raise HTTPException(status_code=409, detail="This session cannot be turned into a standing one")
+    if not guest_token_matches(session, payload.guest_token):
+        # The code alone used to be enough, so anyone who had seen it could
+        # enrol their own machine into a session someone else consented to.
+        raise HTTPException(status_code=403, detail="This session belongs to another computer")
 
     secret = generate_device_secret()
     # Argon2 hashing is deliberately expensive; off the shared event loop,

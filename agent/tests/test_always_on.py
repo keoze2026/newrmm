@@ -204,8 +204,10 @@ class FakeSocket:
 class FakeConnect:
     def __init__(self, plan):
         self.plan = plan
+        self.urls = []
 
     def __call__(self, url, **options):
+        self.urls.append(url)
         step = self.plan.pop(0)
         outer = self
 
@@ -253,7 +255,38 @@ def test_an_operator_opening_the_session_starts_it_without_a_window(monkeypatch)
     socket = FakeSocket([json.dumps({"type": "start_session", "code": "ABCD1234"})])
     started = run_serve(monkeypatch, [socket], stop_after=True)
     assert started == ["ABCD1234"]
-    assert json.loads(socket.sent[0])["type"] == "heartbeat"
+    assert json.loads(socket.sent[1])["type"] == "heartbeat"
+
+
+def test_the_device_secret_goes_in_the_first_message_not_the_url(monkeypatch):
+    """URLs land in the reverse proxy's access log."""
+    socket = FakeSocket([json.dumps({"type": "start_session", "code": "ABCD1234"})])
+    plan = [socket]
+    connect = FakeConnect(plan)
+    monkeypatch.setattr(device.websockets, "connect", connect)
+    stop = asyncio.Event()
+
+    async def start(code):
+        stop.set()
+
+    asyncio.run(asyncio.wait_for(device.serve("wss://relay/api", "dev-1", "s3cret", start, stop), 5))
+    assert all("s3cret" not in url for url in connect.urls)
+    assert json.loads(socket.sent[0]) == {"type": "auth", "secret": "s3cret"}
+
+
+def test_an_older_relay_that_wants_the_secret_in_the_url_still_works(monkeypatch):
+    response = websockets.http11.Response(403, "Forbidden", websockets.Headers())
+    socket = FakeSocket([json.dumps({"type": "start_session", "code": "OLD12345"})])
+    connect = FakeConnect([websockets.InvalidStatus(response), socket])
+    monkeypatch.setattr(device.websockets, "connect", connect)
+    stop = asyncio.Event()
+
+    async def start(code):
+        stop.set()
+
+    asyncio.run(asyncio.wait_for(device.serve("wss://relay/api", "dev-1", "s3cret", start, stop), 5))
+    assert connect.urls[1].endswith("?secret=s3cret")
+    assert all(json.loads(m).get("type") != "auth" for m in socket.sent)
 
 
 def test_it_keeps_retrying_forever_after_the_network_goes(monkeypatch):

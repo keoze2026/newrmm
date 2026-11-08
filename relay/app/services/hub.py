@@ -234,9 +234,13 @@ class Hub:
         if channel and channel.operator is not None:
             try:
                 await channel.operator.send_bytes(payload)
-                return
-            except Exception:
-                channel.operator = None
+            except Exception as exc:
+                # Leave the socket where it is. Its own handler notices it is
+                # dead and cleans up; clearing it here made that handler think
+                # a newer connection had taken over, so it skipped the cleanup
+                # (session left "connected", a standing device kept streaming).
+                log.debug("send to %s of %s failed: %s", "operator", code, exc)
+            return
         await self._publish(operator_binary_channel(code), payload)
 
     async def to_operator_json(self, code: str, payload: dict) -> None:
@@ -244,9 +248,13 @@ class Hub:
         if channel and channel.operator is not None:
             try:
                 await channel.operator.send_json(payload)
-                return
-            except Exception:
-                channel.operator = None
+            except Exception as exc:
+                # Leave the socket where it is. Its own handler notices it is
+                # dead and cleans up; clearing it here made that handler think
+                # a newer connection had taken over, so it skipped the cleanup
+                # (session left "connected", a standing device kept streaming).
+                log.debug("send to %s of %s failed: %s", "operator", code, exc)
+            return
         await self._publish(operator_json_channel(code), json.dumps(payload).encode())
 
     async def to_guest_json(self, code: str, payload: dict) -> None:
@@ -254,9 +262,13 @@ class Hub:
         if channel and channel.guest is not None:
             try:
                 await channel.guest.send_json(payload)
-                return
-            except Exception:
-                channel.guest = None
+            except Exception as exc:
+                # Leave the socket where it is. Its own handler notices it is
+                # dead and cleans up; clearing it here made that handler think
+                # a newer connection had taken over, so it skipped the cleanup
+                # (session left "connected", a standing device kept streaming).
+                log.debug("send to %s of %s failed: %s", "guest", code, exc)
+            return
         await self._publish(guest_json_channel(code), json.dumps(payload).encode())
 
     async def to_device_json(self, device_id: str, payload: dict) -> None:
@@ -265,9 +277,10 @@ class Hub:
         if socket is not None:
             try:
                 await socket.send_json(payload)
-                return
-            except Exception:
-                self._devices.pop(device_id, None)
+            except Exception as exc:
+                # Same as above: the device handler's own cleanup owns this.
+                log.debug("send to device %s failed: %s", device_id, exc)
+            return
         await self._publish(device_json_channel(device_id), json.dumps(payload).encode())
 
     async def close_session(self, code: str, reason: str = "Session ended") -> None:

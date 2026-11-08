@@ -225,6 +225,9 @@ async def run_device(tray, holder, enrolment, args) -> None:
 
 
 def cmd_enrol(args) -> int:
+    if not args.secret:
+        print("enrol needs the device secret: --secret, or RMM_SECRET in the environment")
+        return 2
     enrolment = Enrolment(device_id=args.device_id, secret=args.secret, relay_url=args.relay)
     path = enrolment.save()
     print(f"enrolled; credentials stored at {path}")
@@ -463,7 +466,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="adapt quality and frame rate to this bandwidth budget (0 = off)",
     )
     join.add_argument("--device-id", default="", help="for an unattended session")
-    join.add_argument("--secret", default="", help="for an unattended session")
+    join.add_argument(
+        "--secret", default=os.environ.get("RMM_SECRET", ""),
+        help="for an unattended session (or RMM_SECRET in the environment, which "
+             "unlike the command line other users cannot read)",
+    )
     join.add_argument("--synthetic", action="store_true", help="stream a generated test image")
     join.add_argument("--no-tray", dest="tray", action="store_false", help="run without a tray icon")
     join.add_argument(
@@ -476,7 +483,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     join.add_argument(
         "--blank-watchdog", type=float, default=0.0, metavar="SECONDS",
-        help="release the privacy blank automatically after this long (0 = off)",
+        help="release the privacy blank automatically after this long "
+             "(0 = the default, 120 s; a blank always has a limit)",
     )
     join.add_argument(
         "--blank-no-input-block", dest="blank_blocks_input", action="store_false",
@@ -494,7 +502,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     enrol.add_argument("--relay", default="ws://localhost:8000")
     enrol.add_argument("--device-id", required=True)
-    enrol.add_argument("--secret", required=True)
+    # The service passes the secret in the environment (RMM_SECRET from its
+    # EnvironmentFile): a command line is readable by every user on the machine.
+    enrol.add_argument("--secret", default=os.environ.get("RMM_SECRET", ""))
     enrol.add_argument("--no-tray", dest="tray", action="store_false")
     enrol.add_argument("--no-connect", action="store_true", help="store credentials and exit")
     enrol.set_defaults(func=cmd_enrol)

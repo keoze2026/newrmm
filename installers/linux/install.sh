@@ -60,13 +60,15 @@ install_packages() {
             echo "pacman could not install the packages; run 'pacman -Syu' first, then this again." >&2
             return 1
         fi
-        pacman -S --noconfirm --needed tk libappindicator-gtk3 || true
+        # libappindicator-gtk3 is not in Arch's repositories (AUR only); the
+        # tray uses Ayatana's, which is.
+        pacman -S --noconfirm --needed tk libayatana-appindicator || true
     elif command -v zypper >/dev/null 2>&1; then
         echo "openSUSE family (zypper) detected"
         zypper --non-interactive install \
             libX11-6 libXext6 libXrandr2 libXfixes3 xrandr \
-            python3 python3-gobject typelib-1_0-Gst-1_0 gstreamer-plugins-base \
-            gstreamer-plugin-pipewire || return 1
+            python3 python3-gobject typelib-1_0-GLib-2_0 typelib-1_0-Gio-2_0 \
+            typelib-1_0-Gst-1_0 gstreamer-plugins-base gstreamer-plugin-pipewire || return 1
         zypper --non-interactive install python3-tk typelib-1_0-AppIndicator3-0_1 || true
     else
         echo "No known package manager (apt/dnf/pacman/zypper) found." >&2
@@ -133,7 +135,9 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/rmm-agent enrol --device-id ${RMM_DEVICE_ID} --secret ${RMM_SECRET} --relay ${RMM_RELAY}
+# RMM_SECRET reaches the agent through the environment (EnvironmentFile),
+# never the command line, which every user on the machine can read.
+ExecStart=/usr/bin/rmm-agent enrol --device-id ${RMM_DEVICE_ID} --relay ${RMM_RELAY}
 EnvironmentFile=%h/.config/rmm-agent/env
 Restart=on-failure
 RestartSec=5

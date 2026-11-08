@@ -56,6 +56,11 @@ class Session(Base):
     system_info: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     monitors: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     agent_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # SHA-256 of the secret handed to the first agent that joined an attended
+    # session. Once set, the code alone no longer joins: a reconnect must
+    # present the secret, so someone else holding the code cannot replace the
+    # computer that is actually being helped.
+    guest_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # The endpoint user must allow the session before anything is captured
     # (spec section 9).
