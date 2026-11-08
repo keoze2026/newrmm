@@ -88,7 +88,9 @@ begin
 end;
 
 { Takes the install directory back out of the user's PATH, which the
-  [Registry] entry above added. Only that one entry is removed. }
+  registry entry above added. Only that one entry is removed.
+  (No section name in square brackets may start a line in this block:
+  Inno Setup reads it as a new section, even inside a comment.) }
 procedure RemoveFromPath(Dir: string);
 var
   Existing, Rebuilt, Item, Upper: string;
