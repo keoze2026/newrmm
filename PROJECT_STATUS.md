@@ -211,7 +211,12 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 ## Change log
 
 - **All 20 open items from the 2026-11-07 list worked, on the user's order
-  ("fix all 20"), 2026-11-08. NOT committed, NOT pushed, NOT deployed.**
+  ("fix all 20"), 2026-11-08. Pushed as `5fa7fa3` + `e76a722`; CI green -
+  Tests run 42453396372, Build agents run 42453396377 = build 85 (Linux,
+  Windows incl. installer compile, macOS; Windows and macOS report their
+  native capture modules). The first push failed only the Windows installer:
+  a comment line starting with `[Registry]` is read by Inno Setup as a
+  section tag (fixed in `e76a722`). NOT deployed yet.**
   Verified on this Kali laptop in a throwaway environment (scratch Postgres 18
   cluster on :55433, Redis, relay venv, Node 22, Xvfb :87, a private headless
   sway + portal + PipeWire stack); nothing installed system-wide.
@@ -278,8 +283,8 @@ the rule that stops it happening again. Add one the moment something goes wrong.
   adds the column), then console, then new agents. Old agents keep working
   against the new relay.
 
-  *Next task:* the user decides (a) push + CI build (b) whether to make the
-  GitHub repo private (item 20). Then: deploy relay and console on the server,
+  *Next task:* the user decides whether to make the GitHub repo private
+  (item 20). Then: deploy relay and console on the server,
   install the new `.deb` here (`sudo apt install ./rmm-agent_0.2.0.<run>_amd64.deb`)
   and on the Parrot Wayland laptop, and run the Windows installer on the
   Windows laptop (item 15: several minutes up, blank, input, restart).
