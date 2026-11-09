@@ -31,6 +31,19 @@ export type FrameHandler = (frame: FrameSource) => void
 export type StateHandler = (state: StreamState) => void
 export type MessageHandler = (message: Record<string, unknown>) => void
 
+// Liveness watchdog. While the guest is sharing, the endpoint sends a binary
+// frame every frame interval even when nothing on screen moved (a zero-tile
+// frame), and a whole keyframe at least every 10s. So on a healthy connection
+// frames never go quiet. If the browser's socket still looks OPEN but no frame
+// has arrived for this long, the connection is half-dead - a TCP path the
+// browser never got a close event for (wifi roam, sleep/wake, a proxy or
+// Cloudflare dropping one direction). The server's own 20s ping notices and
+// closes its end, but that close never reaches a half-open browser, so onclose
+// never fires and the viewer would sit frozen until the person reloaded the
+// page. The watchdog rebuilds the socket itself so they never have to.
+const FRAME_STALE_MS = 6000
+const LIVENESS_CHECK_MS = 2000
+
 export interface InputMessage {
   type: 'input'
   kind: 'mouse' | 'key' | 'scroll'
@@ -63,6 +76,8 @@ export class SessionStream {
   private bytesWindow: { at: number; bytes: number }[] = []
   private statsTimer: number | null = null
   private reconnectTimer: number | null = null
+  private livenessTimer: number | null = null
+  private lastFrameAt = 0
   private closed = false
   private listeners = new Set<MessageHandler>()
   private assembler = new FrameAssembler()
@@ -104,6 +119,10 @@ export class SessionStream {
       socket.send(operatorAuthMessage())
       // A reconnect starts a new picture: the old one cannot be patched.
       this.assembler.reset()
+      // Fresh grace window for the watchdog: a just-opened socket has had no
+      // time to deliver a frame yet, and the relay is about to ask the guest
+      // for a keyframe.
+      this.lastFrameAt = performance.now()
       this.state = { ...this.state, connected: true }
       this.onState(this.state)
     }
@@ -148,6 +167,11 @@ export class SessionStream {
     // every 500ms for the life of the page.
     if (this.statsTimer !== null) window.clearInterval(this.statsTimer)
     this.statsTimer = window.setInterval(() => this.publishStats(), 500)
+
+    // Same leak reasoning as statsTimer: clear any previous one before starting
+    // a fresh watchdog on a reconnect.
+    if (this.livenessTimer !== null) window.clearInterval(this.livenessTimer)
+    this.livenessTimer = window.setInterval(() => this.checkLiveness(), LIVENESS_CHECK_MS)
   }
 
   private handleControl(message: Record<string, unknown>) {
@@ -162,6 +186,9 @@ export class SessionStream {
         monitors: (message.monitors as Monitor[]) ?? this.state.monitors,
         privacyMode: (message.privacy_mode as PrivacyMode) ?? this.state.privacyMode,
       }
+      // The guest just started sharing: give the watchdog a fresh window for
+      // the first frame to arrive before it can consider the stream stale.
+      if (this.state.guestConnected) this.lastFrameAt = performance.now()
       this.onState(this.state)
     } else if (type === 'guest_left') {
       this.state = { ...this.state, guestConnected: false, blanked: false }
@@ -178,8 +205,43 @@ export class SessionStream {
 
   private recordFrame(bytes: number) {
     const now = performance.now()
+    this.lastFrameAt = now
     this.frameTimes.push(now)
     this.bytesWindow.push({ at: now, bytes })
+  }
+
+  private checkLiveness() {
+    if (this.closed) return
+    if (this.socket?.readyState !== WebSocket.OPEN) return
+    // Frames are only expected once the guest has consented and is sharing;
+    // before that, a quiet socket is normal and must not trigger a reconnect.
+    if (!this.state.guestConnected) return
+    if (performance.now() - this.lastFrameAt > FRAME_STALE_MS) {
+      this.forceReconnect()
+    }
+  }
+
+  /** The socket looks open but has gone silent: tear it down and reconnect at
+   *  once, so the viewer recovers on its own instead of staying frozen. */
+  private forceReconnect() {
+    const socket = this.socket
+    if (socket) {
+      // Detach handlers first: this socket's own onclose must not also schedule
+      // the slower 1.5s reconnect - connect() below reconnects immediately.
+      socket.onopen = null
+      socket.onmessage = null
+      socket.onerror = null
+      socket.onclose = null
+      try {
+        socket.close()
+      } catch {
+        /* already gone */
+      }
+    }
+    this.socket = null
+    this.state = { ...this.state, connected: false }
+    this.onState(this.state)
+    this.connect()
   }
 
   private publishStats() {
@@ -213,6 +275,7 @@ export class SessionStream {
   close() {
     this.closed = true
     if (this.statsTimer !== null) window.clearInterval(this.statsTimer)
+    if (this.livenessTimer !== null) window.clearInterval(this.livenessTimer)
     if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer)
     this.socket?.close()
     this.socket = null

@@ -210,6 +210,73 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **Mid-session freeze / 0 fps / still "connected" / refresh fixes it:
+  diagnosed AND fixed in the console (2026-11-09).** Cause proven from code (not
+  yet from a live freeze). The fix makes the viewer recover on its own so a
+  non-technical user is never left looking at a frozen screen.
+  *The key clue, traced:* a page refresh and `stream.ts`'s own auto-reconnect do
+  the **same** thing on the relay and agent — `operator_socket` attaches
+  (`relay/app/api/ws.py:465`), sends `attached` (`:473`), then asks the guest for
+  a whole frame (`:483` `to_guest_json {"type":"keyframe"}`), which the agent
+  turns into a keyframe (`session.py:466` → `_tiles.request_keyframe()`); the
+  console resets its assembler on every open (`stream.ts:106`) and skips tiles
+  until a keyframe re-primes (`frames.ts:85`). So changed-region base loss
+  (candidate a) is handled in **both** paths and is **not** the bug. The ONLY
+  difference between a refresh and auto-reconnect: auto-reconnect fires solely
+  from `socket.onclose` (`stream.ts:132-142`); a refresh builds a brand-new
+  socket unconditionally.
+  *Ranked causes (most likely first):*
+  1. **No client-side liveness check in the console (`stream.ts`).** Reconnect is
+     driven only by `onclose`; there is no "no frame for N s → reconnect" timer,
+     and `publishStats` (`stream.ts:185`) reports 0 fps but acts on nothing;
+     `state.connected` only goes false in `onclose` (`:133`). A browser
+     WebSocket exposes no ping/pong, so a half-open TCP (NAT/wifi-roam/sleep/
+     Cloudflare dropping one direction) leaves `readyState OPEN` with no
+     `onclose` → frozen forever, refresh recovers. uvicorn's ~20 s server ping
+     detects the dead peer and closes the socket **server-side**, but that close
+     never reaches a half-open browser. *Freeze tell:* DevTools Network→WS shows
+     the operator socket still open, no CLOSE frame, `readyState===1`, while the
+     **agent is still sending** (agent.log heartbeats normal).
+  2. **Relay forward blocks with no timeout (`hub.py:232` `to_operator_bytes`,
+     awaited in the guest read loop at `ws.py:290`).** A half-open operator
+     socket's `send_bytes` fills the kernel buffer then stalls the guest loop →
+     relay stops reading the guest → agent `socket.send` (`session.py:433`)
+     blocks → `_stream` stalls. Errors are caught (`hub.py:237`) but a *hang* is
+     not. *Freeze tell:* opposite of #1 — a `py-spy` of the agent shows it
+     parked in `socket.send`, agent frames/10 s drop to 0.
+  3. **Host-nginx / Cloudflare idle timeout as a trigger for #1.** The in-repo
+     nginx is 3600 s (`nginx-tls.conf:116`), but the shared server's *host-level*
+     nginx (`/etc/nginx/sites-enabled/rmm`, see 2026-11-02 entries) and
+     Cloudflare (~100 s, unchangeable on free) sit in front and are unverified;
+     uvicorn's 20 s ping *should* keep them warm, so this is a trigger, not a
+     standalone cause. *Tell:* freeze lines up with a fixed idle interval after
+     an **idle** guest screen.
+  *Ruled out for THIS symptom:* (e) RateController→0 fps — `budget_kbps=0` in
+  every launch path (`__main__.py:279,322,343`), `adjust` is never called
+  (`session.py:435`); and `capture.grab` blocking (the 2026-11-02 theory) —
+  that would be a real agent-side freeze a refresh could **not** fix, so the
+  "refresh fixes it" clue means the agent is still capturing. The fault is on the
+  operator/relay delivery side.
+  *FIX APPLIED the same turn (console only, `stream.ts`): the viewer now heals
+  itself so a non-technical user never has to refresh.* A liveness watchdog
+  (`FRAME_STALE_MS=6000`, checked every 2 s) runs while the guest is sharing:
+  because the endpoint sends a binary frame every interval even on an idle
+  screen (zero-tile frame, `tiles.py:112`) plus a keyframe every 10 s
+  (`tiles.py:37`), a healthy socket is never silent, so "no frame for 6 s while
+  the socket still reads OPEN" means the connection is half-dead. The watchdog
+  tears that socket down and reconnects at once (`forceReconnect`), and the
+  relay re-requests a keyframe on the new operator socket (`ws.py:483`), so the
+  picture comes back on its own within a few seconds - the same recovery a
+  manual page refresh gave, now automatic. Guarded against false positives: it
+  only arms once `guestConnected` is true and gives a fresh grace window on
+  connect and on the guest joining. Also fixes the relay-hang case (#2) and the
+  idle-timeout trigger (#3) incidentally, since any silent socket is rebuilt.
+  Agent and relay untouched; no server-side change needed, but the console
+  Docker image must be rebuilt to go live (`docker compose -f
+  docker-compose.yml up -d --build console` from `/opt/nermm/infra`). Verified:
+  logic traced; no local Node/npm to run `tsc`/`vite` (CI typechecks). NOT yet
+  confirmed against a real freeze on hardware.
+
 - **Deployment gap found + clean-reinstall install command (2026-11-09).** The
   user's agent "never came back online" because this Kali PC still runs build
   **0.2.0.72** - the login-autostart fix is only in build 88+, which was never
