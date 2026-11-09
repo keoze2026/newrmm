@@ -210,6 +210,21 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **Console install step now hands over ONE complete command (2026-11-08).**
+  The Linux steps on the connector/install page (`console/src/pages/JoinPage.tsx`)
+  used to show `apt install` on a `.deb` the person was assumed to have already
+  downloaded. It now shows one self-contained line: stop any old agent,
+  download the agent from the console's own `/api/connector/linux?code=...`
+  endpoint, unzip it if the download is a zip (else treat it as the `.deb`),
+  `apt install` it with dependencies, and `rmm-agent start --code`. Nothing is
+  downloaded or unzipped by hand. `tsc -b` + `vite build` clean; rendered
+  command `bash -n` clean. Pushed `bb3d7e1`; CI green (Tests 42563805402,
+  Build agents 42563805442). NOT deployed (console image rebuild on the
+  server). *Note:* this is the attended-code install path; the employee-
+  monitoring deployment (allow once at install, no prompt afterwards, survives
+  reboot) is the enrolled/standing path - `p7_always_on.py` - which is a
+  separate flow the console does not yet surface as an install command.
+
 - **FINDING, no code changed (2026-11-08): why the agent on this Kali PC never
   came back online.** (1) At 01:16:50 the computer powered off (journal:
   `systemd-logind: The system will power off now!`); the agent went down with
