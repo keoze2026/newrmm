@@ -94,62 +94,18 @@ def test_a_code_that_is_too_short_is_rejected_without_asking_the_server():
     assert not ok and "short" in message
 
 
-# ------------------------------------------------- straight to consent
-def test_a_valid_code_from_the_download_skips_the_window(monkeypatch):
-    """Download, install, done: the window is never shown."""
-    asked = []
-    monkeypatch.setattr(launcher, "ask", lambda *a, **k: asked.append(a) or None)
+# ------------------------------------------------- straight to consent, no window
+def test_the_code_from_the_download_is_used_as_is_with_no_window():
+    """Download, install, done: the embedded code is used and no window exists.
 
-    with _Server({"XZ3ZPQVK": 200}) as relay:
-        assert launcher.resolve(relay, "xz3zpqvk") == ("XZ3ZPQVK", relay)
-    assert asked == [], "a valid code should not have asked anything"
-
-
-def test_an_expired_code_falls_back_to_asking_and_says_why(monkeypatch):
-    seen = {}
-
-    def fake_ask(relay, prefill="", notice=""):
-        seen.update(relay=relay, prefill=prefill, notice=notice)
-        return None
-
-    monkeypatch.setattr(launcher, "ask", fake_ask)
-    with _Server({}) as relay:
-        launcher.resolve(relay, "OLDCODE1")
-
-    assert seen["prefill"] == "OLDCODE1"
-    assert "expired" in seen["notice"]
+    The person never types a code, so there is no code-input window at all."""
+    assert not hasattr(launcher, "ask"), "the code-input window path must be gone"
+    assert not hasattr(launcher, "_ask_with_window"), "the code-input window must be gone"
+    assert launcher.resolve("wss://relay/api", "xz3z-pqvk") == ("XZ3ZPQVK", "wss://relay/api")
 
 
-def test_with_no_code_it_just_asks(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(launcher, "ask", lambda *a, **k: seen.update(k=k, a=a) or None)
-    launcher.resolve("wss://x.example.com/api", "")
-    assert seen["k"].get("prefill") == ""
-
-
-def test_a_rate_limit_refusal_is_waited_out_instead_of_shown(monkeypatch):
-    answers = iter([(False, launcher.RATE_LIMITED), (False, launcher.RATE_LIMITED), (True, "")])
-    waits = []
-    monkeypatch.setattr(launcher, "check_code", lambda relay, code: next(answers))
-    monkeypatch.setattr(launcher.time, "sleep", waits.append)
-    monkeypatch.setattr(launcher, "ask", lambda *a, **k: (_ for _ in ()).throw(AssertionError("asked the user")))
-    assert launcher.resolve("wss://relay/api", "ABCD1234") == ("ABCD1234", "wss://relay/api")
-    assert waits == [launcher.RATE_LIMIT_WAIT, launcher.RATE_LIMIT_WAIT]
-
-
-def test_a_refusal_that_never_clears_falls_back_to_the_window_with_the_reason(monkeypatch):
-    monkeypatch.setattr(launcher, "check_code", lambda relay, code: (False, launcher.RATE_LIMITED))
-    monkeypatch.setattr(launcher.time, "sleep", lambda _s: None)
-    seen = {}
-    monkeypatch.setattr(launcher, "ask", lambda relay, prefill="", notice="": seen.update(notice=notice) or None)
-    launcher.resolve("wss://relay/api", "ABCD1234")
-    assert seen["notice"] == launcher.RATE_LIMITED
-
-
-def test_an_invalid_code_is_not_retried(monkeypatch):
-    calls = []
-    monkeypatch.setattr(launcher, "check_code", lambda relay, code: calls.append(1) or (False, "That code is not valid"))
-    monkeypatch.setattr(launcher.time, "sleep", lambda _s: calls.append("slept"))
-    monkeypatch.setattr(launcher, "ask", lambda *a, **k: None)
-    launcher.resolve("wss://relay/api", "ABCD1234")
-    assert calls == [1]
+def test_with_no_code_there_is_nothing_to_do():
+    """No code (or no server) means nothing to do - the agent stops quietly,
+    it never pops a window asking for one."""
+    assert launcher.resolve("wss://relay/api", "") is None
+    assert launcher.resolve(None, "ABCD1234") is None

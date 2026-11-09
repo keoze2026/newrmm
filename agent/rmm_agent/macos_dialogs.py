@@ -60,27 +60,6 @@ def consent(message: str, timeout: float = 120.0, standing: bool = False) -> "bo
     return "button returned:Allow" in out
 
 
-def ask_code(prefill: str = "", notice: str = "", timeout: float = 600.0) -> str | None:
-    """Ask for a session code. None if they cancel; RuntimeError if no dialog
-    can be shown, so the caller can fall back to the terminal."""
-    text = (notice + "\n\n" if notice else "") + "Enter the code your support technician gave you."
-    script = (
-        f"display dialog {_quote(text)} default answer {_quote(prefill)} "
-        f'with title {_quote(TITLE)} buttons {{"Cancel", "Connect"}} default button "Connect"'
-    )
-    result = _osascript(script, timeout)
-    if result is None:
-        raise RuntimeError("no dialog available")
-    if result.returncode != 0:
-        if _cancelled(result):
-            return None
-        raise RuntimeError((result.stderr or "dialog failed").strip())
-    out = result.stdout or ""
-    if "button returned:Connect" not in out or "text returned:" not in out:
-        return None
-    return out.split("text returned:", 1)[1].split(", gave up:", 1)[0].strip()
-
-
 def show_error(text: str) -> bool:
     """Tell the person something went wrong. False if it could not be shown."""
     script = (

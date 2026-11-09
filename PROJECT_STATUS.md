@@ -210,6 +210,75 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **FIXED (2026-11-09): removed the unrequested code-input window (item 1) and
+  stopped the install command wiping agent state (item 2).** Both on the user's
+  explicit approval; items 3-5 from the list were NOT touched.
+  *Item 1 - the "Remote support / Enter the code" box (agent).* It was added
+  unrequested in commit `bb31498` (2026-10-20, Claude Sonnet 5.5) and appeared
+  whenever `launcher.resolve()` could not get the embedded code accepted
+  (renamed installer, used/expired code, relay unreachable, or an auto-start
+  relaunch with no code), falling back to `ask()`. Removed the whole window
+  path: `launcher.resolve()` now returns the embedded `(code, relay)` or None
+  (agent stops quietly) and never opens a window; deleted `ask`,
+  `_ask_in_terminal`, `_ask_with_macos_dialog`, `_ask_with_window`, `PROMPT`,
+  the rate-limit retry constants, and `macos_dialogs.ask_code`. `check_code`
+  and the address helpers stay (still tested). Tests updated: `test_launcher.py`
+  (box tests replaced with "code used as-is, no window; no code = None") and
+  `test_macos_dialogs.py` (ask_code/_ask_with_window tests removed). Lives in:
+  agent `.deb`/installer - needs a reinstall to take effect.
+  *Item 2 - install command wiped state (console).* `JoinPage.tsx:241` dropped
+  `rm -rf ~/.local/state/RMMAgent` (now only removes old `~/Downloads/*.deb`),
+  so a reinstall keeps the enrolment and `wayland_restore_token` - no consent
+  window and no KDE dialog on reinstall. Lives in: console container.
+  *Verify:* agent suite 174 passed (only the pre-existing pynput
+  `test_privacy_input_block` fails locally; passes in CI). *Deploy:* console
+  rebuild (`docker compose -f docker-compose.yml up -d --build console` from
+  `/opt/nermm/infra`) + refresh the served agent and reinstall on Parrot.
+  Items still open (NOT done, awaiting approval/evidence): #3 two agents/kill
+  step, #4 Windows freeze, #5 Windows dropped-key fix.
+
+- **DIAGNOSIS, no code changed (2026-11-09): Parrot KDE Wayland - two
+  confirmations on every install, and two agents/sessions at once (build
+  0.2.0.97, enrolled).**
+  *Issue 1 (two confirmations per install).* Proven: the console install
+  command (`JoinPage.tsx:241`) runs `rm -rf ~/.local/state/RMMAgent`, which is
+  `state_dir()` and holds BOTH `wayland_restore_token` (`wayland_portal.py:52,
+  154`) and `enrolment.json`. So every install wipes the restore token (-> KDE
+  "Remote control requested" dialog returns) and the enrolment (-> our consent
+  window returns with Always allow). The token IS saved after Share (persist 2,
+  `session.py:412-414` -> `wayland_portal.save_restore_token:150-157`) but with
+  NO success log line (only warns on OSError) - proof is the file, not a log.
+  WITHOUT reinstalling, the KDE dialog does NOT return - the earlier Parrot
+  agent.log showed ~0.4s silent restores (16:13/16:14/16:40/16:46) vs 64s/6.8s
+  when shown. Ways to one confirmation (not chosen): (A) stop the install
+  deleting the state dir (reinstall keeps enrolment+token -> 0 new prompts;
+  cost: no clean slate); (B) a first-ever install is inherently 2 (our consent
+  is spec-required, KDE's is OS-required once); (C) drop our consent window on
+  enrolled installs (violates spec consent); (D) carry enrolment+token across
+  installs (= A). Core: two prompts appear on EVERY install only because the
+  install purges state.
+  *Issue 2 (two agents/sessions C6NX7HUT + QDEKNSUW both connected).* Evidence
+  pending: one Parrot command block (ps pid/ppid/args, agent.pid, systemd user
+  units, autostart entries, session.json/enrolment.json, agent.log last 50) and
+  one server psql on both codes - handed to the user this turn. Static trace:
+  start paths are (1) install `rmm-agent start --code` (`JoinPage.tsx:241` ->
+  `cmd_start __main__.py:248` -> `spawn_detached :268-271`), (2) enrolled
+  auto-start via xdg `rmm-agent-login` (`build_deb.sh:125-134`) -> `login_start
+  autostart.py:74-106` -> resume -> `run_device __main__.py:329`, (3) systemd
+  `Restart=on-failure RestartSec=5` (`build_deb.sh:94-95,113-114`). The kill
+  step `pkill -x rmm-agent` (`JoinPage.tsx:241`) is one-shot and runs before
+  install; systemd restarts a killed resume agent within 5s, and the install
+  then spawns a SECOND agent via `start --code`, so the enrolled agent (one
+  code) + the started agent (other code) both connect. The relay has no
+  per-host/per-device single-session rule (sessions keyed by code) - to confirm
+  from the DB query. UNKNOWN until output: which pid holds which code and what
+  started each. Proposed fixes (NOT implemented): Issue 1 - install command
+  stops deleting the state dir (console, `JoinPage.tsx`); Issue 2 - replace bare
+  `pkill` with a clean `rmm-agent stop` that disables auto-restart, and make
+  `start` a no-op when an agent is already running / enrolled (console
+  `JoinPage.tsx` + possibly agent `__main__`/`background`), finalised after the
+  output.
+
 - **DIAGNOSIS, no code changed (2026-11-09): Windows freeze (~2s, 0 fps) +
   some keys dropped (letter "m").** Evidence not yet collected - PowerShell
   block (agent version, exe size/date, agent.log last 100, crash.log,

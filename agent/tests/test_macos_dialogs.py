@@ -58,30 +58,11 @@ def test_quotes_in_a_message_cannot_break_out_of_the_script(monkeypatch):
     assert 'say \\"hi\\" \\\\ now' in seen["script"]
 
 
-def test_the_code_is_read_back_and_cancel_is_none(monkeypatch):
-    fake_osascript(monkeypatch, result("button returned:Connect, text returned:ABCD1234\n"))
-    assert macos_dialogs.ask_code("") == "ABCD1234"
-    fake_osascript(monkeypatch, result(returncode=1, stderr="User canceled. (-128)"))
-    assert macos_dialogs.ask_code("") is None
-    fake_osascript(monkeypatch, result(returncode=1, stderr="no window server"))
-    with pytest.raises(RuntimeError):
-        macos_dialogs.ask_code("")
-
-
 def test_the_consent_prompt_on_macos_never_touches_tk(monkeypatch):
     monkeypatch.setattr(consent.sys, "platform", "darwin")
     monkeypatch.setattr(macos_dialogs, "consent", lambda message, timeout=120.0, standing=False: True)
     monkeypatch.setitem(sys.modules, "tkinter", None)  # importing it would now fail
     assert consent._ask_with_tk("ABCD1234", None, 120.0) is True
-
-
-def test_the_code_window_on_macos_checks_the_code_and_never_touches_tk(monkeypatch):
-    monkeypatch.setattr(launcher.sys, "platform", "darwin")
-    monkeypatch.setitem(sys.modules, "tkinter", None)
-    answers = iter(["wrong", "abcd1234"])
-    monkeypatch.setattr(macos_dialogs, "ask_code", lambda prefill="", notice="": next(answers))
-    monkeypatch.setattr(launcher, "check_code", lambda relay, code: (code == "ABCD1234", "Not valid"))
-    assert launcher._ask_with_window("wss://relay/api") == ("ABCD1234", "wss://relay/api")
 
 
 def test_the_clipboard_on_macos_uses_pbcopy_and_pbpaste_and_never_tk(monkeypatch):
