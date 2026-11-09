@@ -6,7 +6,9 @@ platform (section 5, "Auto-start"); on Linux it is a systemd user service.
 
 Every platform has its own mechanism, as the specification lists:
 
-  Linux    the packaged `rmm-agent-resume` systemd user service
+  Linux    the packaged `rmm-agent-resume` systemd user service, started at
+           login by an XDG autostart entry (`rmm-agent login`), because many
+           desktops never start graphical-session.target
   Windows  a per-user Run entry (no administrator needed)
   macOS    a LaunchAgent in ~/Library/LaunchAgents
 
@@ -20,6 +22,7 @@ is none of those, so it does not.
 """
 import json
 import logging
+import os
 import plistlib
 import shutil
 import subprocess
@@ -58,6 +61,49 @@ def _systemctl(*arguments: str) -> bool:
     if result.returncode != 0:
         log.warning("systemctl %s failed: %s", " ".join(arguments), result.stderr.strip())
     return result.returncode == 0
+
+
+# Handed from the login session to the systemd user manager before starting the
+# service, so the agent it starts can reach the desktop (X11 or Wayland).
+SESSION_VARIABLES = (
+    "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_SESSION_TYPE",
+    "XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP", "DBUS_SESSION_BUS_ADDRESS",
+)
+
+
+def login_start(run_resume, has_something=None) -> str:
+    """Linux, at login: bring the agent back. Returns what it did.
+
+    The resume service is `WantedBy=graphical-session.target`, but several
+    desktops - XFCE, MATE, LXQt, Cinnamon among them - never start that
+    target, so on them the service never ran and an agent never came back
+    after a restart (found on the Kali XFCE laptop, 2026-11-08). Every Linux
+    desktop does run XDG autostart entries, so the package installs one
+    (/etc/xdg/autostart/rmm-agent-login.desktop) that calls this.
+
+    It starts the systemd service when it can - systemd then restarts it on a
+    crash and never runs two copies, even on desktops that also started it
+    through the target - and only runs `resume` itself when there is no usable
+    systemd. With nothing remembered and no enrolment it does nothing.
+    """
+    if not sys.platform.startswith("linux"):
+        return "not linux"
+    if has_something is None:
+        from rmm_agent.config import Enrolment
+
+        has_something = lambda: saved() is not None or Enrolment.load() is not None
+    if not has_something():
+        return "nothing to resume"
+    if _systemctl("is-enabled", "--quiet", UNIT):
+        present = [name for name in SESSION_VARIABLES if os.environ.get(name)]
+        if present:
+            _systemctl("import-environment", *present)
+        if _systemctl("start", "--no-block", UNIT):
+            log.info("login: started %s", UNIT)
+            return "started the service"
+    log.info("login: no usable systemd service; resuming directly")
+    run_resume()
+    return "resumed directly"
 
 
 def _resume_command() -> list[str]:

@@ -224,9 +224,24 @@ the rule that stops it happening again. Add one the moment something goes wrong.
   any other desktop that does not start `graphical-session.target` - restart
   after reboot can never work. The 2026-10-22 "auto-start confirmed" result was
   on a desktop that does start it. This PC also still runs build 72.
-  *Next task:* user decides on the fix. Recommended (Linux only): start the
-  resume at login from an XDG autostart entry (`~/.config/autostart/`), which
-  every desktop runs, instead of relying on `graphical-session.target`.
+  **FIXED the same day (Linux only):** the `.deb` and `install.sh` now
+  install `/etc/xdg/autostart/rmm-agent-login.desktop`, run by every desktop
+  at login, which calls the new `rmm-agent login` (`autostart.login_start`):
+  nothing unless a session is remembered or the computer is enrolled; then it
+  hands DISPLAY/WAYLAND_DISPLAY/XAUTHORITY/... to the systemd user manager and
+  `systemctl --user start --no-block rmm-agent-resume.service` (systemd keeps
+  Restart=on-failure and never runs two copies, also on desktops that start
+  the target), or runs `resume` itself when there is no usable systemd.
+  Windows/macOS untouched (`login_start` returns "not linux" there).
+  *Verified:* agent suite 180 passed + 1 skipped (5 new tests in
+  `test_autostart.py`); a test `.deb` built with `build_deb.sh` contains the
+  entry and `desktop-file-validate` passes; on this real XFCE session (target
+  inactive) `login_start` started a throwaway stand-in unit, which received
+  `DISPLAY=:0.0` and `XAUTHORITY` - then removed. **Not verified:** a real
+  reboot with the new package installed (needs `sudo apt install` of the new
+  build on this PC, then a restart).
+  *Next task:* install the new build here, restart, confirm the agent comes
+  back by itself; then the Parrot and Windows laptops as in the entry below.
 
 - **All 20 open items from the 2026-11-07 list worked, on the user's order
   ("fix all 20"), 2026-11-08. Pushed as `5fa7fa3` + `e76a722`; CI green -

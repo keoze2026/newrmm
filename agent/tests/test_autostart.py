@@ -326,3 +326,75 @@ def test_each_platform_uses_its_own_mechanism(monkeypatch):
         monkeypatch.setattr(autostart.sys, "platform", name)
         autostart.remember("wss://relay/api", "ABCD1234")
     assert calls == ["windows", "macos", "linux"]
+
+
+# ------------------------------------------- Linux: back at login on any desktop
+#
+# Found 2026-11-08 on the Kali XFCE laptop: the resume service is
+# WantedBy=graphical-session.target, XFCE never starts that target, so the
+# agent never came back after a restart. An XDG autostart entry (run by every
+# desktop) calls `rmm-agent login`, i.e. autostart.login_start.
+
+def _fake_systemctl(monkeypatch, enabled=True, start_ok=True):
+    calls = []
+
+    def fake(*arguments):
+        calls.append(arguments)
+        if arguments[0] == "is-enabled":
+            return enabled
+        if arguments[0] == "start":
+            return start_ok
+        return True
+
+    monkeypatch.setattr(autostart, "_systemctl", fake)
+    monkeypatch.setattr(autostart.sys, "platform", "linux")
+    return calls
+
+
+def test_login_starts_the_service_with_the_desktops_environment(monkeypatch):
+    calls = _fake_systemctl(monkeypatch)
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.delenv("XAUTHORITY", raising=False)
+    resumed = []
+    result = autostart.login_start(lambda: resumed.append(1), has_something=lambda: True)
+    assert result == "started the service"
+    assert resumed == []
+    imported = next(c for c in calls if c[0] == "import-environment")
+    assert "DISPLAY" in imported and "WAYLAND_DISPLAY" in imported and "XAUTHORITY" not in imported
+    assert ("start", "--no-block", autostart.UNIT) in calls
+    # the environment goes in before the start
+    assert calls.index(imported) < calls.index(("start", "--no-block", autostart.UNIT))
+
+
+def test_login_does_nothing_when_nothing_is_remembered(monkeypatch):
+    calls = _fake_systemctl(monkeypatch)
+    resumed = []
+    assert autostart.login_start(lambda: resumed.append(1), has_something=lambda: False) == "nothing to resume"
+    assert calls == [] and resumed == []
+
+
+def test_login_resumes_directly_without_a_usable_service(monkeypatch):
+    for enabled, start_ok in ((False, True), (True, False)):
+        _fake_systemctl(monkeypatch, enabled=enabled, start_ok=start_ok)
+        resumed = []
+        assert autostart.login_start(lambda: resumed.append(1), has_something=lambda: True) == "resumed directly"
+        assert resumed == [1]
+
+
+def test_login_does_nothing_on_other_platforms(monkeypatch):
+    for platform in ("win32", "darwin"):
+        monkeypatch.setattr(autostart.sys, "platform", platform)
+        resumed = []
+        assert autostart.login_start(lambda: resumed.append(1), has_something=lambda: True) == "not linux"
+        assert resumed == []
+
+
+def test_the_packages_install_the_login_entry():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "installers" / "linux"
+    for script in ("build_deb.sh", "install.sh"):
+        text = (root / script).read_text()
+        assert "etc/xdg/autostart/rmm-agent-login.desktop" in text, script
+        assert "Exec=/usr/bin/rmm-agent login" in text, script

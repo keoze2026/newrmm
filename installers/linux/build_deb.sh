@@ -37,7 +37,8 @@ install -d "$STAGE/DEBIAN" \
            "$STAGE/usr/lib/$PACKAGE" \
            "$STAGE/usr/bin" \
            "$STAGE/usr/share/applications" \
-           "$STAGE/usr/lib/systemd/user"
+           "$STAGE/usr/lib/systemd/user" \
+           "$STAGE/etc/xdg/autostart"
 
 install -m 0755 "$BINARY" "$STAGE/usr/lib/$PACKAGE/rmm-agent"
 
@@ -115,6 +116,23 @@ RestartSec=5
 [Install]
 WantedBy=graphical-session.target
 EOF
+
+# Every Linux desktop runs XDG autostart entries at login; not every one starts
+# graphical-session.target (XFCE, MATE, LXQt, Cinnamon do not), so the resume
+# service above never ran there and the agent never came back after a restart.
+# `rmm-agent login` does nothing unless a session is remembered or the computer
+# is enrolled, and then starts that service (or resumes directly without systemd).
+cat > "$STAGE/etc/xdg/autostart/rmm-agent-login.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Remote Support (rejoin at login)
+Comment=Brings the remote support agent back after a restart, if it was running
+Exec=/usr/bin/rmm-agent login
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+EOF
+echo "/etc/xdg/autostart/rmm-agent-login.desktop" > "$STAGE/DEBIAN/conffiles"
 
 cat > "$STAGE/DEBIAN/postinst" <<'EOF'
 #!/bin/sh

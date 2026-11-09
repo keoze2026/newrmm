@@ -298,6 +298,12 @@ def cmd_stop(_args) -> int:
     return 0
 
 
+def cmd_login(args) -> int:
+    """Run at login by /etc/xdg/autostart/rmm-agent-login.desktop (Linux)."""
+    print(autostart.login_start(lambda: cmd_resume(args)))
+    return 0
+
+
 def cmd_resume(args) -> int:
     """Rejoin the session remembered before the computer restarted.
 
@@ -452,6 +458,13 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--no-tray", dest="tray", action="store_false", help="run without a tray icon")
     resume.add_argument("--synthetic", action="store_true", help="capture a generated screen (used by the tests)")
     resume.set_defaults(func=cmd_resume)
+
+    login = sub.add_parser(
+        "login",
+        help="Linux: bring the agent back at login (run by the desktop's autostart)",
+        parents=[common],
+    )
+    login.set_defaults(func=cmd_login, tray=True, synthetic=False)
 
     join = sub.add_parser("join", help="join a session with its code", parents=[common])
     join.add_argument(

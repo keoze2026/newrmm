@@ -162,6 +162,20 @@ RestartSec=5
 WantedBy=graphical-session.target
 EOF
 
+# Login entry every desktop runs (see build_deb.sh for why the service alone
+# never came back on XFCE, MATE, LXQt or Cinnamon).
+mkdir -p /etc/xdg/autostart
+cat > /etc/xdg/autostart/rmm-agent-login.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Remote Support (rejoin at login)
+Comment=Brings the remote support agent back after a restart, if it was running
+Exec=/usr/bin/rmm-agent login
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+EOF
+
 echo
 echo "rmm-agent installed to /usr/bin/rmm-agent."
 echo "  Attended:   rmm-agent join --relay wss://<host>/api --code <CODE>"
