@@ -210,6 +210,24 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **Deployment gap found + clean-reinstall install command (2026-11-09).** The
+  user's agent "never came back online" because this Kali PC still runs build
+  **0.2.0.72** - the login-autostart fix is only in build 88+, which was never
+  installed here and **never placed on the server**. The relay serves the
+  connector `.deb` from a host mount (`infra/docker-compose.yml`:
+  `../agent/dist:/agent/dist:ro`), and `/opt/nermm/agent/dist/` still holds an
+  old `.deb`, so installing from the console hands out the old agent. Nothing
+  is "deployed" until the server is pulled, the CI `.deb` is dropped into
+  `agent/dist/`, and the relay+console containers are rebuilt (deploy block
+  recorded in memory `deploy-means-live-server`). This session is blocked from
+  the server; the user runs the deploy and does the testing.
+  Also: the console install command (`JoinPage.tsx`) now stops a running
+  agent, `apt-get purge`es any older `rmm-agent`, and removes its state
+  (`~/.local/state/RMMAgent`) and old `~/Downloads` `.deb`s before downloading
+  and installing clean. On this PC the agent was stopped, its user services
+  disabled, and its state removed (package purge needs the user's `sudo`).
+  Pushed `8fe95f5`; Tests CI green.
+
 - **Console install step now hands over ONE complete command (2026-11-08).**
   The Linux steps on the connector/install page (`console/src/pages/JoinPage.tsx`)
   used to show `apt install` on a `.deb` the person was assumed to have already
