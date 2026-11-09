@@ -210,6 +210,31 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **DIAGNOSIS, no code changed (2026-11-09): Windows freeze (~2s, 0 fps) +
+  some keys dropped (letter "m").** Evidence not yet collected - PowerShell
+  block (agent version, exe size/date, agent.log last 100, crash.log,
+  rmm-agent process count) and the server relay-log command handed to the user
+  this turn; waiting on outputs before explaining the freeze or proposing any
+  fix.
+  *Issue A (freeze):* UNKNOWN until logs. ~2s cadence matches neither the
+  keyframe interval (10s, `tiles.py:37`) nor the console liveness watchdog (6s,
+  `stream.ts`, commit 4e95f73 - whose deployment status on the server is also
+  UNKNOWN). No theory recorded on purpose.
+  *Issue B (key "m"):* traced end to end. Console sends every key as
+  `event.key` with no per-letter filter (`Viewer.tsx:251-259`; skips only
+  Escape and keys typed into a focused text field, `:239-249,252`). Relay
+  forwards verbatim (`ws.py:498-506`). Agent Windows path
+  (`remote_input.py:155-166`): `_special("m")` is None (`:90-103`), so
+  `target = "m"` (`:157`) and `press("m")` (`:161`). No code branch singles out
+  "m". The only silent-loss point is the `except Exception: log.debug`
+  wrapping the whole apply body (`:167-168`) - a pynput error on that key would
+  be hidden at debug level. EXACT CAUSE UNKNOWN from code; needs runtime
+  evidence. Proposed minimal logging (NOT added, awaiting approval): log
+  name/action/target in the key branch and raise that except to log.warning,
+  to show whether "m" never arrives, resolves wrong, or raises in pynput.
+  Fixes for both issues deferred until the evidence lands; Issue B's fix would
+  live in the agent installer (`remote_input.py`).
+
 - **Parrot blank + confirmations: 1A fixed, 1B/1C investigated (gated on a
   hardware test), Issue 2 pending one command (2026-11-09).**
   *1A - honest UI (DONE, relay + console).* The relay now carries the agent's

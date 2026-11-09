@@ -8,10 +8,17 @@ drives the already-started xdg-desktop-portal RemoteDesktop session
 (wayland_portal.PortalSession) that session.py shares with ScreenCapture.
 """
 import logging
+import platform
 
 from rmm_agent import wayland_portal
 
 log = logging.getLogger(__name__)
+
+# Temporary, Windows-only diagnostic: log the NAME of each key the operator
+# sends and whether it was injected, to find where a key like "m" is lost.
+# Only the key name and any exception are logged, never a run of typed text,
+# and only on Windows so no other platform starts logging keystrokes.
+_WINDOWS = platform.system() == "Windows"
 
 
 def scroll_steps(dy) -> int:
@@ -154,16 +161,25 @@ class InputInjector:
                     self._mouse.scroll(0, -steps)
             elif kind == "key":
                 name = message.get("key", "")
+                action = message.get("action")
                 target = self._special(name) or (name if len(name) == 1 else None)
                 if target is None:
+                    if _WINDOWS:
+                        log.info("keyinput %s name=%r dropped: no mapping", action, name)
                     return
-                if message.get("action") == "down":
-                    self._keyboard.press(target)
-                    self._pressed_keys.add(target)
-                else:
-                    target = _held_variant(target, self._pressed_keys)
-                    self._keyboard.release(target)
-                    self._pressed_keys.discard(target)
+                try:
+                    if action == "down":
+                        self._keyboard.press(target)
+                        self._pressed_keys.add(target)
+                    else:
+                        target = _held_variant(target, self._pressed_keys)
+                        self._keyboard.release(target)
+                        self._pressed_keys.discard(target)
+                    if _WINDOWS:
+                        log.info("keyinput %s name=%r sent", action, name)
+                except Exception as exc:
+                    if _WINDOWS:
+                        log.info("keyinput %s name=%r FAILED: %s", action, name, exc)
         except Exception as exc:
             log.debug("could not apply input %s: %s", message, exc)
 
