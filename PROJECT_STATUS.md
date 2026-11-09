@@ -210,6 +210,24 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **FINDING, no code changed (2026-11-08): why the agent on this Kali PC never
+  came back online.** (1) At 01:16:50 the computer powered off (journal:
+  `systemd-logind: The system will power off now!`); the agent went down with
+  it - its last line is pystray's "Failed to dock icon" as the panel vanished.
+  Not a crash: `crash.log` is empty. (2) After the next boot (04:08) and
+  login, `rmm-agent-resume.service` never ran (`journalctl --user -b -u
+  rmm-agent-resume.service`: no entries) although it is enabled and
+  `session.json` still holds `HFV3EFWS`. Cause: the unit is
+  `WantedBy=/After=/PartOf=graphical-session.target`, and XFCE never starts
+  that target (`systemctl --user is-active graphical-session.target` =
+  inactive; the user session only reaches `default.target`). So on XFCE - and
+  any other desktop that does not start `graphical-session.target` - restart
+  after reboot can never work. The 2026-10-22 "auto-start confirmed" result was
+  on a desktop that does start it. This PC also still runs build 72.
+  *Next task:* user decides on the fix. Recommended (Linux only): start the
+  resume at login from an XDG autostart entry (`~/.config/autostart/`), which
+  every desktop runs, instead of relying on `graphical-session.target`.
+
 - **All 20 open items from the 2026-11-07 list worked, on the user's order
   ("fix all 20"), 2026-11-08. Pushed as `5fa7fa3` + `e76a722`; CI green -
   Tests run 42453396372, Build agents run 42453396377 = build 85 (Linux,
