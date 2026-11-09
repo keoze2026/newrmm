@@ -56,6 +56,13 @@ class Session(Base):
     system_info: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     monitors: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     agent_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Which privacy blank this endpoint can deliver, from its hello:
+    # "capture-excluded" (operator keeps a live view - Windows/macOS, or Linux
+    # X11 brightness dimming) or "guest-lock" (the screen is locked and the
+    # operator's own view goes black too - Linux Wayland). The console warns
+    # before blanking and shows the right banner from this, instead of assuming
+    # the operator keeps their view.
+    privacy_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # SHA-256 of the secret handed to the first agent that joined an attended
     # session. Once set, the code alone no longer joins: a reconnect must
     # present the secret, so someone else holding the code cannot replace the

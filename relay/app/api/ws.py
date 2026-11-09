@@ -174,6 +174,7 @@ async def guest_socket(
             live.system_info = hello.get("system_info", {}) or {}
             live.monitors = hello.get("monitors", []) or []
             live.agent_version = str(hello.get("agent_version", ""))[:32] or None
+            live.privacy_mode = str(hello.get("privacy_mode", ""))[:32] or None
             live.guest_last_seen_at = datetime.now(timezone.utc)
             live.consent_state = "pending"
             issued_token = None
@@ -199,6 +200,7 @@ async def guest_socket(
                 "host_name": live.host_name,
                 "system_info": live.system_info,
                 "monitors": live.monitors,
+                "privacy_mode": live.privacy_mode,
             }
 
         # Tells the agent it is in, and hands a newly bound computer the secret
@@ -453,6 +455,7 @@ async def operator_socket(websocket: WebSocket, code: str, token: str = "") -> N
             "system_info": session.system_info,
             "monitors": session.monitors,
             "consent": session.consent_state,
+            "privacy_mode": session.privacy_mode,
         }
         standing_device = (
             str(session.device_id)

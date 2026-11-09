@@ -338,7 +338,8 @@ export default function Viewer({
       const proceed = window.confirm(
         "This endpoint cannot hide a window from its own screen capture, so " +
           "blanking will LOCK it instead: the screen goes black, local keyboard " +
-          "and mouse stop responding, and your view goes black too.\n\n" +
+          "and mouse stop responding, your view goes black too, and you will " +
+          "not be able to control it until you turn the blank off.\n\n" +
           'Turn it off again with the same button. Continue?',
       )
       if (!proceed) return
@@ -546,8 +547,10 @@ export default function Viewer({
               className="pointer-events-none absolute left-1/2 top-4 -translate-x-1/2 rounded-lg bg-black/70 px-4 py-2 text-center text-xs text-white/85"
             >
               {guestLock
-                ? 'Guest screen locked. This endpoint cannot hide a window from its own capture, so your view is black too.'
-                : 'Guest screen blanked. They see black; you still see the desktop.'}
+                ? 'Guest screen locked. This endpoint cannot hide a window from its own capture, so your view is black too and you cannot control it until you turn the blank off.'
+                : state.privacyMode === 'capture-excluded'
+                  ? 'Guest screen blanked. They see black; you still see the desktop.'
+                  : 'Guest screen blanked for privacy.'}
             </div>
           )}
         </div>

@@ -232,6 +232,33 @@ async def test_the_operator_authenticates_in_its_first_message(relay_url, client
         assert attached["type"] == "attached"
 
 
+async def test_the_endpoints_privacy_mode_reaches_the_operator(relay_url, client, auth_headers):
+    """The console warns before blanking and shows the right banner only if it
+    knows what the endpoint can do. The relay used to drop privacy_mode, so the
+    console assumed the operator kept their view even on a guest-lock endpoint."""
+    session = await _new_session(client, auth_headers)
+    token = await _token(client)
+    async with websockets.connect(f"{relay_url}/ws/operator/{session['code']}") as op:
+        await op.send(json.dumps({"type": "auth", "token": token}))
+        await _recv_json(op)  # "attached" - no guest yet
+        async with websockets.connect(f"{relay_url}/ws/guest/{session['code']}") as guest:
+            await guest.send(_hello(token_aware=True, privacy_mode="guest-lock"))
+            await _recv_json(guest)
+            assert (await _recv_json(op))["type"] == "guest_attached"
+            await guest.send(json.dumps({"type": "consent", "granted": True}))
+            joined = await _recv_json(op)
+            assert joined["type"] == "guest_joined"
+            assert joined["privacy_mode"] == "guest-lock"
+
+    # A second operator opening the already-live session learns it too, from the
+    # persisted row (the "attached" message), without waiting for a new consent.
+    async with websockets.connect(f"{relay_url}/ws/operator/{session['code']}") as op2:
+        await op2.send(json.dumps({"type": "auth", "token": token}))
+        attached = await _recv_json(op2)
+        assert attached["type"] == "attached"
+        assert attached["privacy_mode"] == "guest-lock"
+
+
 async def test_an_operator_without_a_valid_token_is_refused(relay_url, client, auth_headers):
     session = await _new_session(client, auth_headers)
     async with websockets.connect(f"{relay_url}/ws/operator/{session['code']}") as ws:

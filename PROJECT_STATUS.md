@@ -210,6 +210,115 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **Parrot blank + confirmations: 1A fixed, 1B/1C investigated (gated on a
+  hardware test), Issue 2 pending one command (2026-11-09).**
+  *1A - honest UI (DONE, relay + console).* The relay now carries the agent's
+  `privacy_mode` end to end: stored on the session from the hello
+  (`ws.py` guest_socket, new `Session.privacy_mode` column, migration
+  `0007_privacy_mode`), and included in the `guest_attached`/`guest_joined`
+  snapshots and the operator `attached` message (`ws.py` guest_snapshot). The
+  console already reads `message.privacy_mode` (`stream.ts:187`); it previously
+  got nothing because the relay dropped it (grep of `relay/app` was empty).
+  Now the pre-blank warning fires on a guest-lock endpoint (`Viewer.tsx:335`,
+  text updated to say the operator also loses control until unblank), and the
+  banner is three-way: guest-lock -> "your view is black too and you cannot
+  control it"; capture-excluded -> "you still see the desktop" (true only
+  there); unknown -> neutral "blanked for privacy" instead of the old false
+  claim (`Viewer.tsx:548-552`). New relay test
+  `test_the_endpoints_privacy_mode_reaches_the_operator`. *Lives in:* relay
+  container (model+migration+ws.py; `alembic upgrade head` runs on relay start)
+  and console container (Viewer.tsx). *Deploy:* relay first (migration), then
+  console - commands below.
+  *1C - operator loses control while blanked: CAUSE PROVEN, fix gated on 1B.*
+  The guest-lock Tk overlay is fullscreen, `-topmost` (`privacy.py:231`) and
+  calls `root.focus_force()` (`privacy.py:265`); on Linux it has no
+  click-through (that is Windows/macOS only, `privacy.py:338-342`). The
+  operator's input arrives via the portal RemoteDesktop
+  (`wayland_portal.py:347-360`) and the compositor routes it to the topmost
+  surface = the overlay, never the desktop. A click-through overlay (empty X
+  input shape under XWayland) would restore control but the operator would
+  still SEE black (overlay captured) and the guest lock would weaken. The only
+  fix that keeps BOTH view and control is to drop the overlay on Wayland and
+  darken the physical backlight instead (= 1B). So 1C's fix is the 1B
+  mechanism, not built until the 1B hardware test passes.
+  *1B - live view while blanked on Wayland: candidates + hand-test commands,
+  NOTHING BUILT (per the user's gate).* (a) logind
+  `org.freedesktop.login1.Session.SetBrightness(backlight,<dev>,0)` - no root
+  for the session owner. (b) `/sys/class/backlight` via `brightnessctl`
+  (same backlight, needs logind/udev or group). (c) No portal/compositor
+  "dim" method exists; DPMS-off powers the output down and would likely stop
+  or change the capture - to be proven, not assumed. The backlight approach,
+  if it works, means PipeWire still captures the real framebuffer (operator
+  keeps the live view) and portal input still reaches the desktop (operator
+  keeps control), while the panel is dark for the person at the machine. It
+  MUST restore on unblank/Escape/agent-exit/agent-crash via the same detached
+  dead-man's-switch `dimmer.py:69-82,110` already uses. Commands handed to the
+  user this turn; build only after they paste "panel dark AND captured picture
+  normal".
+  *Issue 2 - still unresolved; one diagnostic command handed over.* Last log
+  showed silent restore after the first 1-2 sessions, but the user still sees
+  two prompts, so the restore token is suspected lost between sessions
+  (checked by `ls -l` + contents of `~/.local/state/RMMAgent/wayland_restore_token`
+  across two sessions). Fix only after that output.
+
+- **DIAGNOSIS, no code changed (2026-11-09): Parrot blank + confirmations,
+  confirmed from the Parrot machine's own `rmm-agent status` and agent.log.**
+  Parrot facts: `session type: wayland`, `enrolled: yes` (device
+  6dd89670-...), compositor `portal ScreenCast v5 RemoteDesktop v2` (restore
+  tokens AND input both supported; not wlroots), `capture path:
+  native-x11-shm` in `status` (a one-off status check; real sessions use the
+  portal - log shows "Wayland screen share closed" each time).
+  *Issue 1 (blank shows the lock screen to the operator) - CONFIRMED.*
+  agent.log line 148: `privacy blank on (guest-lock)` with no `darken`/
+  `falling back` line, so `supported_mode()` returned guest-lock DIRECTLY
+  (`privacy.py:54-62`; `dimmer.available()` is false on Wayland,
+  `dimmer.py:35-36`). (a) The guest-lock Tk overlay (`privacy.py:247-256`) is
+  captured because Linux has no capture-exclusion (`privacy.py:342` returns
+  False off Win/mac) and the portal streams the composited screen, overlay
+  included (lesson #18, on Wayland). (b) Operator input is dead: guest-lock
+  blocks local input (`privacy.py:182-183,427-459`) AND the overlay has no
+  click-through on Linux (Win/mac only, `privacy.py:338-342`). (c) ROOT of the
+  false banner: the relay carries NO `privacy_mode` at all (grep of
+  `relay/app` = empty; snapshot is only host/system/monitors,
+  `ws.py:198-202,276,451-456`), though the agent sends it (`session.py:221`)
+  and the console reads `message.privacy_mode` (`stream.ts:187`). So
+  `privacyMode` is null until the first blank-state message, `guestLock`
+  (`Viewer.tsx:331`) is false, and the banner shows "you still see the
+  desktop" (`Viewer.tsx:550`); the same gap skips the pre-blank warning
+  (`Viewer.tsx:335`) so the operator is never told blanking will LOCK + black
+  their own view. The deeper truth: on Wayland the blank can only ever be a
+  guest-lock (no portal capture-exclusion), so operator-keeps-view-and-control
+  is not achievable there with this approach. **UNKNOWN:** whether the banner
+  stays wrong after the blank-state message (it carries mode=guest-lock and
+  should self-correct) - capture live in DevTools WS messages.
+  *Issue 2 (confirmations) - the log does NOT reproduce "two every session".*
+  #1 = agent consent window (`consent.py:77-86` at `session.py:327`); log line
+  8 `consent granted by the endpoint user, and kept for next time` = "Always
+  allow" clicked (`consent.py:127`) - appears ONLY at enrolment (16:07); no
+  later session shows it (standing path skips it, `session.py:321-323`). #2 =
+  Wayland portal picker (`session.py:386`, Wayland-only, `session.py:348-349`).
+  The picker is being restored SILENTLY in steady state - gap between "Choose
+  the screen to share" and "streaming starts now": 16:07 ~76s (dialog), 16:10
+  6.8s (dialog), then 16:13 0.48s, 16:14 0.44s, 16:40 0.79s, 16:46 0.45s =
+  sub-second, NO dialog. So the restore-token path (`session.py:376-381,
+  412-415`; helper `wayland_helper.py:180-204`, persist_mode 2 on SelectDevices
+  for input, SelectSources for screencast) IS working after the first 1-2
+  sessions. Steady state is ~zero prompts, not two. **UNKNOWN:** whether the
+  user still sees two NOW or whether that was the pre-enrolment/first-session
+  experience; if still happening, the restore token is being lost between
+  sessions - check `~/.local/state/RMMAgent/wayland_restore_token` exists and
+  whether it changes per session.
+  *Proposed fixes (NOT implemented, awaiting approval):* Issue 1 - carry
+  `privacy_mode` from the hello through the relay to the console so it warns
+  BEFORE blanking and shows the right banner (files: `relay/app/api/ws.py`
+  snapshot + guest_attached/attached/guest_joined; risk: low, informational).
+  Keeping the operator's view/control while blanking on Wayland is a
+  compositor-specific research item, not a quick fix. Issue 2 - likely NO code
+  change needed (restore token already works per the log); only act if the
+  token is being discarded each session, fix in `session.py` `_open_portal` /
+  `wayland_portal.py` restore-token persistence; enrolment-time prompt is the
+  compositor's and cannot be removed.
+
 - **Mid-session freeze / 0 fps / still "connected" / refresh fixes it:
   diagnosed AND fixed in the console (2026-11-09).** Cause proven from code (not
   yet from a live freeze). The fix makes the viewer recover on its own so a
