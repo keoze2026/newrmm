@@ -210,6 +210,94 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **RESEARCH, no code changed (2026-11-09): how real remote-desktop systems
+  handle stalled streams / keyframes / keepalive / Wayland blank (3 subagents,
+  source-verified).** Done before approving a console freeze fix.
+  *Findings (file:line in their repos):* RustDesk - no per-frame video watchdog;
+  30s no-DATA timeout (`io_loop.rs:337`) + 3s/8s transport liveness; recovery is
+  `refresh_video` (restart encoder -> full frame, `client.rs:3521`,
+  `video_service.rs:763`) triggered by decode error/backlog/manual; bidirectional
+  TestDelay keepalive ~1s (`connection.rs:504,1187`); privacy mode Windows/macOS
+  ONLY, NO Linux privacy (`privacy_mode.rs:113-172`), and on Windows the operator
+  keeps view+control (capture excludes the black window, only local input
+  hooked). Guacamole - receiveTimeout 15s tear-down + nop keepalive 5s / ping
+  500ms (`Client.js:49`, `Tunnel.js:116,708`); no auto-reconnect in the lib
+  (`Tunnel.js:1110`); no full-frame re-request. VNC/RFB - recovery is
+  FramebufferUpdateRequest incremental=0 (full frame) when contents lost
+  (`rfb.js:2232`, `CConnection.cxx:985`); NO heartbeat (TCP only); noVNC has NO
+  stall watchdog. MeshCentral - no frozen-frame watchdog; recovery = reconnect
+  or manual Refresh; server re-sends its cached full composite WITHOUT asking the
+  agent (`meshdesktopmultiplex.js:619`); rtt 10s + TCP keepalive 240s.
+  TeamViewer/AnyDesk - blank keeps operator view+control, Wayland UNKNOWN;
+  recovery/keyframe/keepalive UNKNOWN (not documented). Chrome Remote Desktop -
+  no blank feature, separate virtual desktop, Wayland UNKNOWN.
+  *Three universal patterns:* (1) fast bidirectional keepalive + no-DATA timeout;
+  (2) lost-picture recovery is a full-frame/keyframe REQUEST, not a reconnect;
+  (3) nobody reconnects on "no video for N s" (a static screen sends nothing) -
+  they request a keyframe (safe) instead.
+  *Our gaps (our file:line):* keepalive weak (agent/relay 20s `session.py:202`,
+  browser none, no app heartbeat); keyframe requested only on attach
+  (`ws.py:483`) + agent auto every 10s (`tiles.py:37`), console NEVER requests
+  one on a mid-session stall; watchdog reconnects on 6s no-BYTES (`stream.ts:44`)
+  but is blind to count=0 "nothing changed" frames; only recovery is reconnect;
+  NO agent-side capture-stall detection - Wayland `portal.grab()` returns "same"
+  forever when PipeWire goes quiet (`capture.py:174-176`,
+  `wayland_portal.py:328-330`), Windows native can return a dead thread's last
+  frame forever (2026-10-29 audit deferred item). RustDesk resets the capturer
+  at the SOURCE (`video_service.rs:914-933`).
+  *Cause vs symptom:* the proposed console fix is legitimate RECOVERY (= RustDesk
+  refresh_video / VNC incremental=0; a keyframe request restarts the agent's
+  encode path, which is why a manual refresh works) - NOT cosmetic. But the ROOT
+  CAUSE is agent-side: `grab()` returns stale frames while count=0 frames keep
+  flowing, so the picture freezes. Console recovery will fix the common/Windows
+  case; the Parrot blank-stays-frozen case likely ALSO needs an agent-side
+  Wayland capture/blank fix.
+  *Proposed ONE best fix (NOT approved, NOT implemented):* console `stream.ts`
+  watchdog keys on the PICTURE updating (a repaint), not bytes; on ~3s stale it
+  requests a keyframe (static-but-healthy screen just repaints, no false
+  reconnect), and rebuilds the socket only if no fresh picture follows. Console
+  container only; touches NO agent file, so Kali's native-x11-shm+pynput+dimmer
+  path is byte-identical. Verify by causing a freeze on Kali/Parrot/Windows and
+  watching it recover with no refresh. Follow-up cause-fix (separate, agent-side,
+  scoped to Windows native + Wayland portal, NOT X11): detect same-frame grab
+  and reset the capturer.
+
+- **DIAGNOSIS, no code changed (2026-11-09): Parrot blank freezes the view and
+  loses control, and does NOT recover when the blank is turned off.** User
+  report (Parrot, KDE, Wayland, real build): blank ON -> console view freezes on
+  a still of the desktop, no control; blank OFF -> STILL frozen, STILL no
+  control; the banner ("your view is black too ... until you turn the blank
+  off") is wrong - the view is a frozen still, not black, and blank-off does not
+  restore control. Requirement reaffirmed: ONE universal Linux agent (X11 +
+  Wayland, any desktop/distro); the Kali XFCE/X11 machine works and must not
+  break; a Parrot fix must only touch the Wayland path.
+  *Linux path map (universal agent):* capture - Wayland portal/PipeWire
+  (`capture.py:122-134,172-179`) vs X11 native x11-shm (`capture.py:98-111,
+  180-182`) vs mss (`:62-66,183-188`); decided by `self._wayland`
+  (`session.py:87-89`), portal attached after consent (`session.py:348-349`).
+  Input - Wayland portal RemoteDesktop (`remote_input.py:71-75,170-217`) vs
+  pynput/XTest (`remote_input.py:77-85,127-166`); decided at
+  `session.py:408-409` / `:95`. Blank - dimmer/xrandr MODE_EXCLUDED
+  (`privacy.py:54-62,129,150-159`, `dimmer.py:31-37` X11-only) vs guest-lock
+  overlay+input-block MODE_GUEST_LOCK (`privacy.py:166-187,219-315,427-459`).
+  *Which path each machine takes (from the user's own outputs):* KALI (XFCE,
+  X11) = native-x11-shm capture (status `capture path : native-x11-shm`),
+  pynput input, dimmer blank (blank path UNKNOWN from a Kali log - code only).
+  PARROT (KDE, Wayland) = wayland-portal capture (agent.log `capturing through
+  the Wayland portal (PipeWire)`), portal input (`input injection via the
+  Wayland portal (RemoteDesktop)`), guest-lock blank (`privacy blank on
+  (guest-lock)`). Kali-safety: the overlay/guest-lock, portal capture and portal
+  input are reached only on Wayland; Kali's dimmer+x11+pynput paths are
+  mutually exclusive by mode/`self._wayland`, so a Wayland-blank fix cannot
+  touch them.
+  *Still UNKNOWN until the user pastes outputs (commands handed over this turn):*
+  whether frames keep leaving the agent when blank is on, whether they resume
+  after blank off, where they stop (agent/relay/browser), whether the portal
+  grab or the pynput input-block hangs, and why the frozen state persists after
+  disable(). No fix proposed yet beyond the scope (Wayland blank path +
+  console banner); exact one-file change after the Step 4 outputs. NOT to be
+  called done until checked on BOTH Kali and Parrot with the real build.
+
 - **FIXED (2026-11-09): item 3 - the install command's kill step now actually
   kills the old agent (console).** `JoinPage.tsx` install command used
   `pkill -x rmm-agent` (SIGTERM), which the agent ignores (confirmed on Parrot:
