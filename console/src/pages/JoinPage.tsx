@@ -255,6 +255,14 @@ export default function JoinPage() {
                 <li>3. It asks your permission. Nothing is shared until you allow it.</li>
                 <li>4. An icon stays in your system tray for as long as the session runs.</li>
                 <li>5. Close the connector, or use its tray menu, to end the session.</li>
+                <li>
+                  To remove it completely: open <span className="font-mono text-navy">PowerShell</span>,
+                  paste this one line, and press Enter. It stops the agent,
+                  removes it, and deletes all of its files:
+                  <div className="mt-1 select-all break-all rounded bg-white px-2 py-1.5 font-mono text-navy">
+                    {`taskkill /F /IM rmm-agent-watchdog.exe 2>$null; taskkill /F /IM rmm-agent.exe 2>$null; schtasks /Delete /TN RMMAgentWatchdog /F 2>$null; reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v RMMAgentResume /f 2>$null; Get-ChildItem "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*" | Where-Object { $_.GetValue('DisplayName') -like 'RMM Agent*' } | ForEach-Object { Start-Process -Wait -FilePath ($_.GetValue('UninstallString').Trim('\"')) -ArgumentList '/VERYSILENT' }; Remove-Item -Recurse -Force "$env:APPDATA\\RMMAgent" 2>$null`}
+                  </div>
+                </li>
               </ol>
               )}
             </div>
