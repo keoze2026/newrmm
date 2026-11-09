@@ -374,11 +374,17 @@ class AgentSession:
         compositor's dialog; an enrolled device keeps the approval so later
         sessions start without it."""
         token = self._restore_token
-        if token is None and self.standing_consent:
+        if token is None:
             token = wayland_portal.load_restore_token()
-        # 2 = keep the approval until revoked (enrolled device); 1 = while
-        # this agent runs (reconnects within an attended session).
-        persist = 2 if self.standing_consent else 1
+        # persist_mode 2 = keep the compositor's screen-share approval across
+        # sessions, so its picker is shown once and then restored silently.
+        # This is for every session, not only an enrolled device: the person
+        # still consents each session through the agent's own window (nothing
+        # is captured before that), so remembering only the compositor's
+        # picker is safe - and it means a Wayland machine needs the same single
+        # confirmation an X11/Windows one does, instead of the consent window
+        # PLUS the compositor picker every time.
+        persist = 2
         portal = wayland_portal.PortalSession()
         if self.tray:
             self.tray.set_state(CONNECTED, "Choose the screen to share")
@@ -411,8 +417,7 @@ class AgentSession:
             log.warning("this desktop's portal shares the screen without remote control")
         if portal.restore_token:
             self._restore_token = portal.restore_token
-            if self.standing_consent:
-                await asyncio.to_thread(wayland_portal.save_restore_token, portal.restore_token)
+            await asyncio.to_thread(wayland_portal.save_restore_token, portal.restore_token)
 
     async def _close_portal(self) -> None:
         """End the Wayland share with the connection: no capture outside a

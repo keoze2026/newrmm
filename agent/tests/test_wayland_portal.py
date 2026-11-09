@@ -324,16 +324,20 @@ def _wayland_session(monkeypatch, portals, **kwargs):
     return session_module.AgentSession("ws://relay.invalid", "ABCD", inject=True, **kwargs)
 
 
-def test_no_portal_dialog_before_consent_and_none_left_after(monkeypatch):
+def test_no_portal_dialog_before_consent_and_none_left_after(monkeypatch, tmp_path):
     """The compositor's dialog and its sharing indicator must not appear
     before the person consents, and the share must end with the session."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     portals = []
     session = _wayland_session(monkeypatch, portals)
     assert portals == []  # constructing the session asks the compositor nothing
 
     asyncio.run(session._open_portal())
     assert len(portals) == 1
-    assert portals[0].start_args == (True, None, 1)
+    # persist_mode 2 even for an attended session: the compositor's screen
+    # picker is kept so it is not shown again every session. Consent itself is
+    # still asked each session through the agent's own window.
+    assert portals[0].start_args == (True, None, 2)
     assert session.capture.backend == "wayland-portal"
     assert session.injector._portal is portals[0]
 
@@ -360,6 +364,28 @@ def test_an_enrolled_device_keeps_the_approval_between_sessions(monkeypatch, tmp
 
     wayland_portal.forget_restore_token()
     assert wayland_portal.load_restore_token() is None
+
+
+def test_an_attended_session_also_keeps_the_compositor_approval(monkeypatch, tmp_path):
+    """The fix for "two confirmations on Wayland": an attended session (no
+    enrolment) now reuses the compositor's screen-share approval too, so its
+    picker is shown once and restored silently afterwards. The agent's own
+    consent window still asks every session - this only stops the EXTRA
+    compositor prompt that X11/Windows machines never have."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setattr(sys, "platform", "linux")
+    portals = []
+
+    first = _wayland_session(monkeypatch, portals)  # attended: no standing_consent
+    asyncio.run(first._open_portal())
+    asyncio.run(first._close_portal())
+    assert portals[0].start_args == (True, None, 2)       # asked with persist 2
+    assert wayland_portal.load_restore_token() == "restore-xyz"  # and remembered
+
+    later = _wayland_session(monkeypatch, portals)  # a fresh attended session
+    asyncio.run(later._open_portal())
+    asyncio.run(later._close_portal())
+    assert portals[1].start_args == (True, "restore-xyz", 2)  # restored, no picker
 
 
 def test_a_portal_that_fails_leaves_the_session_on_its_old_path(monkeypatch):

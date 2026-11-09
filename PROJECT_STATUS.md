@@ -255,11 +255,27 @@ the rule that stops it happening again. Add one the moment something goes wrong.
   dead-man's-switch `dimmer.py:69-82,110` already uses. Commands handed to the
   user this turn; build only after they paste "panel dark AND captured picture
   normal".
-  *Issue 2 - still unresolved; one diagnostic command handed over.* Last log
-  showed silent restore after the first 1-2 sessions, but the user still sees
-  two prompts, so the restore token is suspected lost between sessions
-  (checked by `ls -l` + contents of `~/.local/state/RMMAgent/wayland_restore_token`
-  across two sessions). Fix only after that output.
+  *Issue 2 - CAUSE FOUND and FIXED (agent).* Parrot `rmm-agent status`:
+  `enrolled: yes`, `session type: wayland`, `ScreenCast v5 RemoteDesktop v2`;
+  `wayland_restore_token` exists (36 bytes). agent.log proves the ENROLLED/
+  standing path is already silent - gap between "Choose the screen to share"
+  and "Wayland portal share started" is 0.4s from 16:13 on (vs 64s at
+  enrolment, 6.8s at the first standing session), and the consent window
+  (`consent granted by the endpoint user`) appears ONLY at enrolment (16:07).
+  So two prompts can only come from the ATTENDED path: a consent window PLUS
+  the compositor picker, because attended sessions did not reuse the restore
+  token (`session.py` `_open_portal`: token loaded/saved only when
+  `standing_consent`, `persist=1`). Other OSes show one prompt (consent window;
+  no portal). FIX: `_open_portal` now uses `persist_mode=2` and loads/saves the
+  restore token for EVERY Wayland session, so the compositor picker is shown
+  once then restored silently; the agent's own consent window still asks each
+  session (nothing captured before it). Wayland-only path - no other OS
+  touched. Tests: `test_wayland_portal.py` updated (attended now persist 2) +
+  new `test_an_attended_session_also_keeps_the_compositor_approval`; 19/19 pass
+  locally. *Lives in:* agent `.deb` - needs a new CI build installed on Parrot
+  (reinstall), NOT just a server deploy. If instead the operator opens the
+  enrolled "parrot" device from My Sessions (standing path), it is already
+  ~zero prompts today with no reinstall.
 
 - **DIAGNOSIS, no code changed (2026-11-09): Parrot blank + confirmations,
   confirmed from the Parrot machine's own `rmm-agent status` and agent.log.**
