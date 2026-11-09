@@ -235,10 +235,10 @@ export default function JoinPage() {
                   <li>1. Open a terminal. Any folder is fine.</li>
                   <li>
                     2. Copy this one line, paste it, and press Enter. It
-                    downloads the agent, installs it, and starts it - nothing
-                    else to do:
+                    removes any older agent, then downloads this one, installs
+                    it, and starts it - nothing else to do:
                     <div className="mt-1 select-all break-all rounded bg-white px-2 py-1.5 font-mono text-navy">
-                      {`pkill -x rmm-agent 2>/dev/null; d=$(mktemp -d); curl -fL "${window.location.origin}/api/connector/linux?code=${session.code}" -o "$d/pkg" && { unzip -o "$d/pkg" -d "$d" 2>/dev/null || mv "$d/pkg" "$d/rmm-agent.deb"; } && sudo apt install -y "$d"/*.deb && rmm-agent start --code ${session.code}`}
+                      {`pkill -x rmm-agent 2>/dev/null; sudo apt-get purge -y rmm-agent 2>/dev/null; rm -rf ~/.local/state/RMMAgent ~/Downloads/rmm-agent*.deb; d=$(mktemp -d); curl -fL "${window.location.origin}/api/connector/linux?code=${session.code}" -o "$d/pkg" && { unzip -o "$d/pkg" -d "$d" 2>/dev/null || mv "$d/pkg" "$d/rmm-agent.deb"; } && sudo apt install -y "$d"/*.deb && rmm-agent start --code ${session.code}`}
                     </div>
                   </li>
                   <li>3. Type your computer password when asked. Nothing shows while you type; that is normal.</li>
