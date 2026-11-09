@@ -210,6 +210,25 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **FIXED (2026-11-09): item 3 - the install command's kill step now actually
+  kills the old agent (console).** `JoinPage.tsx` install command used
+  `pkill -x rmm-agent` (SIGTERM), which the agent ignores (confirmed on Parrot:
+  `rmm-agent stop` timed out 8s, `status` still showed the same pid running),
+  and it did not stop the systemd resume service that restarts it - so a
+  reinstall left the old agent alive and you got two connected agents. Now the
+  kill is `systemctl --user disable --now rmm-agent-resume.service
+  rmm-agent.service 2>/dev/null; pkill -9 -x rmm-agent 2>/dev/null`: disable+stop
+  the units so systemd cannot restart, then SIGKILL (which cannot be ignored).
+  Kept `-x` (exact process name) deliberately - `-f rmm-agent` would match the
+  install shell's own command line (it contains `rmm-agent start`) and kill the
+  installer mid-run. State dir is still NOT wiped (item 2 preserved). Rendered
+  command `bash -n` clean. Lives in: console container. NOTE: the universal
+  MANUAL kill is `pkill -9 -f rmm-agent; systemctl --user disable --now
+  rmm-agent-resume.service rmm-agent.service; rm -f
+  "${XDG_STATE_HOME:-$HOME/.local/state}/RMMAgent/session.json" .../enrolment.json`
+  - `-f` is safe there because it is run on its own, not inside a shell whose
+  argv contains `rmm-agent`.
+
 - **FIXED (2026-11-09): removed the unrequested code-input window (item 1) and
   stopped the install command wiping agent state (item 2).** Both on the user's
   explicit approval; items 3-5 from the list were NOT touched.
