@@ -430,6 +430,39 @@ class AgentSession:
         await asyncio.to_thread(portal.close)
         log.info("Wayland screen share closed")
 
+    async def _restart_portal(self) -> None:
+        """Wayland only: replace the portal capture stream with a fresh one,
+        reusing the kept approval so NO new dialog appears. Used when the
+        compositor's stream has stopped delivering new frames - seen after the
+        privacy blank is turned off, where the operator is otherwise left on a
+        frozen picture. The current stream is kept untouched if the restart
+        fails, so capture never drops to the black X11/XWayland fallback.
+
+        X11 never has a portal (`self._wayland` is None there), so this is
+        unreachable on the Kali X11 path."""
+        if not self._wayland or self._portal is None:
+            return
+        token = self._restore_token or wayland_portal.load_restore_token()
+        fresh = wayland_portal.PortalSession()
+        try:
+            ok = await asyncio.to_thread(fresh.start, self._inject, token, 2)
+        except BaseException:
+            await asyncio.to_thread(fresh.close)
+            log.warning("could not restart the Wayland portal; keeping the current stream")
+            return
+        if not ok or not self.capture.attach_portal(fresh):
+            await asyncio.to_thread(fresh.close)
+            log.warning("Wayland portal restart gave no usable stream; keeping the current stream")
+            return
+        old, self._portal = self._portal, fresh
+        if fresh.input_available:
+            self.injector = InputInjector(enabled=self._inject, portal=fresh)
+        if fresh.restore_token:
+            self._restore_token = fresh.restore_token
+            await asyncio.to_thread(wayland_portal.save_restore_token, fresh.restore_token)
+        await asyncio.to_thread(old.close)
+        log.info("restarted the Wayland portal capture after the blank was turned off")
+
     async def _stream(self, socket) -> None:
         while not self._stop.is_set():
             started = asyncio.get_running_loop().time()
@@ -622,6 +655,12 @@ class AgentSession:
                 )
         else:
             state = await asyncio.to_thread(self._privacy.disable)
+            # Wayland only: the compositor's capture stream can stop delivering
+            # new frames while the blank overlay is up and not resume when it
+            # comes down, leaving the operator on a frozen picture. Get a fresh
+            # stream at once, reusing the kept approval (no new dialog).
+            if self._wayland and self._portal is not None:
+                await self._restart_portal()
             if self.tray:
                 self.tray.notify("Your screen is visible again.", "Privacy blank off")
 

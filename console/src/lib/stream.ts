@@ -31,18 +31,20 @@ export type FrameHandler = (frame: FrameSource) => void
 export type StateHandler = (state: StreamState) => void
 export type MessageHandler = (message: Record<string, unknown>) => void
 
-// Liveness watchdog. While the guest is sharing, the endpoint sends a binary
-// frame every frame interval even when nothing on screen moved (a zero-tile
-// frame), and a whole keyframe at least every 10s. So on a healthy connection
-// frames never go quiet. If the browser's socket still looks OPEN but no frame
-// has arrived for this long, the connection is half-dead - a TCP path the
-// browser never got a close event for (wifi roam, sleep/wake, a proxy or
-// Cloudflare dropping one direction). The server's own 20s ping notices and
-// closes its end, but that close never reaches a half-open browser, so onclose
-// never fires and the viewer would sit frozen until the person reloaded the
-// page. The watchdog rebuilds the socket itself so they never have to.
-const FRAME_STALE_MS = 6000
-const LIVENESS_CHECK_MS = 2000
+// Liveness watchdog - recovers a frozen viewer as fast as possible without
+// firing on a healthy idle screen. The endpoint sends a frame every tick even
+// when nothing changed (a zero-tile frame), so while frames keep ARRIVING the
+// stream is alive and an idle screen is not a fault. The true freeze signal is
+// frames stopping entirely: no frame for STALE_MS -> ask the endpoint for a
+// fresh one (like a manual refresh); still nothing PROBE_GRACE_MS later ->
+// rebuild the socket at once, no backoff. (Watching the pixels alone instead
+// would request a keyframe every second on a genuinely still screen, because a
+// zero-tile frame never repaints - so this keys on frames arriving, which is
+// the same freeze signal without that waste. The agent restarts a genuinely
+// stalled capture itself, so "frames arriving" reliably means "not frozen".)
+const STALE_MS = 1000
+const PROBE_GRACE_MS = 1000
+const LIVENESS_CHECK_MS = 250
 
 export interface InputMessage {
   type: 'input'
@@ -78,6 +80,8 @@ export class SessionStream {
   private reconnectTimer: number | null = null
   private livenessTimer: number | null = null
   private lastFrameAt = 0
+  // When we last asked for a fresh frame because frames stopped; 0 = not asked.
+  private probedAt = 0
   private closed = false
   private listeners = new Set<MessageHandler>()
   private assembler = new FrameAssembler()
@@ -123,6 +127,7 @@ export class SessionStream {
       // time to deliver a frame yet, and the relay is about to ask the guest
       // for a keyframe.
       this.lastFrameAt = performance.now()
+      this.probedAt = 0
       this.state = { ...this.state, connected: true }
       this.onState(this.state)
     }
@@ -188,7 +193,10 @@ export class SessionStream {
       }
       // The guest just started sharing: give the watchdog a fresh window for
       // the first frame to arrive before it can consider the stream stale.
-      if (this.state.guestConnected) this.lastFrameAt = performance.now()
+      if (this.state.guestConnected) {
+        this.lastFrameAt = performance.now()
+        this.probedAt = 0
+      }
       this.onState(this.state)
     } else if (type === 'guest_left') {
       this.state = { ...this.state, guestConnected: false, blanked: false }
@@ -214,9 +222,24 @@ export class SessionStream {
     if (this.closed) return
     if (this.socket?.readyState !== WebSocket.OPEN) return
     // Frames are only expected once the guest has consented and is sharing;
-    // before that, a quiet socket is normal and must not trigger a reconnect.
+    // before that, a quiet socket is normal and must not trigger anything.
     if (!this.state.guestConnected) return
-    if (performance.now() - this.lastFrameAt > FRAME_STALE_MS) {
+    const since = performance.now() - this.lastFrameAt
+    if (since < STALE_MS) {
+      this.probedAt = 0
+      return
+    }
+    // Frames have stopped. First ask the endpoint for a fresh frame - cheap,
+    // and enough if the stream is only momentarily behind. Only if that brings
+    // nothing back do we rebuild the socket.
+    if (this.probedAt === 0) {
+      console.info('[viewer] no frames for %dms - requesting a fresh frame', Math.round(since))
+      this.send({ type: 'keyframe' })
+      this.probedAt = performance.now()
+      return
+    }
+    if (performance.now() - this.probedAt >= PROBE_GRACE_MS) {
+      console.info('[viewer] still no frames after a keyframe request - rebuilding the connection')
       this.forceReconnect()
     }
   }
@@ -239,6 +262,7 @@ export class SessionStream {
       }
     }
     this.socket = null
+    this.probedAt = 0
     this.state = { ...this.state, connected: false }
     this.onState(this.state)
     this.connect()

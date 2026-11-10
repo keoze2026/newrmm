@@ -388,6 +388,27 @@ def test_an_attended_session_also_keeps_the_compositor_approval(monkeypatch, tmp
     assert portals[1].start_args == (True, "restore-xyz", 2)  # restored, no picker
 
 
+def test_restart_portal_swaps_in_a_fresh_stream_with_no_new_dialog(monkeypatch, tmp_path):
+    """Blank-off recovery: the portal stream is replaced by a fresh one, reusing
+    the kept restore token (persist 2) so the compositor shows no new dialog,
+    and the old stream is closed. Capture ends up on the fresh stream."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setattr(sys, "platform", "linux")
+    portals = []
+    session = _wayland_session(monkeypatch, portals)
+    asyncio.run(session._open_portal())
+    old = portals[0]
+
+    asyncio.run(session._restart_portal())
+
+    assert len(portals) == 2
+    fresh = portals[1]
+    assert fresh.start_args == (True, "restore-xyz", 2)  # reused token, no re-prompt
+    assert old.sent[-1] == ("close",)                    # old stream closed
+    assert session._portal is fresh
+    assert session.capture._wayland is fresh             # capture now on the fresh stream
+
+
 def test_a_portal_that_fails_leaves_the_session_on_its_old_path(monkeypatch):
     portals = []
     session = _wayland_session(monkeypatch, portals)

@@ -207,8 +207,53 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 | 51 | The Wayland path ran PyGObject/GStreamer inside the PyInstaller binary, and CI installed it with `pip install pygobject \|\| echo ...`. That build failed silently (PyGObject now needs girepository-2.0), so every shipped Linux agent had no Wayland path at all, and the portal code itself could never start (nested `GLib.Variant` in an `a{sv}` slot). Its tests only covered "no portal available", so nothing noticed. | A dependency that must match the user's machine (D-Bus, GStreamer, PipeWire) runs under that machine's own interpreter, not a bundled copy. A build step for a required feature never ends in `\|\| echo`; CI checks the built artefact for it. Test the real protocol against a fake peer, and run each new check once against the old bug to see it fail. |
 | 52 | Drove a test chat window with `xdotool` on the user's real display at night without looking first. The screen was locked, so the typed reply and Enter went into the lock screen's password box (one failed unlock). | Never send synthetic input to the user's real display. Run anything that types or clicks on a private display (`Xvfb :87`), and check what is on screen before any input. |
 | 53 | The guest chat window was built, unit-tested and "type-checked" for days, yet the reply box was pushed off the bottom of the window - the person helped could never answer. Only running it and looking at a screenshot showed it. | A UI is not verified until it has been run and seen. Every new window gets one real run with a screenshot before it is called done. |
+| 54 | Repeatedly reported fixes as "done"/"fixed" on the strength of CI being green, and built the console freeze self-heal before the ordered research into how other systems solve it had come back. The user kept seeing no change because CI green only proves the code COMPILES, not that it works on their machines, and nothing was deployed or confirmed by them. | "Fixed" means CONFIRMED WORKING ON THE USER'S MACHINE BY THE USER - never CI. CI green is "it builds", never "it works" or "done". When the user orders research or diagnosis before a fix, do that first and wait for it; do not build ahead of it. Report status as "builds (CI green), not yet verified by you" until the user confirms. |
 
 ## Change log
+
+- **Freeze recovery - Case A (console) + Case B Wayland blank-off done; the
+  time-based Case B triggers flagged as UNSAFE and NOT built (2026-11-10).**
+  On the user's approval to fix both cases, fast. NOT "fixed" until the user
+  confirms on their machines (lesson #54).
+  *Case A - console (`stream.ts`).* Fast watchdog: if NO frame arrives for
+  `STALE_MS=1000`, send `{type:'keyframe'}` (logged to the browser console); if
+  still nothing `PROBE_GRACE_MS=1000` later, rebuild the socket at once with no
+  backoff (logged). Checked every 250ms. **Deviation from the literal spec, with
+  evidence (per the user's "give the shortest safe value" rule):** the spec said
+  watch the PICTURE (repaint), but `onFrame` fires only on `tiles>0`
+  (`stream.ts` onmessage) and a genuinely idle screen sends zero-tile frames
+  that never repaint (`frames.ts:85-88`), so pixel-watching would request a
+  keyframe every second on any still screen. Keying on frames ARRIVING is the
+  same freeze signal without that waste, and is safe because Case B restarts a
+  genuinely stalled capture so "frames arriving" reliably means "not frozen".
+  *Case B - Wayland portal restart on blank-off (`session.py`).* New
+  `_restart_portal()` opens a FRESH portal stream reusing the kept restore token
+  (persist 2 -> no new KDE dialog) and swaps capture+input to it, **keeping the
+  current stream if the restart fails** so capture never drops to the black
+  X11/XWayland fallback. Called from `_handle_blank` when the blank turns off,
+  gated on `self._wayland and self._portal`. Test
+  `test_restart_portal_swaps_in_a_fresh_stream_with_no_new_dialog` (20/20
+  wayland tests pass).
+  *NOT built - UNSAFE as specified, with evidence:* "Windows native: no new
+  frame for 1s -> restart" and "Wayland portal: same frame for 2s -> restart"
+  would **restart-loop on any idle screen**, because Windows Graphics Capture
+  and PipeWire are change-driven - an idle screen legitimately delivers no new
+  frame / reports "same", so the trigger fires every 1-2s and restarts the
+  capturer in a loop (the exact "still screen causing a restart loop" the user
+  warned about). The shortest SAFE trigger is an actual capture ERROR/EOF (what
+  RustDesk resets on, `video_service.rs:914-933`), not a quiet timer. A portal
+  stream ERROR already ends the session and reconnects today; the only
+  not-an-error stall we have evidence for (Parrot blank) is covered by the
+  event-driven blank-off restart above. The Windows capture-thread-death case
+  needs the native Rust module to report the error and cannot be built/tested
+  here (no Windows/Rust) - left for a native change, flagged.
+  *X11 untouched (proof):* the diff is only `session.py` (+test) and
+  `stream.ts`. `capture.py` (native x11-shm grab `:180-182`), `remote_input.py`
+  (pynput/XTest), `dimmer.py` (xrandr blank) and `privacy.py` are byte-identical,
+  and the new `session.py` code is gated behind `self._wayland` (None on X11).
+  Agent suite 175 passed (only the pre-existing pynput `test_privacy_input_block`
+  fails locally; passes in CI). *Lives in:* console container (Case A) + agent
+  `.deb` (Case B). Verify on the user's machines, not CI.
 
 - **RESEARCH, no code changed (2026-11-09): how real remote-desktop systems
   handle stalled streams / keyframes / keepalive / Wayland blank (3 subagents,
