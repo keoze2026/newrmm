@@ -40,6 +40,31 @@ GUEST_REFUSED = "session.guest_refused"
 # reverse proxy's access log.
 HELLO_SECONDS = 30.0
 
+# The relay sends every operator socket a tiny JSON ping this often. A browser
+# WebSocket cannot see a half-open TCP link on its own (no onclose fires), so
+# an idle screen - which legitimately sends no frames - would be
+# indistinguishable from a dead link. This steady heartbeat means a healthy
+# socket is never silent, so the console can treat "no message of any kind for
+# a few seconds" as a dead link and reconnect.
+OPERATOR_PING_INTERVAL = 1.0
+
+
+async def _operator_heartbeat(code: str) -> None:
+    """Send `{"type":"ping"}` to the session's operator every interval, for as
+    long as this task lives. Routed through the hub like every other operator
+    send, so it is serialized with frame forwarding and shares the send
+    timeout: a ping that cannot go out closes the half-open socket too."""
+    try:
+        while True:
+            await asyncio.sleep(OPERATOR_PING_INTERVAL)
+            await hub.to_operator_json(code, {"type": "ping"})
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # Never let a heartbeat failure take down the operator handler; the
+        # send path already closes a dead socket, and the read loop cleans up.
+        pass
+
 
 async def _first_message(websocket: WebSocket) -> dict | None:
     """The first JSON object a socket sends, or None if it sends none in time."""
@@ -497,11 +522,17 @@ async def operator_socket(websocket: WebSocket, code: str, token: str = "") -> N
     # otherwise-legitimate connection would otherwise bypass that entirely.
     can_end = operator.role == "admin" or session.operator_id == operator.id
 
+    # Keep the socket audibly alive so the console can tell a half-open link
+    # from a merely idle screen. Cancelled in the finally below.
+    heartbeat = asyncio.create_task(_operator_heartbeat(code))
+
     try:
         while True:
             message = await websocket.receive_json()
             if message.get("type") == "end" and not can_end:
-                await websocket.send_json({
+                # Through the hub, not a bare send: it shares the lock with the
+                # heartbeat so the two never write this socket at once.
+                await hub.to_operator_json(code, {
                     "type": "error",
                     "detail": "Only this session's own operator or an admin can end it.",
                 })
@@ -512,6 +543,7 @@ async def operator_socket(websocket: WebSocket, code: str, token: str = "") -> N
     except Exception:
         pass
     finally:
+        heartbeat.cancel()
         # Same reasoning as the guest socket's finally block: a reconnecting
         # operator (flaky wifi, a tab refresh, a token refresh) attaches a new
         # socket before the old one's read loop has noticed it is dead, and

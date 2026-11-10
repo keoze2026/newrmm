@@ -31,20 +31,19 @@ export type FrameHandler = (frame: FrameSource) => void
 export type StateHandler = (state: StreamState) => void
 export type MessageHandler = (message: Record<string, unknown>) => void
 
-// Liveness watchdog - recovers a frozen viewer as fast as possible without
-// firing on a healthy idle screen. The endpoint sends a frame every tick even
-// when nothing changed (a zero-tile frame), so while frames keep ARRIVING the
-// stream is alive and an idle screen is not a fault. The true freeze signal is
-// frames stopping entirely: no frame for STALE_MS -> ask the endpoint for a
-// fresh one (like a manual refresh); still nothing PROBE_GRACE_MS later ->
-// rebuild the socket at once, no backoff. (Watching the pixels alone instead
-// would request a keyframe every second on a genuinely still screen, because a
-// zero-tile frame never repaints - so this keys on frames arriving, which is
-// the same freeze signal without that waste. The agent restarts a genuinely
-// stalled capture itself, so "frames arriving" reliably means "not frozen".)
-const STALE_MS = 1000
-const PROBE_GRACE_MS = 1000
-const LIVENESS_CHECK_MS = 250
+// Dead-link watchdog. A browser WebSocket exposes no ping/pong and fires no
+// onclose on a half-open TCP link (NAT/wifi-roam/sleep, or a proxy dropping one
+// direction), so a frozen viewer would otherwise sit at readyState OPEN for
+// ever while nothing arrives. The relay now sends a heartbeat ping every second,
+// so a healthy socket is NEVER silent - frames when the screen moves, a ping
+// when it is idle. So the dead-link signal is simply: no message of ANY kind
+// (frame or ping) for DEAD_LINK_MS -> the link is dead; close it and reconnect
+// at once (the relay asks the guest for a fresh keyframe on the new socket).
+// Deliberately NOT based on the picture changing or on frame bytes: an idle
+// screen legitimately sends no frames, but the heartbeat still arrives, so the
+// link is proven alive without a single repaint.
+const DEAD_LINK_MS = 3000
+const LIVENESS_CHECK_MS = 500
 
 export interface InputMessage {
   type: 'input'
@@ -79,9 +78,9 @@ export class SessionStream {
   private statsTimer: number | null = null
   private reconnectTimer: number | null = null
   private livenessTimer: number | null = null
-  private lastFrameAt = 0
-  // When we last asked for a fresh frame because frames stopped; 0 = not asked.
-  private probedAt = 0
+  // When the last message of ANY kind (a frame or the relay's heartbeat ping)
+  // arrived. The dead-link watchdog keys on this and nothing else.
+  private lastMessageAt = 0
   private closed = false
   private listeners = new Set<MessageHandler>()
   private assembler = new FrameAssembler()
@@ -124,17 +123,22 @@ export class SessionStream {
       // A reconnect starts a new picture: the old one cannot be patched.
       this.assembler.reset()
       // Fresh grace window for the watchdog: a just-opened socket has had no
-      // time to deliver a frame yet, and the relay is about to ask the guest
-      // for a keyframe.
-      this.lastFrameAt = performance.now()
-      this.probedAt = 0
+      // time to deliver anything yet, and the relay is about to ask the guest
+      // for a keyframe and start its heartbeat.
+      this.lastMessageAt = performance.now()
       this.state = { ...this.state, connected: true }
       this.onState(this.state)
     }
 
     socket.onmessage = async (event) => {
+      // Any message - a frame OR the relay's heartbeat ping - proves the link
+      // is alive. The dead-link watchdog keys on this stamp, nothing else.
+      this.lastMessageAt = performance.now()
       if (typeof event.data === 'string') {
         const message = JSON.parse(event.data)
+        // The heartbeat carries no payload beyond keeping the link audible;
+        // it has already done its job above.
+        if (message.type === 'ping') return
         this.handleControl(message)
         // Tool replies - terminal output, file chunks, clipboard - go to
         // whichever panel is listening.
@@ -191,11 +195,10 @@ export class SessionStream {
         monitors: (message.monitors as Monitor[]) ?? this.state.monitors,
         privacyMode: (message.privacy_mode as PrivacyMode) ?? this.state.privacyMode,
       }
-      // The guest just started sharing: give the watchdog a fresh window for
-      // the first frame to arrive before it can consider the stream stale.
+      // The guest just started sharing: give the watchdog a fresh window
+      // before it can consider the link dead.
       if (this.state.guestConnected) {
-        this.lastFrameAt = performance.now()
-        this.probedAt = 0
+        this.lastMessageAt = performance.now()
       }
       this.onState(this.state)
     } else if (type === 'guest_left') {
@@ -213,7 +216,6 @@ export class SessionStream {
 
   private recordFrame(bytes: number) {
     const now = performance.now()
-    this.lastFrameAt = now
     this.frameTimes.push(now)
     this.bytesWindow.push({ at: now, bytes })
   }
@@ -221,25 +223,18 @@ export class SessionStream {
   private checkLiveness() {
     if (this.closed) return
     if (this.socket?.readyState !== WebSocket.OPEN) return
-    // Frames are only expected once the guest has consented and is sharing;
+    // Messages are only expected once the guest has consented and is sharing;
     // before that, a quiet socket is normal and must not trigger anything.
     if (!this.state.guestConnected) return
-    const since = performance.now() - this.lastFrameAt
-    if (since < STALE_MS) {
-      this.probedAt = 0
-      return
-    }
-    // Frames have stopped. First ask the endpoint for a fresh frame - cheap,
-    // and enough if the stream is only momentarily behind. Only if that brings
-    // nothing back do we rebuild the socket.
-    if (this.probedAt === 0) {
-      console.info('[viewer] no frames for %dms - requesting a fresh frame', Math.round(since))
-      this.send({ type: 'keyframe' })
-      this.probedAt = performance.now()
-      return
-    }
-    if (performance.now() - this.probedAt >= PROBE_GRACE_MS) {
-      console.info('[viewer] still no frames after a keyframe request - rebuilding the connection')
+    // A healthy socket hears from the relay at least once a second (a frame, or
+    // a heartbeat ping on an idle screen). Silence this long means a half-open
+    // link the browser cannot otherwise detect: tear it down and reconnect.
+    const silent = performance.now() - this.lastMessageAt
+    if (silent >= DEAD_LINK_MS) {
+      console.info(
+        '[viewer] no message (frame or heartbeat) for %dms - treating the link as dead and reconnecting',
+        Math.round(silent),
+      )
       this.forceReconnect()
     }
   }
@@ -262,7 +257,6 @@ export class SessionStream {
       }
     }
     this.socket = null
-    this.probedAt = 0
     this.state = { ...this.state, connected: false }
     this.onState(this.state)
     this.connect()

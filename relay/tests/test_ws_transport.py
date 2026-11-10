@@ -343,6 +343,103 @@ async def test_a_failed_send_leaves_cleanup_to_the_sockets_own_handler():
     assert hub.device_online("dev")
 
 
+class _HungSocket:
+    """A half-open operator socket: every send awaits for ever (the real
+    failure - a full kernel buffer that never drains), never raising."""
+
+    def __init__(self):
+        self.closed = False
+        self.close_code = None
+
+    async def send_bytes(self, payload):
+        await asyncio.sleep(3600)
+
+    async def send_json(self, payload):
+        await asyncio.sleep(3600)
+
+    async def send_text(self, payload):
+        await asyncio.sleep(3600)
+
+    async def close(self, code=1000):
+        self.closed = True
+        self.close_code = code
+
+
+class _GoodSocket:
+    def __init__(self):
+        self.sent = []
+        self.closed = False
+
+    async def send_bytes(self, payload):
+        self.sent.append(("b", payload))
+
+    async def send_json(self, payload):
+        self.sent.append(("j", payload))
+
+    async def send_text(self, payload):
+        self.sent.append(("t", payload))
+
+    async def close(self, code=1000):
+        self.closed = True
+
+
+async def test_a_half_open_operator_send_times_out_and_closes_the_socket(monkeypatch):
+    """The freeze fix: a half-open operator socket makes send await for ever,
+    which would stall the guest read loop and block the agent. The send must
+    time out and close the socket so the console reconnects."""
+    from app.services import hub as hubmod
+    from app.services.hub import Hub
+
+    monkeypatch.setattr(hubmod, "OPERATOR_SEND_TIMEOUT", 0.3)
+    hub = Hub()
+    hub._redis_failed = True
+    channel = hub.channel("HUNG0001")
+    hung = _HungSocket()
+    channel.operator = hung
+
+    start = time.monotonic()
+    await hub.to_operator_bytes("HUNG0001", b"frame")
+    elapsed = time.monotonic() - start
+
+    assert hung.closed is True
+    assert hung.close_code == 1011
+    assert elapsed < 1.0  # timed out near 0.3s, did not hang
+
+
+async def test_a_healthy_operator_send_delivers_and_is_not_closed():
+    from app.services.hub import Hub
+
+    hub = Hub()
+    hub._redis_failed = True
+    channel = hub.channel("GOOD0001")
+    good = _GoodSocket()
+    channel.operator = good
+
+    await hub.to_operator_bytes("GOOD0001", b"frame")
+    await hub.to_operator_json("GOOD0001", {"type": "ping"})
+
+    assert good.sent == [("b", b"frame"), ("j", {"type": "ping"})]
+    assert good.closed is False
+
+
+async def test_concurrent_frame_and_heartbeat_sends_are_serialized():
+    """The 1s heartbeat and the frame forwarder both write the operator socket;
+    the channel lock must keep them from interleaving, and all must arrive."""
+    from app.services.hub import Hub
+
+    hub = Hub()
+    hub._redis_failed = True
+    channel = hub.channel("RACE0001")
+    good = _GoodSocket()
+    channel.operator = good
+
+    await asyncio.gather(
+        *[hub.to_operator_bytes("RACE0001", b"f") for _ in range(5)],
+        *[hub.to_operator_json("RACE0001", {"type": "ping"}) for _ in range(5)],
+    )
+    assert len(good.sent) == 10
+
+
 async def test_the_rate_limit_still_holds_when_redis_fails_mid_run(monkeypatch):
     """Security finding: a Redis error let every attempt through."""
     from app.services import ratelimit

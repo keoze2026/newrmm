@@ -211,6 +211,120 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **Freeze root-fix BUILT: relay heartbeat + relay send-timeout + console
+  message-based dead-link detection (2026-11-10).** User ordered the 4-part fix
+  explicitly ("Build this fix now. Change nothing else."). NOT "fixed" until the
+  user confirms on their machines (lesson #54). No agent file touched; the Kali
+  X11 capture/input/blank path is byte-unchanged.
+  *Part 1 - relay heartbeat (`ws.py`).* `_operator_heartbeat(code)` sends
+  `{"type":"ping"}` to the session's operator every `OPERATOR_PING_INTERVAL=1.0`
+  s; started in `operator_socket` after attach, cancelled in its `finally`. So a
+  healthy operator socket is never silent even on a fully idle screen.
+  *Part 3 - relay send timeout (`hub.py`).* All operator writes now go through
+  one guarded path `_send_operator(channel, send)`: serialized by the (previously
+  unused) `channel.lock` so the heartbeat and the frame forwarder never write one
+  socket at once, and bounded by `OPERATOR_SEND_TIMEOUT=2.0` s via
+  `asyncio.wait_for`. On timeout the socket is `close(1011)`d so the console
+  reconnects; other send errors are swallowed and the socket left in place
+  exactly as before (keeps the `finally`-cleanup invariant from
+  `test_a_failed_send...`). `to_operator_bytes`, `to_operator_json`, and the two
+  Redis `deliver_*` closures all route through it. The operator read loop's
+  `end`-denied reply also goes through the hub now (same lock). **This is the
+  root fix** - a half-open/slow operator can no longer hang the guest read loop
+  (`ws.py:292`) and thus can no longer block the agent's own send
+  (`session.py:497`), which was the proven freeze mechanism.
+  *Part 2 - console dead-link detection (`stream.ts`).* Rewrote the watchdog to
+  key on MESSAGES, not pixels/frames: `lastMessageAt` is stamped on EVERY
+  `onmessage` (frame or ping) at the top; `checkLiveness` (every
+  `LIVENESS_CHECK_MS=500`) reconnects (`forceReconnect`) when no message of any
+  kind has arrived for `DEAD_LINK_MS=3000` while the guest is connected. A
+  `{"type":"ping"}` is consumed only for its liveness stamp and otherwise
+  ignored. The relay asks the guest for a fresh keyframe on the new operator
+  socket (`ws.py:511`), so reconnect restores the picture. Removed the old
+  frame-based `lastFrameAt`/`probedAt`/`STALE_MS`/`PROBE_GRACE_MS` logic.
+  *Part 4 - proxy timeouts.* `infra/nginx.conf` (`:77-78`) and
+  `infra/nginx-tls.conf` (`:116-117`) ALREADY carry `proxy_read_timeout 3600s`
+  + `proxy_send_timeout 3600s` on the `/api/` WS location - no change needed in
+  repo. Host nginx `/etc/nginx/sites-enabled/rmm` lines handed to the user
+  separately.
+  *Tested here (what I could, stated honestly).* Relay side verified on this
+  Kali box against the real `Hub` (no DB needed, same pattern as
+  `test_a_failed_send...`), 5/5: a half-open socket is closed within the timeout
+  (code 1011, ~0.3 s), a healthy send delivers and is not closed, the heartbeat
+  ping goes through the guarded path, the plain-error-keeps-socket invariant
+  still holds, and concurrent frame+ping sends are serialized and all delivered.
+  Added as permanent pytest tests
+  (`test_a_half_open_operator_send_times_out_and_closes_the_socket`,
+  `..._healthy_operator_send_delivers...`,
+  `..._concurrent_frame_and_heartbeat_sends_are_serialized`).
+  *Could NOT run end-to-end here (the block, per the user's rule).* No
+  `node`/browser to run the console, and no operator JWT + no `jose`/Postgres to
+  stand up the relay locally, so I could not do the literal "open a session from
+  the console, idle 5 min, kill the relay, confirm recovery <3 s" test on this
+  box. The real long-idle failure is an EXTERNAL proxy/Cloudflare idle cut, not
+  reproducible locally anyway; the heartbeat + nginx 3600s + dead-link detection
+  are what address it, confirmable only on the deployed server. CI typechecks the
+  console.
+
+- **Kali (X11) freeze investigated on the machine itself; cause proven, ONE
+  fix proposed, NOT implemented (2026-11-10).** User: "the Kali agent is
+  freezing too... investigate it yourself on this machine." Done on the Kali
+  box (X11/XFCE, `DISPLAY=:0`, installed build 0.2.0 frozen `.deb`,
+  native x11-shm). Awaiting "go" before any code.
+  *What I checked myself.* `~/.local/state/RMMAgent/agent.log` (182 KB):
+  continuous once-a-minute `diagnostics: still running` heartbeats with NO
+  gaps, clean session open/close at 07:21 and 07:22 ("the operator ended the
+  session"), no error/traceback anywhere; `crash.log` EMPTY (0 bytes). Agent
+  process 2263/2264 up 6 h, `rmm-agent-resume.service` active. So the agent is
+  healthy during freezes - the stream loop simply logs nothing per frame, so a
+  freeze inside it is invisible in the log (first finding: no per-frame logging).
+  *Where the frames stop (proof).* Delivery side, in the RELAY, not the agent:
+  guest read loop forwards each frame at `ws.py:292`
+  `await hub.to_operator_bytes(code, payload_bytes)` -> `hub.py:236`
+  `await channel.operator.send_bytes(payload)`. That send has **no timeout**;
+  its `except` (`hub.py:237`) catches errors but NOT a hang. A half-open/slow
+  operator socket fills the kernel buffer and `send_bytes` awaits drain
+  forever, so the guest read loop stops reading, the agent's own
+  `await socket.send(payload)` (`session.py:497`) then blocks on a full TCP
+  window, and `_stream` stalls at 0 fps with no exception (so the new Windows
+  `capture.recover()` cannot fire - it is error-driven, and this is not an
+  error). "Refresh fixes it" confirms the agent is fine: closing the old
+  operator socket finally errors that `send_bytes`, the guest loop resumes, the
+  agent unblocks.
+  *Why it STILL freezes though Case A is deployed.* Verified the LIVE console
+  bundle `https://rmm.remotedesk247.com/assets/index-B2mQrp7_.js` (550 KB)
+  contains today's watchdog (`checkLiveness`, `forceReconnect`, `probed`,
+  strings "no frames for" and "still no frames after a keyframe request") - so
+  the browser-side self-heal IS live. But the relay guest loop is
+  single-threaded: while it is blocked on the OLD operator's hung `send_bytes`,
+  a freshly reconnected operator socket still receives nothing, because the loop
+  never advances to read the next frame. Recovery then waits on the dead
+  socket's TCP actually erroring, which on a true half-open is minutes - so the
+  watchdog only reliably recovers when the browser's close() FIN reaches the
+  server, and a genuinely dead path stays frozen. The watchdog recovers from
+  the stall; it does not PREVENT it.
+  *ONE fix (proposed, not implemented).* Relay only: give the operator forward a
+  timeout - wrap `channel.operator.send_bytes(payload)` (`hub.py:236`, and the
+  json sibling `:250`) in `asyncio.wait_for(..., ~5s)`; on `TimeoutError` treat
+  it like the existing error branch (drop this frame for that operator, leave
+  the socket's own handler / the console watchdog to reconnect). The guest loop
+  can then never be stalled by one slow/half-open operator, so the agent's send
+  never blocks and the stream never freezes at the source. **Relay-only: touches
+  NO agent file, so Kali's x11-shm capture / pynput input / dimmer blank path is
+  byte-unchanged, and it is OS-agnostic server code (platform-scope rule safe).**
+  Needs a relay redeploy to go live (this session is blocked from production).
+  Optional agent-side companion (belt-and-suspenders, shared code so flagged):
+  wrap `session.py:497` send in `asyncio.wait_for(~5s)` and raise on timeout to
+  trigger the agent's own guest-socket reconnect.
+  *What blocked a live headless reproduction (stated per the user's rule).* No
+  `node`/`npx`/`docker`/browser tooling on this box and no `playwright`; no
+  operator JWT to drive the real relay as an operator (`ws.py:424`
+  `decode_access_token` + an Operator DB row are required, `ws.py:431-438`); and
+  no `mss` or native capture module on the system Python, so a source agent here
+  captures only a synthetic screen - not a faithful repro. The diagnosis above
+  is from the agent.log + the relay/console code path + the live-bundle check,
+  not from a reproduced freeze.
+
 - **Windows freeze (0 fps) - agent now rebuilds a dead capture in place
   instead of freezing; the ERROR-driven Case B that was flagged-but-unbuilt,
   now built in pure Python (2026-11-10).** User hit a live Windows freeze:

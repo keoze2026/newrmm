@@ -22,6 +22,14 @@ from app.core.config import settings
 
 log = logging.getLogger(__name__)
 
+# A send to an operator socket must complete within this long. A half-open
+# socket (NAT/wifi-roam/sleep, or a proxy dropping one direction) makes
+# send_bytes/send_json await the kernel buffer draining *forever* - not an
+# error, a hang - which stalls the guest read loop that awaits it and so blocks
+# the agent's own send, freezing the stream at 0 fps. On timeout the socket is
+# closed so its handler cleans up and the console reconnects onto a fresh one.
+OPERATOR_SEND_TIMEOUT = 2.0
+
 # Channel names. Binary frames and JSON travel separately so the subscriber
 # never has to guess which it is holding.
 def operator_binary_channel(code: str) -> str:
@@ -210,14 +218,14 @@ class Hub:
         channel.operator = websocket
 
         async def deliver_binary(data: bytes) -> None:
-            socket = self._channels.get(code, SessionChannel()).operator
-            if socket is not None:
-                await socket.send_bytes(data)
+            ch = self._channels.get(code)
+            if ch and ch.operator is not None:
+                await self._send_operator(ch, lambda s: s.send_bytes(data))
 
         async def deliver_json(data: bytes) -> None:
-            socket = self._channels.get(code, SessionChannel()).operator
-            if socket is not None:
-                await socket.send_text(data.decode("utf-8"))
+            ch = self._channels.get(code)
+            if ch and ch.operator is not None:
+                await self._send_operator(ch, lambda s: s.send_text(data.decode("utf-8")))
 
         for name, deliver in (
             (operator_binary_channel(code), deliver_binary),
@@ -229,31 +237,51 @@ class Hub:
 
     # ------------------------------------------------------------- delivery
 
+    async def _send_operator(self, channel: SessionChannel, send) -> None:
+        """The one guarded way to write an operator socket.
+
+        Serialized by the channel lock, because two coroutines now write it -
+        the frame/JSON forwarder and the 1 s heartbeat - and one WebSocket must
+        never be written by two at once. Bounded by OPERATOR_SEND_TIMEOUT: a
+        send that cannot finish in that time means the socket is half-open, so
+        it is closed (the console then reconnects) rather than left to hang the
+        guest loop. Any other send error is swallowed and the socket left in
+        place, exactly as before, so its own handler's `finally` still runs (a
+        failed send must not look like a newer connection taking over).
+        """
+        socket = channel.operator
+        if socket is None:
+            return
+        try:
+            async with channel.lock:
+                # A reconnect may have swapped the socket while we waited for
+                # the lock; the new one gets the next message, not this.
+                if channel.operator is not socket:
+                    return
+                await asyncio.wait_for(send(socket), OPERATOR_SEND_TIMEOUT)
+        except asyncio.TimeoutError:
+            log.warning(
+                "an operator send stalled for >%ss (half-open socket); closing "
+                "it so the console reconnects", OPERATOR_SEND_TIMEOUT,
+            )
+            try:
+                await socket.close(code=1011)
+            except Exception:
+                pass
+        except Exception as exc:
+            log.debug("send to operator failed: %s", exc)
+
     async def to_operator_bytes(self, code: str, payload: bytes) -> None:
         channel = self._channels.get(code)
         if channel and channel.operator is not None:
-            try:
-                await channel.operator.send_bytes(payload)
-            except Exception as exc:
-                # Leave the socket where it is. Its own handler notices it is
-                # dead and cleans up; clearing it here made that handler think
-                # a newer connection had taken over, so it skipped the cleanup
-                # (session left "connected", a standing device kept streaming).
-                log.debug("send to %s of %s failed: %s", "operator", code, exc)
+            await self._send_operator(channel, lambda s: s.send_bytes(payload))
             return
         await self._publish(operator_binary_channel(code), payload)
 
     async def to_operator_json(self, code: str, payload: dict) -> None:
         channel = self._channels.get(code)
         if channel and channel.operator is not None:
-            try:
-                await channel.operator.send_json(payload)
-            except Exception as exc:
-                # Leave the socket where it is. Its own handler notices it is
-                # dead and cleans up; clearing it here made that handler think
-                # a newer connection had taken over, so it skipped the cleanup
-                # (session left "connected", a standing device kept streaming).
-                log.debug("send to %s of %s failed: %s", "operator", code, exc)
+            await self._send_operator(channel, lambda s: s.send_json(payload))
             return
         await self._publish(operator_json_channel(code), json.dumps(payload).encode())
 
