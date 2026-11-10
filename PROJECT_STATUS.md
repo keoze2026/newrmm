@@ -211,6 +211,39 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **REGRESSION from 93431fe found and fixed: the relay's 2s operator send-timeout
+  was closing healthy sockets and pinning Linux at 0 fps; removed it (2026-11-10).**
+  User: after deploying 93431fe the Linux PC went to 0 fps / 0 kbps on the live
+  console, slow, mouse dragging, dead-link reconnecting in a loop. NOT "fixed"
+  until the user confirms. No agent/X11 change.
+  *Cause, proven from code.* `_send_operator` (`hub.py`) wrapped every operator
+  send in `asyncio.wait_for(send, 2.0)` and on timeout did `await socket.close(1011)`.
+  A keyframe is far larger than a tile frame, and right after any reconnect TCP
+  slow-start makes the first large send slow, so a healthy Linux keyframe can
+  exceed 2s. Close -> console `onclose`/dead-link reconnects -> `operator_socket`
+  asks the guest for a fresh keyframe (`ws.py:511`) -> another large slow send ->
+  another timeout -> close. A self-reinforcing reconnect+keyframe storm: the
+  console never receives a complete keyframe, so 0 fps; every reconnect drops the
+  in-flight pointer moves, so the mouse "drags". The lock and the 1s ping were
+  NOT the cause: input (operator->guest) goes through `to_guest_json` on the
+  guest socket and never touches `channel.lock`, and frame/ping sends are sub-ms.
+  *Fix.* Removed the timeout and the close-on-timeout from `_send_operator`;
+  kept the lock (frame-vs-heartbeat write safety) and kept the heartbeat and the
+  console dead-link recovery. The relay no longer tears down a slow-but-healthy
+  operator, and it does NOT drop frames either (frames are keyframe+tile deltas;
+  dropping one corrupts the picture until the next keyframe). A genuinely
+  half-open link is recovered by the console's dead-link watchdog reconnecting
+  and closing the stale socket (which unblocks the relay send), with uvicorn's
+  server ping as the backstop. Removed `OPERATOR_SEND_TIMEOUT` and the now-moot
+  timeout test; kept/verified the healthy-send, serialization and
+  error-keeps-socket tests, plus a new "slow send completes, not closed" check.
+  Verified on this Kali box against the real `Hub`, 4/4.
+  *Live test still owed (the block).* Could NOT run the headless-browser live
+  test (open the live console, measure fps, idle 10 min, drop the link, confirm
+  <3s recovery): no operator credentials and no server access were provided (the
+  user's message left both as placeholders). Playwright+Chromium installed in a
+  throwaway venv, ready to run the moment real test creds exist.
+
 - **Freeze root-fix BUILT: relay heartbeat + relay send-timeout + console
   message-based dead-link detection (2026-11-10).** User ordered the 4-part fix
   explicitly ("Build this fix now. Change nothing else."). NOT "fixed" until the

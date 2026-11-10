@@ -22,14 +22,6 @@ from app.core.config import settings
 
 log = logging.getLogger(__name__)
 
-# A send to an operator socket must complete within this long. A half-open
-# socket (NAT/wifi-roam/sleep, or a proxy dropping one direction) makes
-# send_bytes/send_json await the kernel buffer draining *forever* - not an
-# error, a hang - which stalls the guest read loop that awaits it and so blocks
-# the agent's own send, freezing the stream at 0 fps. On timeout the socket is
-# closed so its handler cleans up and the console reconnects onto a fresh one.
-OPERATOR_SEND_TIMEOUT = 2.0
-
 # Channel names. Binary frames and JSON travel separately so the subscriber
 # never has to guess which it is holding.
 def operator_binary_channel(code: str) -> str:
@@ -240,14 +232,19 @@ class Hub:
     async def _send_operator(self, channel: SessionChannel, send) -> None:
         """The one guarded way to write an operator socket.
 
-        Serialized by the channel lock, because two coroutines now write it -
-        the frame/JSON forwarder and the 1 s heartbeat - and one WebSocket must
-        never be written by two at once. Bounded by OPERATOR_SEND_TIMEOUT: a
-        send that cannot finish in that time means the socket is half-open, so
-        it is closed (the console then reconnects) rather than left to hang the
-        guest loop. Any other send error is swallowed and the socket left in
-        place, exactly as before, so its own handler's `finally` still runs (a
-        failed send must not look like a newer connection taking over).
+        Serialized by the channel lock, because two coroutines write it - the
+        frame/JSON forwarder and the 1 s heartbeat - and one WebSocket must
+        never be written by two at once. The send is NOT wrapped in a timeout
+        that closes the socket: a large keyframe on a slow link can legitimately
+        take seconds, and closing a merely slow-but-healthy socket made the
+        console reconnect, which forced another keyframe, which was slower
+        still - a reconnect/keyframe storm that pinned the stream at 0 fps. A
+        half-open link is instead recovered by the console's own dead-link
+        watchdog, which reconnects after a few seconds of silence and closes the
+        stale socket (that close unblocks this send); uvicorn's server ping is
+        the backstop. A failed send is swallowed and the socket left in place,
+        exactly as before, so its handler's `finally` still runs (a failed send
+        must not look like a newer connection taking over).
         """
         socket = channel.operator
         if socket is None:
@@ -258,16 +255,7 @@ class Hub:
                 # the lock; the new one gets the next message, not this.
                 if channel.operator is not socket:
                     return
-                await asyncio.wait_for(send(socket), OPERATOR_SEND_TIMEOUT)
-        except asyncio.TimeoutError:
-            log.warning(
-                "an operator send stalled for >%ss (half-open socket); closing "
-                "it so the console reconnects", OPERATOR_SEND_TIMEOUT,
-            )
-            try:
-                await socket.close(code=1011)
-            except Exception:
-                pass
+                await send(socket)
         except Exception as exc:
             log.debug("send to operator failed: %s", exc)
 
