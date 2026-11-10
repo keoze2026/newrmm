@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import sys
 import time
 
 import websockets
@@ -466,7 +467,33 @@ class AgentSession:
     async def _stream(self, socket) -> None:
         while not self._stop.is_set():
             started = asyncio.get_running_loop().time()
-            image = await asyncio.to_thread(self.capture.grab)
+            try:
+                image = await asyncio.to_thread(self.capture.grab)
+            except Exception as exc:
+                # The capture backend died mid-session. On Windows the
+                # Windows.Graphics.Capture session is lost on a display mode
+                # change, the lock screen, a GPU reset, or an RDP/console
+                # switch, and grab() then throws. Without this, the exception
+                # ends the whole stream loop and the picture freezes at 0 fps -
+                # even a reconnect reuses the same dead capture and throws
+                # again. Rebuild the capture in place and carry on instead.
+                #
+                # Windows only, on purpose: on every other OS this re-raises,
+                # so the X11, Wayland-portal and mss paths behave exactly as
+                # before (a fix for one OS must not change another). It is
+                # error-driven, so a merely idle screen - which returns a frame
+                # and never throws - can never trigger it, so there is no
+                # restart loop on a still screen. No session teardown happens,
+                # so no new consent prompt is ever shown.
+                if sys.platform != "win32":
+                    raise
+                if await asyncio.to_thread(self.capture.recover):
+                    self._tiles.request_keyframe()
+                    log.warning("Windows capture failed (%s); rebuilt it and requested a fresh keyframe", exc)
+                else:
+                    log.warning("Windows capture failed (%s); could not rebuild it yet, retrying", exc)
+                    await asyncio.sleep(0.2)
+                continue
             payload = await asyncio.to_thread(self._tiles.encode, image, self.rate.quality)
             await socket.send(payload)
             self.rate.record(len(payload))

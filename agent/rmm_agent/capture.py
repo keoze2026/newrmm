@@ -119,6 +119,49 @@ class ScreenCapture:
             self._native = None
             return False
 
+    def recover(self) -> bool:
+        """Rebuild a native capture backend that died mid-session, in place, so
+        the stream resumes without reconnecting or asking for consent again.
+
+        Only the native per-OS module is rebuilt. The Wayland portal is owned
+        by session.py (it has its own restart, _restart_portal, and must never
+        drop to the black X11/XWayland fallback), and the mss/synthetic paths
+        have nothing to rebuild - both return False here and are left untouched.
+        The old module handle is kept until a fresh one actually opens, so a
+        failed rebuild (capture still unavailable - e.g. the lock screen is
+        still up) just leaves the loop to call this again on the next grab,
+        rather than falling back to a generated test image.
+        """
+        if self._wayland is not None or self._native is None:
+            return False
+        old = self._native
+        module = native_loader.load()
+        if module is None:
+            return False
+        try:
+            backend = module.open()
+            monitors = module.monitors()
+            if not monitors:
+                raise RuntimeError("the native module reported no monitors")
+        except Exception as exc:
+            log.warning("could not rebuild the native capture module (%s); will retry", exc)
+            try:
+                module.close()
+            except Exception:
+                pass
+            return False
+        try:
+            old.close()
+        except Exception:
+            pass
+        self._native = module
+        self._monitors = [dict(m) for m in monitors]
+        if self.monitor_index >= len(self._monitors):
+            self.monitor_index = 0
+        self.backend = f"native-{backend}"
+        log.info("rebuilt the native capture module (%s)", backend)
+        return True
+
     def attach_portal(self, portal) -> bool:
         """Capture through a started Wayland portal share from now on."""
         if not getattr(portal, "started", False) or not portal.monitors:

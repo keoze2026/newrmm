@@ -211,6 +211,37 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **Windows freeze (0 fps) - agent now rebuilds a dead capture in place
+  instead of freezing; the ERROR-driven Case B that was flagged-but-unbuilt,
+  now built in pure Python (2026-11-10).** User hit a live Windows freeze:
+  viewer stuck at `0 fps · 0 kbps` (no frames, no bytes at all), control dead.
+  NOT "fixed" until the user confirms on the Windows machine (lesson #54).
+  *Cause (file:line proof).* The stream loop grabbed with no guard:
+  `image = await asyncio.to_thread(self.capture.grab)` (`session.py:_stream`).
+  On Windows, `capture.grab()` -> `self._native.grab()` (Windows.Graphics.Capture,
+  `capture.py:180-182`); when that capture session is lost mid-stream (display
+  mode change, lock screen, GPU reset, RDP/console switch) `grab()` THROWS. The
+  exception ended the whole `_stream` loop (it is `await`ed directly by
+  `_session`, `session.py:361`), so frames stopped -> 0 fps. A reconnect did not
+  help because `self.capture` is built once (`session.py:94`) and reused, so the
+  same dead handle threw again at once. This is the THROW case; distinct from the
+  silent stale-frame case still listed as deferred (search "capture thread died").
+  *Fix.* `_stream` now wraps `grab()`: on an exception, **Windows only**
+  (`if sys.platform != "win32": raise` - every other OS behaves exactly as
+  before), it calls the new `ScreenCapture.recover()`, which rebuilds the native
+  module in place (closing the old handle only after a fresh one opens; keeping
+  the old handle to retry if the rebuild fails, never falling back to a synthetic
+  image), then `request_keyframe()`. No session teardown -> no new consent
+  prompt. Error-driven -> an idle screen (returns a frame, never throws) can
+  never trigger it, so no restart loop (the exact unsafe timer this replaces).
+  *X11/Wayland untouched (proof).* `recover()` returns False (does nothing) when
+  a Wayland portal is attached (`self._wayland is not None`) or when there is no
+  native module (mss/synthetic); and the whole recovery branch is behind the
+  `sys.platform == "win32"` guard, so Kali X11 and the Wayland path are
+  byte-unchanged in behaviour. Tests: 4 new `recover()` tests + full agent suite
+  179 passed (only the pre-existing pynput `test_privacy_input_block` fails,
+  unrelated). **Reinstall needed on Windows** (this is agent-side), not console.
+
 - **Freeze recovery - Case A (console) + Case B Wayland blank-off done; the
   time-based Case B triggers flagged as UNSAFE and NOT built (2026-11-10).**
   On the user's approval to fix both cases, fast. NOT "fixed" until the user
