@@ -390,6 +390,7 @@ def cmd_status(_args) -> int:
                 f"PyGObject {'yes' if report.get('pygobject') else 'no'}, "
                 f"{report.get('gstreamer') or 'GStreamer no'}, "
                 f"pipewiresrc {'yes' if report.get('pipewiresrc') else 'no'}, "
+                f"jpegenc {'yes' if report.get('jpegenc') else 'no'}, "
                 f"portal ScreenCast v{report.get('screencast', 0)} "
                 f"RemoteDesktop v{report.get('remote_desktop', 0)}"
             )

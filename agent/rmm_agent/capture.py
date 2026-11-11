@@ -213,11 +213,17 @@ class ScreenCapture:
 
     def grab(self) -> Image.Image:
         if self._wayland is not None:
-            data, width, height = self._wayland.grab()
-            # A still screen hands back the same frame; do not rebuild it.
+            data, _width, _height = self._wayland.grab()
+            # A still screen hands back the same frame object; do not re-decode.
             if self._last_frame is not None and self._last_frame[0] is data:
                 return self._last_frame[1]
-            image = Image.frombytes("RGB", (width, height), data)
+            # The Wayland helper now JPEG-encodes each frame in its GStreamer
+            # pipeline, so only ~100 KB crosses the pipe instead of a ~6 MB raw
+            # frame. Decode it once here (C-speed libjpeg via Pillow) into the
+            # same PIL image the tile encoder already consumes. The native X11,
+            # Windows and mss paths below are unchanged - they hand over raw
+            # pixels, so this touches the Wayland path only.
+            image = Image.open(io.BytesIO(data)).convert("RGB")
             self._last_frame = (data, image)
             return image
         if self._native is not None:

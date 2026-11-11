@@ -154,6 +154,8 @@ def warnings() -> list[str]:
                 missing.append("PyGObject for the system python3 (python3-gi / python3-gobject)")
             if not report.get("pipewiresrc"):
                 missing.append("GStreamer's pipewire plugin (gstreamer1.0-pipewire / pipewire-gstreamer)")
+            if not report.get("jpegenc"):
+                missing.append("GStreamer's JPEG encoder (gstreamer1.0-plugins-good / gstreamer1-plugins-good)")
             if not report.get("screencast"):
                 missing.append("a running xdg-desktop-portal with a ScreenCast backend")
             if missing:

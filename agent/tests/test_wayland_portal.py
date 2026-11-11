@@ -33,7 +33,9 @@ def _system_has_gstreamer() -> bool:
         return False
     probe = (
         "import gi; gi.require_version('Gst','1.0'); from gi.repository import Gst, Gio;"
-        "Gst.init(None); assert Gst.ElementFactory.find('videotestsrc')"
+        "Gst.init(None); assert Gst.ElementFactory.find('videotestsrc');"
+        # jpegenc (plugins-good) is now part of the capture pipeline.
+        "assert Gst.ElementFactory.find('jpegenc')"
     )
     return subprocess.run([SYSTEM_PYTHON, "-c", probe], capture_output=True).returncode == 0
 
@@ -100,21 +102,28 @@ def test_the_full_portal_handshake_shares_the_screen_and_takes_input(fake_portal
 
         data, width, height = portal.grab()
         assert (width, height) == (1366, 768)
-        assert len(data) == 1366 * 768 * 3
-        # SMPTE bars are vertical: a column keeps one colour down the top
-        # half. Reading padded rows as unpadded shifts each row by 2 bytes,
-        # so the colour at a fixed column would drift row by row.
-        column = [data[y * 1366 * 3 + 30: y * 1366 * 3 + 33] for y in range(0, 400, 7)]
-        assert len(set(column)) == 1
+        # The helper now JPEG-encodes in its pipeline, so the frame is a JPEG
+        # blob (far smaller than a raw frame), not packed RGB.
+        assert data[:2] == b"\xff\xd8"           # JPEG start-of-image marker
+        assert len(data) < 1366 * 768 * 3        # compressed, not raw
+        from io import BytesIO
+
+        from PIL import Image
+
+        decoded = Image.open(BytesIO(data))
+        assert decoded.size == (1366, 768)
+        # A real picture decodes to more than one colour (SMPTE bars), proving
+        # it is not a black/blank frame.
+        assert len(decoded.convert("RGB").getcolors(maxcolors=1 << 20) or []) > 1
 
         portal.notify_pointer_motion_absolute(683.0, 384.0)
         portal.notify_pointer_button(wayland_portal.BTN_LEFT, True)
         portal.notify_pointer_button(wayland_portal.BTN_LEFT, False)
         portal.notify_pointer_axis_discrete(True, 2)
         portal.notify_keyboard_keysym(wayland_portal.keysym_for("é"), True)
-        portal.grab()  # replies only after the input above was handled
+        portal.grab()  # independent of input now; close() below drains input
     finally:
-        portal.close()
+        portal.close()  # joins the helper's input worker, so all input is logged
 
     log = calls(log_path)
     methods = [c["method"] for c in log]
@@ -182,6 +191,15 @@ def test_the_helper_never_imports_the_agent():
     assert "rmm_agent" not in source.split('"""', 2)[2]
 
 
+def test_helper_handles_input_on_a_separate_channel_from_grabs():
+    """Mouse and keyboard must never wait behind a frame: the helper routes
+    grabs and input to separate worker threads/queues (wayland_helper.main), so
+    a pointer move is injected while a grab is being pulled, not after it."""
+    source = wayland_portal.helper_path().read_text()
+    assert "grab_q" in source and "input_q" in source
+    assert 'name="wl-grab"' in source and 'name="wl-input"' in source
+
+
 # ------------------------------------------------------------------ detection
 
 
@@ -208,6 +226,20 @@ def test_keysyms():
 # ------------------------------------------------------------------ input
 
 
+def _test_jpeg(width=1366, height=768):
+    """A real JPEG of a solid frame, as the helper now hands back (not raw RGB)."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new("RGB", (width, height), (10, 20, 30)).save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+_RECORDING_FRAME = _test_jpeg()
+
+
 class RecordingPortal:
     started = True
     input_available = True
@@ -230,7 +262,9 @@ class RecordingPortal:
         self.sent.append(("key", keysym, pressed))
 
     def grab(self):
-        return (b"\x00" * (1366 * 768 * 3), 1366, 768)
+        # The same object each call, so capture.py's still-screen cache (which
+        # keys on identity) is exercised; it is a JPEG now, as the helper sends.
+        return (_RECORDING_FRAME, 1366, 768)
 
     def close(self):
         self.sent.append(("close",))

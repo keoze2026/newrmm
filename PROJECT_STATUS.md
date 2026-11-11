@@ -211,6 +211,155 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **WAYLAND PORTAL SPEED FIX built: JPEG-in-helper + separate input thread
+  (2026-11-11). CI-green target; NOT fixed until the user confirms on Parrot.**
+  User approved the proposed fix with additions. Wayland portal path only; Kali
+  X11 and Windows untouched.
+  *(1) JPEG in the helper's pipeline.* `wayland_helper.py` pipeline is now
+  `... ! videoconvert ! jpegenc quality=90 ! appsink` (was `video/x-raw,format=RGB`);
+  `Stream.pull` returns the JPEG blob (no raw stride de-pad); frame wire message
+  `b"F"` now carries `u32 w, u32 h, JPEG` (~100 KB) instead of ~6 MB raw. The
+  agent decodes once in `capture.py` (Wayland branch only): `Image.open(io.BytesIO(data))`
+  replaced `Image.frombytes(...)`, feeding the SAME PIL image the tile encoder
+  already consumes. `wayland_portal.py` unchanged on the wire (just the grab
+  docstring).
+  *(2) Input never waits behind a frame.* `wayland_helper.py main()` now routes
+  stdin to two worker threads: `wl-grab` (owns the one frame reply per grab) and
+  `wl-input` (injects pointer/key events immediately). The stdin reader only
+  enqueues and returns. Input drains to a sentinel and `close()` joins the
+  workers before the portal is torn down. A grab reply no longer implies prior
+  input ran (they are concurrent now) - handshake test comment updated.
+  *(3) Packaging + CI for jpegenc (gstreamer1.0-plugins-good), lesson #51.*
+  Added to `.deb` Depends (`build_deb.sh`), to `install.sh` for apt
+  (`gstreamer1.0-plugins-good`), dnf (`gstreamer1-plugins-good`), pacman
+  (`gst-plugins-good`), zypper (`gstreamer-plugins-good`), and to install.sh's
+  GStreamer element self-check. Helper `--check` and `rmm-agent status` now
+  report `jpegenc yes/no` (`wayland_helper.py`, `__main__.py`), and
+  `platform_support.py` lists it as missing when absent. CI `agents.yml` installs
+  the plugin on the Linux runner and the Wayland check greps `... jpegenc yes`,
+  so a build whose status does not report jpegenc fails.
+  *Tests (verified on this Kali box - it has jpegenc + pipewiresrc +
+  dbus-daemon, so the real-helper tests ran, not just mocks).* `test_wayland_portal.py`
+  21/21 incl. the real handshake now asserting a JPEG frame decodes to 1366x768;
+  `RecordingPortal` returns a JPEG; skip-probe requires jpegenc; new
+  `test_helper_handles_input_on_a_separate_channel_from_grabs`. Full agent suite
+  180 passed, 1 skipped, 1 failed - the 1 failure
+  (`test_privacy_input_block::...guest_lock_blocks_input...`) is PRE-EXISTING and
+  environment-only (this box cannot block X input; confirmed it fails with my
+  changes stashed too); it passes in CI under xvfb. Unrelated to this change.
+  *Still owed before "fixed" (BLOCKED on Parrot being online).* Requirement #4:
+  before/after on Parrot measured live by me (fps, kbps, mouse-move latency) and
+  confirm from Parrot's agent.log that the portal is not restarting. Parrot is
+  offline, so this waits. Requirement #5: deploy block + Parrot reinstall line
+  given to the user. NOT fixed until the user confirms on Parrot (lesson #54).
+
+- **PARROT (KDE/Wayland) SLOWNESS - investigation started, BLOCKED on Parrot
+  being offline, no code changed (2026-11-11).** User: Kali and Windows now run
+  fine; the Parrot PC (KDE Plasma, Wayland) is very slow - screen sharing lags,
+  mouse drags. Change no code until there is evidence. View-only; never input to
+  the real display (lesson #52); do not touch the Kali X11 path or Windows.
+  *Blocker.* At test time BOTH Parrot session rows are offline on the relay
+  (`GJTJ5AT2` and `C6NX7HUT`: `device_online=false`, `guest_connected=false`).
+  Kali (`25MT4PW6`) and Windows (`YS2KDPUE`) are online. The live probe and the
+  remote-terminal log read both need the Parrot agent online and in a session, so
+  steps 1-2 cannot run until the user brings Parrot up. Waiting on that.
+  *Kali baseline captured for comparison (healthy, matches user).* 30s probe:
+  26.9 fps, 931 kbps, inter-frame gap median 34ms / p90 40ms / max 137ms,
+  keyframes at 3296/12295/22288ms (~the 10s forced interval), no stalls, no
+  reconnects. (Note: yesterday's severe Kali reconnect storm did NOT reproduce
+  today - consistent with it having been aggravated by the co-located test
+  browser; Kali is clean now with no code change.)
+  *Wayland-path commit history (step 3).* `d2e2341` (2026-11-06) introduced real
+  portal capture/input; `166951e` (2026-11-07) fixed X11-before-portal black
+  screen; `f10cb1c` (2026-11-07) is the CURRENT path - Wayland runs under the
+  machine's own python3, agent talks to the helper over a pipe
+  (`wayland_helper.py` + `wayland_portal.py`). `54ab7cd` touched session.py only
+  for Wayland: `_restart_portal()` fires on blank-OFF (gated on `self._wayland and
+  self._portal`); the time-based "same frame -> restart" triggers were explicitly
+  NOT built, so it does not restart-loop on an idle screen. Prime suspect for
+  Parrot-only lag (UNCONFIRMED until live numbers + Parrot log): the f10cb1c pipe
+  path - helper process -> pipe -> frame conversion -> encode. NOT named as the
+  cause yet; no fix proposed until evidence. No code changed.
+  *Follow-up same day: code-evidence cause found (live Parrot log still pending).*
+  Parrot could not be brought online (user: agent not running), so no live
+  numbers/log. Pulled last-known session rows instead: Parrot AND Kali are both
+  1920x1080 (eDP-1) - identical resolution - so the lag is NOT resolution, it is
+  the capture PATH. X11 (Kali) reads via XShm shared memory (zero-copy); the
+  Wayland portal path moves every full UNCOMPRESSED frame (~6.2 MB at 1080p)
+  through a stdio pipe with ~4 full-frame copies in the system python3 before the
+  JPEG encoder runs: `wayland_helper.py:436` sends raw `b"F"` frame;
+  `wayland_helper.py:264-269` `always-copy=true ! videoconvert ! appsink`;
+  `wayland_helper.py:310` full-frame `bytes(...)` copy; `wayland_portal.py:301`
+  reads ~6MB back; `wayland_portal.py:327` `payload[8:]` copies it again. Mouse
+  drag = same root: helper command loop is single-threaded
+  (`wayland_helper.py:419 for line in sys.stdin`), so a `motion` op waits behind
+  the in-progress 6MB `grab`. Not a regression: the portal path has shipped raw
+  frames over the pipe since it became real (d2e2341 2026-11-06, f10cb1c
+  2026-11-07); it was never as fast as X11. Restart loop: from code only on
+  blank-off (54ab7cd), idle restart timers never built - confirm in the live log
+  when Parrot is up.
+  *ONE proposed fix (Wayland portal path only, NOT implemented, awaiting
+  approval).* Compress each frame to JPEG inside the helper's GStreamer pipeline
+  (`jpegenc`) so the pipe carries ~100 KB instead of ~6 MB/frame; the agent
+  decodes once (C-speed) and feeds the existing tile encoder unchanged. Confined
+  to `wayland_helper.py` + `wayland_portal.py`; X11 (Kali) and Windows untouched.
+  Lighter alternative: cap the Wayland grab rate to ~12 fps on the portal path
+  only (trades fps instead of fixing per-frame cost). Still need the live Parrot
+  log to confirm no restart churn and to measure before/after. No code changed.
+
+- **LIVE TEST after deploying 362c1de, no code changed (2026-11-10): Windows is
+  healthy, Kali is the one freezing; relay operator-send still stalls on a slow
+  link and takes the heartbeat down with it.** User deployed 362c1de to the live
+  server (confirmed by their `docker compose up` output) and asked whether the
+  system is presentable. It is NOT yet: the fix is installed but the freeze is
+  reproduced live on Kali. Ran a real headless-Chromium operator against
+  `rmm.remotedesk247.com` (login via the test operator account the user supplied;
+  browser-side only, no SSH). View-only, never sent input to the real display
+  (lesson #52); did not touch the Kali X11 path.
+  *Method.* Playwright/Chromium in a throwaway venv
+  (`scratchpad/pwtest/.venv`); opened the operator WebSocket exactly as the
+  console does (auth message first), counted binary frames, bytes, keyframes
+  (byte 0x00) and heartbeat pings with timestamps; a second probe reconnected on
+  3s of silence to mimic the console's dead-link watchdog.
+  *Finding - Windows DESKTOP-NHO4OFM (code YS2KDPUE) is HEALTHY.* 45s hold, zero
+  reconnects: `frames=953 keyframe@1173ms firstFrame@586ms lastFrame@44998ms
+  pings=89` ~= 21 fps / 1.5 Mbps steady to the end. The earlier "Windows froze
+  again" report did not reproduce - at test time it was fine.
+  *Finding - Kali (code 25MT4PW6) freezes in a deterministic sawtooth.* Six
+  reconnect cycles in 45s, every one identical: keyframe arrives, frames flow for
+  ~3.5s, then frames AND the 1s heartbeat stop together, the viewer sees 3s of
+  silence and force-reconnects. E.g. `cycle0 frames=113 keyframe@1173 firstFrame@595
+  lastFrame@4546 closed@7751 why=dead-link-3s-silence`; cycles 1-5 repeat at
+  ~7.5s spacing. This is the user's "Kali has delays / dead-link keeps
+  reconnecting": ~3.5s of video, ~3s frozen, forever.
+  *Where frames stop, and why.* Not the agent: the Kali agent log for that session
+  shows `consent granted; streaming starts now` then `diagnostics: still running`
+  every 60s with NO error and ~9% CPU throughout. Frames and the independent 1s
+  heartbeat stopping at the same instant is the tell - a stalled capture would
+  leave pings flowing. In the relay the frame forwarder and the heartbeat share
+  one `channel.lock` and the operator send has no timeout (removed in 362c1de), so
+  when the operator socket cannot drain, `_send_operator` (`hub.py:253-258`) blocks
+  inside `async with channel.lock: await send(socket)`: the heartbeat starves on
+  the same lock, and the guest-read loop calling `to_operator_bytes` blocks, so the
+  relay stops reading the Kali agent and the agent's own send backs up and stalls
+  with no error (matches the log). Frames stop at the relay's operator-send.
+  *Honest confound.* The only browser available is on the SAME Kali box as the Kali
+  agent, so the test runs upstream (agent) and downstream (viewer) over one home
+  uplink - the agent saturates the uplink and starves the viewer's downlink, a
+  reliable way to manufacture the slow-operator stall. The real console is not
+  co-located so it will be less severe, BUT the user independently reported Kali
+  freezing on their real console, and the mechanism is identical (any slow or
+  half-open operator link cascades into a full stall via the shared lock).
+  *Proposed fix, NOT yet implemented (awaiting user go).* Decouple the operator
+  socket from both the heartbeat and the guest-read loop: a small bounded
+  per-operator outbound queue; guest-read and heartbeat enqueue and return
+  instantly (never block on the socket); one writer task drains it; under
+  congestion drop stale delta frames and force the next frame to a keyframe (so the
+  picture is never corrupted) while the heartbeat always gets out, so the viewer
+  only reconnects when the link is truly dead. Relay-only; no agent or Kali X11
+  change; does not regress the healthy Windows path. NOT "fixed" until the user
+  confirms on their machines.
+
 - **REGRESSION from 93431fe found and fixed: the relay's 2s operator send-timeout
   was closing healthy sockets and pinning Linux at 0 fps; removed it (2026-11-10).**
   User: after deploying 93431fe the Linux PC went to 0 fps / 0 kbps on the live

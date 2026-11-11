@@ -315,8 +315,10 @@ class PortalSession:
     # ------------------------------------------------------------ capture
 
     def grab(self, timeout: float = 10.0) -> tuple[bytes, int, int]:
-        """The newest frame as packed RGB. A still screen returns the last
-        frame again rather than failing - PipeWire only sends on change."""
+        """The newest frame as a JPEG (the helper encodes it in-pipeline; the
+        caller decodes). A still screen returns the last frame object again
+        rather than failing - PipeWire only sends on change, and returning the
+        same object lets the caller skip re-decoding it."""
         if not self.started:
             raise RuntimeError("the Wayland screen share is not running")
         with self._grab_lock:

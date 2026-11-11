@@ -45,7 +45,7 @@ jobs:
             python3-tk libx11-dev libxext-dev libxrandr-dev libxfixes-dev \
             gir1.2-appindicator3-0.1 \
             libgirepository1.0-dev gobject-introspection libcairo2-dev pkg-config \
-            gir1.2-glib-2.0 gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-pipewire \
+            gir1.2-glib-2.0 gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-pipewire \
             python3-gi xvfb
 
       - name: Install
@@ -74,11 +74,14 @@ jobs:
         # machine's own python3. Fail the build if the helper is not inside
         # the binary or cannot reach the system's PyGObject and GStreamer
         # pipewire plugin - the agent used to ship with no Wayland path at
-        # all and nothing noticed.
+        # all and nothing noticed. jpegenc (gstreamer1.0-plugins-good) is
+        # required too: the capture pipeline compresses each frame with it, so
+        # a build whose status does not report it would stream nothing on
+        # Wayland (lesson #51 - check the built artefact, not the source).
         run: |
           set -o pipefail
           timeout 120 xvfb-run -a agent/dist/rmm-agent-linux status | tee status.txt
-          grep -E '^wayland +: helper bundled, .*PyGObject yes, .*pipewiresrc yes' status.txt
+          grep -E '^wayland +: helper bundled, .*PyGObject yes, .*pipewiresrc yes, jpegenc yes' status.txt
 
       - name: Package (.deb)
         # Section 8: "installs without manual steps". A bare executable does

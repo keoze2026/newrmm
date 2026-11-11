@@ -24,18 +24,26 @@ Protocol
   helper -> agent : 1 byte kind + u32 little-endian length + payload.
       b"J" JSON   {"event": "ready", "monitors": [...], "input": bool, "restore_token": str|null}
                   {"event": "error", "detail": str, "denied": bool}
-      b"F" frame  u32 width, u32 height, then packed RGB, top row first
+      b"F" frame  u32 width, u32 height, then a JPEG of the frame. The frame is
+                  JPEG-encoded in the helper's GStreamer pipeline, so ~100 KB
+                  crosses the pipe per frame instead of a multi-MB raw frame;
+                  the agent decodes it once (capture.py) and feeds its existing
+                  tile encoder. (Was packed RGB before 2026-11-11.)
       b"S" same   no new frame since the last one (a still screen)
       b"E" error  utf-8 text: the stream is gone
-  Only "grab" is answered, so input ops never desynchronise the stream.
+  Only "grab" is answered, so input ops never desynchronise the stream. Grabs
+  and input are handled on separate threads (see main), so a pointer move is
+  never stuck behind a frame being pulled and sent.
 
 `python3 wayland_helper.py --check` prints one JSON line describing what this
 machine can do, for `rmm-agent status` and CI.
 """
 import json
 import os
+import queue
 import struct
 import sys
+import threading
 import time
 
 PORTAL_BUS = "org.freedesktop.portal.Desktop"
@@ -254,7 +262,10 @@ class Portal:
 
 class Stream:
     """Pulls frames from the PipeWire node through GStreamer's pipewiresrc,
-    which does PipeWire's buffer negotiation for us."""
+    which does PipeWire's buffer negotiation for us. The pipeline JPEG-encodes
+    each frame (jpegenc) so the pipe to the agent carries ~100 KB, not a
+    multi-MB raw frame - the single biggest cost of the Wayland path, which the
+    zero-copy X11 path never pays."""
 
     def __init__(self, Gst, fd: int, node: int) -> None:
         self.Gst = Gst
@@ -263,8 +274,11 @@ class Stream:
         source = os.environ.get("RMM_WAYLAND_TEST_SOURCE") or (
             f"pipewiresrc fd={fd} path={node} do-timestamp=true always-copy=true"
         )
+        # jpegenc (gstreamer1.0-plugins-good) compresses in-pipeline, before the
+        # frame ever reaches Python or the pipe. videoconvert gives it a format
+        # it accepts; the agent re-tiles after decoding, so quality is kept high.
         self.pipeline = Gst.parse_launch(
-            f"{source} ! videoconvert ! video/x-raw,format=RGB ! "
+            f"{source} ! videoconvert ! jpegenc quality=90 ! "
             "appsink name=sink max-buffers=1 drop=true sync=false"
         )
         self.sink = self.pipeline.get_by_name("sink")
@@ -284,7 +298,11 @@ class Stream:
         return f"stream error: {error.message}"
 
     def pull(self, timeout: float):
-        """A new frame as (width, height, rgb) or None if nothing new."""
+        """A new frame as (width, height, jpeg) or None if nothing new.
+
+        jpegenc hands us a finished JPEG, so there is no raw RGB stride to
+        de-pad and no multi-MB buffer to copy row by row - just the compressed
+        blob, which is what makes this path cheap."""
         Gst = self.Gst
         sample = self.sink.emit("try-pull-sample", int(timeout * Gst.SECOND))
         if sample is None:
@@ -293,6 +311,7 @@ class Stream:
                 raise RuntimeError(problem)
             return None
         structure = sample.get_caps().get_structure(0)
+        # image/jpeg caps still carry the frame size.
         width = structure.get_value("width")
         height = structure.get_value("height")
         buffer = sample.get_buffer()
@@ -300,22 +319,11 @@ class Stream:
         if not ok:
             return None
         try:
-            data = mapping.data
-            row = width * 3
-            # GStreamer pads each RGB row to a multiple of 4 bytes, so at a
-            # width like 1366 a row is 4100 bytes, not 4098. Reading it as
-            # unpadded shears the picture diagonally.
-            stride = len(data) // height if height else row
-            if stride == row:
-                pixels = bytes(data[: row * height])
-            else:
-                pixels = b"".join(
-                    bytes(data[y * stride: y * stride + row]) for y in range(height)
-                )
+            jpeg = bytes(mapping.data)
         finally:
             buffer.unmap(mapping)
         self.have_frame = True
-        return width, height, pixels
+        return width, height, jpeg
 
     def close(self) -> None:
         try:
@@ -326,7 +334,7 @@ class Stream:
 
 def check() -> int:
     report = {"python": sys.executable, "pygobject": False, "gstreamer": None,
-              "pipewiresrc": False, "screencast": 0, "remote_desktop": 0}
+              "pipewiresrc": False, "jpegenc": False, "screencast": 0, "remote_desktop": 0}
     try:
         import gi
 
@@ -339,6 +347,9 @@ def check() -> int:
         Gst.init(None)
         report["gstreamer"] = Gst.version_string()
         report["pipewiresrc"] = Gst.ElementFactory.find("pipewiresrc") is not None
+        # jpegenc lives in gstreamer1.0-plugins-good; the capture pipeline needs
+        # it to compress frames before they cross the pipe.
+        report["jpegenc"] = Gst.ElementFactory.find("jpegenc") is not None
         try:
             portal = Portal(Gio, GLib)
             report["screencast"] = portal.version(SCREENCAST_IFACE)
@@ -414,7 +425,76 @@ def main() -> int:
             portal.close()
         return 1
 
+    # Grabs and input run on their own threads so a pointer move is never stuck
+    # behind a frame being pulled and sent. The stdin reader only routes each
+    # line to a queue and returns at once; the grab worker owns the one frame
+    # reply per grab (so replies stay ordered and in step with requests), and
+    # the input worker injects pointer/key events the moment they arrive,
+    # concurrently with whatever the grab worker is doing. GDBus call_sync and
+    # the appsink pull are both thread-safe, so the two never collide.
+    stop = threading.Event()
+    grab_q: "queue.Queue" = queue.Queue()
+    input_q: "queue.Queue" = queue.Queue()
+    out_lock = threading.Lock()
     pending = first
+
+    def emit(kind: bytes, payload: bytes) -> None:
+        with out_lock:
+            send(kind, payload)
+
+    def grab_worker() -> None:
+        nonlocal pending
+        while True:
+            item = grab_q.get()
+            if item is None:
+                break
+            # After a stream error or shutdown, keep draining to the sentinel
+            # but send nothing more.
+            if stop.is_set():
+                continue
+            try:
+                frame = pending or stream.pull(0.05)
+                pending = None
+            except RuntimeError as exc:
+                emit(b"E", str(exc).encode())
+                stop.set()
+                continue
+            if frame is None:
+                emit(b"S", b"")
+            else:
+                w, h, jpeg = frame
+                emit(b"F", struct.pack("<II", w, h) + jpeg)
+
+    def input_worker() -> None:
+        # Drains to the sentinel so input queued before close is still injected
+        # (the grab worker never blocks it, and close joins this thread).
+        while True:
+            command = input_q.get()
+            if command is None:
+                break
+            op = command.get("op")
+            try:
+                if op == "motion":
+                    portal.notify("NotifyPointerMotionAbsolute", "(oa{sv}udd)",
+                                  (portal.node, float(command["x"]), float(command["y"])))
+                elif op == "button":
+                    portal.notify("NotifyPointerButton", "(oa{sv}iu)",
+                                  (int(command["button"]), 1 if command.get("pressed") else 0))
+                elif op == "axis":
+                    portal.notify("NotifyPointerAxisDiscrete", "(oa{sv}ui)",
+                                  (0, int(command["steps"])))
+                elif op == "key":
+                    portal.notify("NotifyKeyboardKeysym", "(oa{sv}iu)",
+                                  (int(command["keysym"]), 1 if command.get("pressed") else 0))
+            except Exception as exc:
+                log(f"input {op} failed: {exc}")
+
+    workers = [
+        threading.Thread(target=grab_worker, name="wl-grab", daemon=True),
+        threading.Thread(target=input_worker, name="wl-input", daemon=True),
+    ]
+    for worker in workers:
+        worker.start()
     try:
         for line in sys.stdin:
             try:
@@ -423,32 +503,20 @@ def main() -> int:
                 continue
             op = command.get("op")
             if op == "grab":
-                try:
-                    frame = pending or stream.pull(0.05)
-                    pending = None
-                except RuntimeError as exc:
-                    send(b"E", str(exc).encode())
-                    break
-                if frame is None:
-                    send(b"S", b"")
-                else:
-                    w, h, pixels = frame
-                    send(b"F", struct.pack("<II", w, h) + pixels)
-            elif op == "motion" and granted["input"]:
-                portal.notify("NotifyPointerMotionAbsolute", "(oa{sv}udd)",
-                              (portal.node, float(command["x"]), float(command["y"])))
-            elif op == "button" and granted["input"]:
-                portal.notify("NotifyPointerButton", "(oa{sv}iu)",
-                              (int(command["button"]), 1 if command.get("pressed") else 0))
-            elif op == "axis" and granted["input"]:
-                portal.notify("NotifyPointerAxisDiscrete", "(oa{sv}ui)",
-                              (0, int(command["steps"])))
-            elif op == "key" and granted["input"]:
-                portal.notify("NotifyKeyboardKeysym", "(oa{sv}iu)",
-                              (int(command["keysym"]), 1 if command.get("pressed") else 0))
+                grab_q.put(command)
+            elif op in ("motion", "button", "axis", "key"):
+                if granted["input"]:
+                    input_q.put(command)
             elif op == "close":
                 break
     finally:
+        grab_q.put(None)
+        input_q.put(None)
+        # Let the workers finish what is queued (bounded) before the portal and
+        # stream they use are torn down.
+        for worker in workers:
+            worker.join(timeout=3)
+        stop.set()
         stream.close()
         portal.close()
         try:
