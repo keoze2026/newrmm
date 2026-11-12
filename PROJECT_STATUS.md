@@ -243,11 +243,20 @@ the rule that stops it happening again. Add one the moment something goes wrong.
   key as the GitHub secret `SERVER_SSH_KEY`. Delivery is push-based from CI
   (root SSH key stored as an Actions secret on a PUBLIC repo - acceptable only
   while `main` is protected/trusted, since secrets are not exposed to fork PRs).
-  *Proof pending.* Once the secret is in, push a trivial agent change; the run
-  builds, delivers, and the verify step shows the live Linux download serving the
-  new version. That same delivery also carries the Wayland speed fix (already on
-  main) to the server, which is what #2 needs. NOT done until it runs and the
-  user confirms.
+  *PROVEN GREEN (2026-11-12).* The secret was set (stored as single-line base64,
+  the raw multi-line paste was rejected by OpenSSH as "error in libcrypto").
+  Run 43184742095 (commit 8b3163e) went fully green: all three builds, then the
+  deliver job SSHed in, backed up, swapped, and its own verify step confirmed the
+  live Linux download. Independently confirmed from this machine: the live
+  download `https://rmm.remotedesk247.com/api/connector/linux` served
+  `rmm-agent_0.2.0.109_amd64.deb` then `...110...` as successive runs delivered -
+  so delivery is automatic and the website serves the latest. That delivered
+  build carries the Wayland speed fix (it is on main), so the server now serves
+  the FIXED agent. #1 mechanism done. (Two first attempts failed and were fixed:
+  the libcrypto key-format issue -> accept base64; and two stray trailing lines
+  that had leaked into the verify step's run block -> removed.) Now on to #2:
+  Parrot installs from the website, then the live before/after test. NOT "fixed"
+  for Parrot until the user confirms there.
 
 - **WAYLAND PORTAL SPEED FIX built: JPEG-in-helper + separate input thread
   (2026-11-11). CI-green target; NOT fixed until the user confirms on Parrot.**
