@@ -390,8 +390,18 @@ jobs:
         run: |
           set -euo pipefail
           install -m 700 -d ~/.ssh
-          printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_deploy
+          # The secret may be the raw key or a single-line base64 of it. Base64
+          # is preferred: a raw multi-line key often loses its line breaks when
+          # pasted into a secret, and OpenSSH then rejects it ("error in
+          # libcrypto"). Detect which we got and write a valid key file.
+          if printf '%s' "$SERVER_SSH_KEY" | head -n1 | grep -q -- '-----BEGIN'; then
+            printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_deploy
+          else
+            printf '%s' "$SERVER_SSH_KEY" | tr -d '[:space:]' | base64 -d > ~/.ssh/id_deploy
+          fi
           chmod 600 ~/.ssh/id_deploy
+          ssh-keygen -y -f ~/.ssh/id_deploy >/dev/null \
+            || { echo "::error::SERVER_SSH_KEY is not a valid private key. Store the single-line base64 version (on the server: base64 -w0 /root/.ssh/gh_deploy)."; exit 1; }
           ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Deliver atomically, keeping the old build as a backup
