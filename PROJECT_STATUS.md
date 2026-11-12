@@ -208,8 +208,46 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 | 52 | Drove a test chat window with `xdotool` on the user's real display at night without looking first. The screen was locked, so the typed reply and Enter went into the lock screen's password box (one failed unlock). | Never send synthetic input to the user's real display. Run anything that types or clicks on a private display (`Xvfb :87`), and check what is on screen before any input. |
 | 53 | The guest chat window was built, unit-tested and "type-checked" for days, yet the reply box was pushed off the bottom of the window - the person helped could never answer. Only running it and looking at a screenshot showed it. | A UI is not verified until it has been run and seen. Every new window gets one real run with a screenshot before it is called done. |
 | 54 | Repeatedly reported fixes as "done"/"fixed" on the strength of CI being green, and built the console freeze self-heal before the ordered research into how other systems solve it had come back. The user kept seeing no change because CI green only proves the code COMPILES, not that it works on their machines, and nothing was deployed or confirmed by them. | "Fixed" means CONFIRMED WORKING ON THE USER'S MACHINE BY THE USER - never CI. CI green is "it builds", never "it works" or "done". When the user orders research or diagnosis before a fix, do that first and wait for it; do not build ahead of it. Report status as "builds (CI green), not yet verified by you" until the user confirms. |
+| 55 | Asked the user things already answered in the status file or the code. | Before asking anything, check PROJECT_STATUS.md and the code. If the answer is there, use it - do not ask. |
+| 56 | Offered choices for things already decided, and made the user spell out the deploy each time. | The deploy process is FIXED, never re-offer it: **relay/console** = `git pull` on the server then rebuild the containers (relay with BOTH compose files, console with `docker-compose.yml` only); **agent** = the CI-built files go into `/opt/nermm/agent/dist` on the server (the relay serves them from there). Every time agent code changes, the deploy INCLUDES putting the new CI build there - give that server step unprompted, never ask. |
+| 57 | Explained how the system works to the user, who built it. | Do not explain the system to the user. Give only what to run (server) or what to click (end user). |
+| 58 | Gave end users developer steps (commands, files, paths). | End users cannot code: their steps are SCREEN-ONLY - links, buttons, windows. Only the user (Hans) gets commands, and only for the server. |
+| 59 | Split one task across messages and ended with "which do you want" / "say go". | One message, everything needed, in order. No menus, no "say go" for steps that follow from what the user already approved. |
+| 60 | Hedged or buried a blocker. | If truly blocked, say exactly what blocks it in ONE line, then give everything that does not depend on the blocker. |
 
 ## Change log
+
+- **#1 AUTOMATIC AGENT DELIVERY built: CI delivers green builds to the server by
+  itself (2026-11-12). One-time admin step (deploy-key secret) pending; NOT
+  proven until it runs with the secret and the user confirms.** User ordered it:
+  every green "Build agents" run on main lands the new Win/Linux/mac builds in
+  `/opt/nermm/agent/dist` automatically, nobody touches the server; a failed or
+  partial build must never replace a working one; keep the previous build as a
+  backup for rollback; verify the live download serves the new version and fail
+  the workflow if not; one allowed manual step (a secret); prove it with a
+  trivial agent change.
+  *What was built.* New `deliver` job in `.github/workflows/agents.yml`:
+  `needs: [linux, windows, macos]` (so a failed/partial build never delivers) and
+  `if: main push`. It downloads all three artifacts, refuses a partial set,
+  SSHes to the server, backs up the current `dist` to
+  `/opt/nermm/agent/backup/prev` (rollback), overlays the new files in place
+  (never a dir swap - `dist` is bind-mounted into the relay container), drops
+  stale `.deb`s so only the new version remains, then verifies the LIVE download
+  (`https://rmm.remotedesk247.com/api/connector/linux`) serves the just-built
+  `.deb` by name and that Windows/macOS links respond, failing the job if not.
+  Until the `SERVER_SSH_KEY` secret exists the job SKIPS with a warning (stays
+  green), so nothing breaks before setup. Validated: YAML parses, all run steps
+  pass `bash -n`.
+  *One-time admin step (the only manual step, pending the user).* Create a
+  dedicated ed25519 deploy key on the server, authorize it, and add its private
+  key as the GitHub secret `SERVER_SSH_KEY`. Delivery is push-based from CI
+  (root SSH key stored as an Actions secret on a PUBLIC repo - acceptable only
+  while `main` is protected/trusted, since secrets are not exposed to fork PRs).
+  *Proof pending.* Once the secret is in, push a trivial agent change; the run
+  builds, delivers, and the verify step shows the live Linux download serving the
+  new version. That same delivery also carries the Wayland speed fix (already on
+  main) to the server, which is what #2 needs. NOT done until it runs and the
+  user confirms.
 
 - **WAYLAND PORTAL SPEED FIX built: JPEG-in-helper + separate input thread
   (2026-11-11). CI-green target; NOT fixed until the user confirms on Parrot.**

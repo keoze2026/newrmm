@@ -340,5 +340,98 @@ jobs:
             Endpoint agents for Windows, macOS and Linux, each built on its own
             platform with that platform's native capture module.
 
+  deliver:
+    name: Deliver to the server
+    # Only after all three platforms built GREEN, and only for a push to main
+    # (not tags, not pull requests). `needs` is what guarantees a failed or
+    # partial build never reaches the server: if any build job fails, this job
+    # does not run, so the working copy on the server is left untouched.
+    needs: [linux, windows, macos]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    env:
+      # Job-level so step `if:` can see it (the `secrets` context is not
+      # available in `if:` directly). Empty until the one-time admin step adds
+      # the SERVER_SSH_KEY secret; delivery is skipped (with a warning) until then.
+      SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+      SERVER_HOST: rmm.remotedesk247.com
+      SERVER_USER: root
+      DIST: /opt/nermm/agent/dist
+    steps:
+      - name: Skip until the deploy key is set
+        if: ${{ env.SERVER_SSH_KEY == '' }}
+        run: echo "::warning::SERVER_SSH_KEY is not set yet, so automatic delivery is skipped. Add it once (admin step) to turn delivery on."
+
+      - name: Download every built agent
+        if: ${{ env.SERVER_SSH_KEY != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          path: incoming
+
+      - name: Collect all three platforms, refuse a partial set
+        if: ${{ env.SERVER_SSH_KEY != '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p deliver
+          cp -v incoming/rmm-agent-linux/*   deliver/
+          cp -v incoming/rmm-agent-windows/* deliver/
+          cp -v incoming/rmm-agent-macos/*   deliver/
+          # Belt and braces on top of `needs`: every platform's key file must be
+          # present or we deliver nothing.
+          ls deliver/rmm-agent_*_amd64.deb >/dev/null || { echo "::error::Linux .deb missing"; exit 1; }
+          test -f deliver/rmm-agent-setup.exe || { echo "::error::Windows installer missing"; exit 1; }
+          test -f deliver/rmm-agent-macos.zip || { echo "::error::macOS build missing"; exit 1; }
+          NEWDEB="$(basename deliver/rmm-agent_*_amd64.deb)"
+          echo "NEWDEB=$NEWDEB" >> "$GITHUB_ENV"
+          echo "Delivering this set:"; ls -la deliver
+
+      - name: Open an SSH connection to the server
+        if: ${{ env.SERVER_SSH_KEY != '' }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deliver atomically, keeping the old build as a backup
+        if: ${{ env.SERVER_SSH_KEY != '' }}
+        run: |
+          set -euo pipefail
+          SSHOPTS="-i $HOME/.ssh/id_deploy -o StrictHostKeyChecking=yes"
+          TARGET="$SERVER_USER@$SERVER_HOST"
+          # Stage the new files on the server first, well away from the live folder.
+          ssh $SSHOPTS "$TARGET" 'rm -rf /opt/nermm/agent/incoming && mkdir -p /opt/nermm/agent/incoming /opt/nermm/agent/dist /opt/nermm/agent/backup'
+          scp $SSHOPTS deliver/* "$TARGET:/opt/nermm/agent/incoming/"
+          # Back up the current live build, then overlay the new files in place
+          # (in place, never a directory swap: the live folder is bind-mounted
+          # into the relay container). Finally drop stale .debs so only the new
+          # version remains. prev/ is the rollback copy.
+          ssh $SSHOPTS "$TARGET" NEWDEB="$NEWDEB" bash -s <<'REMOTE'
+          set -e
+          rm -rf /opt/nermm/agent/backup/prev
+          cp -a /opt/nermm/agent/dist /opt/nermm/agent/backup/prev
+          cp -af /opt/nermm/agent/incoming/. /opt/nermm/agent/dist/
+          cd /opt/nermm/agent/dist
+          for f in rmm-agent_*_amd64.deb; do [ "$f" = "$NEWDEB" ] || rm -f "$f"; done
+          rm -rf /opt/nermm/agent/incoming
+          echo "Live folder now:"; ls -la /opt/nermm/agent/dist
+          REMOTE
+
+      - name: Prove the live download serves the new version
+        if: ${{ env.SERVER_SSH_KEY != '' }}
+        run: |
+          set -euo pipefail
+          # The Linux download's filename carries the version; it must match what
+          # we just delivered, or the delivery did not really take.
+          headers="$(curl -fsS -D - -o /dev/null "https://$SERVER_HOST/api/connector/linux")"
+          echo "$headers" | tr -d '\r' | grep -i '^content-disposition:' || true
+          echo "$headers" | tr -d '\r' | grep -i '^content-disposition:' | grep -q "$NEWDEB" \
+            || { echo "::error::Live Linux download is NOT serving $NEWDEB"; exit 1; }
+          # Windows and macOS: confirm the live link hands over the file (one byte is enough).
+          curl -fsS -r 0-0 -o /dev/null "https://$SERVER_HOST/api/connector/windows"
+          curl -fsS -r 0-0 -o /dev/null "https://$SERVER_HOST/api/connector/macos"
+          echo "Verified live: Linux serving $NEWDEB; Windows and macOS reachable."
+
             Verify a download against `SHA256SUMS`, and against the checksum the
             relay reports at `/api/connector`.
