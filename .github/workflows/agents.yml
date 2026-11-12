@@ -442,6 +442,3 @@ jobs:
           curl -fsS -r 0-0 -o /dev/null "https://$SERVER_HOST/api/connector/windows"
           curl -fsS -r 0-0 -o /dev/null "https://$SERVER_HOST/api/connector/macos"
           echo "Verified live: Linux serving $NEWDEB; Windows and macOS reachable."
-
-            Verify a download against `SHA256SUMS`, and against the checksum the
-            relay reports at `/api/connector`.
