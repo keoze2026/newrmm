@@ -235,6 +235,16 @@ the rule that stops it happening again. Add one the moment something goes wrong.
   X11 path untouched). Test `test_a_4401_close_forgets_the_registration_and_stops`
   added; always-on suite 20/20, full agent suite 180 passed (only the pre-existing
   3.14-box pynput input-block test fails locally).
+  - *Windows install-over-running fix (same branch, commit 158bf37).* Root cause
+    of "an error occurred while trying to replace the existing file": the taskkill
+    that stops rmm-agent.exe lived ONLY in `[UninstallRun]` (rmm-agent.iss:51-63),
+    so it never ran on an install/upgrade over a running agent → the exe stayed
+    locked. Added a `PrepareToInstall()` that deletes the watchdog task and kills
+    both processes BEFORE the `[Files]` copy, so install-over-running is seamless
+    (no "close the app first"). Windows installer only. CANNOT be tested on Linux
+    (needs Inno Setup on Windows) - confirm with a Windows build. Immediate
+    user-facing workaround until then: uninstall first (Settings → Apps), which
+    already stops the agent and clears the dead id, then run the session app.
   - *Re-enrol with the dead file present (code proof).* `enrol()` sends only
     `{code,name,os,guest_token}` (enrol.py:25-30) - never the dead id - and
     `Enrolment.save()` overwrites `enrolment.json` (config.py:83-85). So "Always
