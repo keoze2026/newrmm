@@ -219,6 +219,24 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **OPERATOR CONSOLE "drops every ~4s" = EXPIRED LOGIN TOKEN, fixed by env, no
+  code/push (2026-11-13).** After the Windows PC re-registered, the user saw the
+  session "drop every 5s". Relay log proved it was NOT the device: `/ws/device/
+  e79e0e79-...` (new Windows id) was stable, the OLD `4cf805ba` 31s flap had
+  STOPPED at 13:54 (the installer's PrepareToInstall killed the old agent - the
+  fix worked). The every-~4s churn was `/ws/operator/3CMNGS62` - the console's own
+  socket - accepted then "connection closed" immediately, looping. Cause: the
+  operator JWT lasts only `access_token_minutes: 480` (8h, config.py:19) with NO
+  console refresh; after 8h the token is dead, the operator socket is rejected at
+  `ws.py:449-451` (Not authenticated), and the browser retries the same dead token
+  every ~4s. Fix (no code, no push): `access_token_minutes` is a pydantic
+  `BaseSettings` field, so set `ACCESS_TOKEN_MINUTES` in the relay's environment.
+  Done on the server via `docker-compose.override-token.yml` (= "525600", 1 year)
+  + `up --force-recreate relay`; `printenv ACCESS_TOKEN_MINUTES` = 525600. User
+  must re-login once for a fresh long token. TODO: fold the env line into the main
+  compose on a branch so it survives rebuilds; proper fix (token auto-refresh so
+  no re-login ever) is a console+relay change, offered, not built.
+
 - **AUTO-RECOVER of a dead registration = UNSAFE, NOT built; graceful-drop on a
   branch instead (2026-11-13).** User asked whether the agent could self-register
   a new id after the wipe. Answered with code proof: (Q2) after the row is
