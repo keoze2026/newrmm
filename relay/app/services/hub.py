@@ -47,6 +47,15 @@ class SessionChannel:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Tasks listening on this session's Redis channels, one per attached role.
     subscriptions: list[asyncio.Task] = field(default_factory=list)
+    # Newest-frame-only delivery to the operator. A frame is dropped into this
+    # one slot (overwriting any older unsent frame) and a dedicated sender task
+    # drains it; the guest read path NEVER awaits the operator's socket. This is
+    # what stops a slow operator from backpressuring the guest read - the cause
+    # of the "1011 keepalive ping timeout" drops on the busy socket. A viewer
+    # that falls behind sees the latest picture, not a growing backlog.
+    latest_frame: bytes | None = None
+    frame_signal: asyncio.Event = field(default_factory=asyncio.Event)
+    sender_task: asyncio.Task | None = None
 
 
 class Hub:
@@ -133,7 +142,34 @@ class Hub:
         if channel and channel.guest is None and channel.operator is None:
             for task in channel.subscriptions:
                 task.cancel()
+            if channel.sender_task is not None:
+                channel.sender_task.cancel()
+                channel.sender_task = None
             self._channels.pop(code, None)
+
+    # --------------------------------------------------- newest-frame delivery
+
+    def _queue_frame(self, channel: "SessionChannel", payload: bytes) -> None:
+        """Drop a frame into the operator's one slot, replacing any older unsent
+        frame, and wake the sender. Returns at once - never awaits the operator
+        socket - so the guest read path can never be backpressured by a slow
+        operator (the 1011 keepalive cause). Older frames are intentionally
+        dropped: a slow viewer gets the newest picture, not a backlog."""
+        channel.latest_frame = payload
+        if channel.sender_task is None or channel.sender_task.done():
+            channel.sender_task = asyncio.create_task(self._frame_sender(channel))
+        channel.frame_signal.set()
+
+    async def _frame_sender(self, channel: "SessionChannel") -> None:
+        while True:
+            await channel.frame_signal.wait()
+            channel.frame_signal.clear()
+            frame, channel.latest_frame = channel.latest_frame, None
+            if frame is None:
+                continue
+            # Goes through the same guarded, lock-serialized path as the
+            # heartbeat, so a frame and the 1s ping never interleave on the wire.
+            await self._send_operator(channel, lambda s, f=frame: s.send_bytes(f))
 
     def guest_online(self, code: str) -> bool:
         """Whether a guest socket is attached *to this instance*.
@@ -212,7 +248,9 @@ class Hub:
         async def deliver_binary(data: bytes) -> None:
             ch = self._channels.get(code)
             if ch and ch.operator is not None:
-                await self._send_operator(ch, lambda s: s.send_bytes(data))
+                # Cross-instance frames go through the same newest-only slot,
+                # so a slow operator never backpressures the Redis reader either.
+                self._queue_frame(ch, data)
 
         async def deliver_json(data: bytes) -> None:
             ch = self._channels.get(code)
@@ -262,7 +300,9 @@ class Hub:
     async def to_operator_bytes(self, code: str, payload: bytes) -> None:
         channel = self._channels.get(code)
         if channel and channel.operator is not None:
-            await self._send_operator(channel, lambda s: s.send_bytes(payload))
+            # Newest-frame-only: hand the frame to the slot and return at once.
+            # The guest read loop calls this, so it must never await the operator.
+            self._queue_frame(channel, payload)
             return
         await self._publish(operator_binary_channel(code), payload)
 

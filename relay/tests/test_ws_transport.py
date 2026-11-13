@@ -361,7 +361,7 @@ class _GoodSocket:
         self.closed = True
 
 
-async def test_a_healthy_operator_send_delivers_and_is_not_closed():
+async def test_a_healthy_operator_frame_is_delivered_newest_only():
     from app.services.hub import Hub
 
     hub = Hub()
@@ -370,16 +370,22 @@ async def test_a_healthy_operator_send_delivers_and_is_not_closed():
     good = _GoodSocket()
     channel.operator = good
 
+    # A frame is queued into the newest-only slot and delivered by the sender
+    # task; JSON (the heartbeat) still goes inline.
     await hub.to_operator_bytes("GOOD0001", b"frame")
     await hub.to_operator_json("GOOD0001", {"type": "ping"})
+    await asyncio.sleep(0.05)  # let the frame sender run
 
-    assert good.sent == [("b", b"frame"), ("j", {"type": "ping"})]
+    assert ("b", b"frame") in good.sent
+    assert ("j", {"type": "ping"}) in good.sent
     assert good.closed is False
+    if channel.sender_task:
+        channel.sender_task.cancel()
 
 
-async def test_concurrent_frame_and_heartbeat_sends_are_serialized():
-    """The 1s heartbeat and the frame forwarder both write the operator socket;
-    the channel lock must keep them from interleaving, and all must arrive."""
+async def test_frames_coalesce_to_newest_while_every_heartbeat_arrives():
+    """Frames may be dropped down to the newest, but the 1s heartbeat is JSON
+    and is never dropped; a frame and a ping never interleave (channel lock)."""
     from app.services.hub import Hub
 
     hub = Hub()
@@ -389,10 +395,61 @@ async def test_concurrent_frame_and_heartbeat_sends_are_serialized():
     channel.operator = good
 
     await asyncio.gather(
-        *[hub.to_operator_bytes("RACE0001", b"f") for _ in range(5)],
-        *[hub.to_operator_json("RACE0001", {"type": "ping"}) for _ in range(5)],
+        *[hub.to_operator_bytes("RACE0001", f"f{i}".encode()) for i in range(5)],
+        *[hub.to_operator_json("RACE0001", {"type": "ping", "n": i}) for i in range(5)],
     )
-    assert len(good.sent) == 10
+    await asyncio.sleep(0.05)
+
+    pings = [p for p in good.sent if p[0] == "j"]
+    frames = [p for p in good.sent if p[0] == "b"]
+    assert len(pings) == 5, "heartbeats must never be dropped"
+    assert ("b", b"f4") in good.sent, "the newest frame must be delivered"
+    assert 1 <= len(frames) <= 5
+    if channel.sender_task:
+        channel.sender_task.cancel()
+
+
+async def test_a_slow_operator_never_blocks_the_guest_and_old_frames_drop():
+    """The 1011 fix: forwarding a frame returns immediately even when the
+    operator socket is slow, and the backlog is dropped (newest wins) instead of
+    stalling the guest read - which is what tripped the keepalive timeout."""
+    from app.services.hub import Hub
+    import time
+
+    class _SlowSocket:
+        def __init__(self):
+            self.sent = []
+
+        async def send_bytes(self, payload):
+            await asyncio.sleep(0.2)  # a slow viewer
+            self.sent.append(payload)
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+        async def send_text(self, payload):
+            self.sent.append(payload)
+
+        async def close(self, code=1000):
+            pass
+
+    hub = Hub()
+    hub._redis_failed = True
+    channel = hub.channel("SLOW0001")
+    slow = _SlowSocket()
+    channel.operator = slow
+
+    t0 = time.monotonic()
+    for i in range(10):
+        await hub.to_operator_bytes("SLOW0001", f"f{i}".encode())
+    elapsed = time.monotonic() - t0
+    assert elapsed < 0.1, f"forwarding blocked on the slow operator ({elapsed:.2f}s)"
+
+    await asyncio.sleep(0.6)  # let the slow sender catch up
+    assert b"f9" in slow.sent, "the newest frame must get through"
+    assert len(slow.sent) < 10, "old frames must be dropped, not all queued"
+    if channel.sender_task:
+        channel.sender_task.cancel()
 
 
 async def test_the_rate_limit_still_holds_when_redis_fails_mid_run(monkeypatch):
