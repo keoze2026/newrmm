@@ -90,9 +90,13 @@ def backlight_devices(run=_run) -> dict[str, int]:
 
 
 def available() -> bool:
-    """Whether this machine can darken its display and keep the picture."""
-    if backlight_devices():
-        return True
+    """Whether this machine can darken its display and keep the picture.
+
+    X11 is judged exactly as before (xrandr); only on Wayland is the backlight
+    consulted, so this never changes what X11 reports.
+    """
+    if os.environ.get("WAYLAND_DISPLAY"):
+        return bool(backlight_devices())
     return _on_x11()
 
 
@@ -135,9 +139,15 @@ class Dimmer:
         self._guard = None
 
     def dim(self, guard_seconds: float) -> bool:
-        """Darken the display. False if nothing could be darkened."""
-        if self._dim_backlight(guard_seconds):
-            return True
+        """Darken the display. False if nothing could be darkened.
+
+        X11 keeps the EXACT path it has always had (xrandr) - that is the
+        working Kali behaviour and this change must never alter it. Backlight
+        dimming is used ONLY on Wayland, where xrandr cannot help. So on X11
+        nothing here runs that did not run before (platform-scope rule).
+        """
+        if os.environ.get("WAYLAND_DISPLAY"):
+            return self._dim_backlight(guard_seconds)
         return self._dim_xrandr(guard_seconds)
 
     # ---------------------------------------------------------- backlight

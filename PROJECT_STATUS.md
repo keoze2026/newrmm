@@ -218,6 +218,14 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **PLATFORM-SCOPE FIX (2026-11-13): the backlight blank is confined to Wayland
+  so the X11 (Kali) path is byte-for-byte what it was.** The dimmer rewrite below
+  changed shared code and so altered X11 too, breaking the working Kali blank -
+  exactly the "don't touch what works" rule. Now `dimmer.dim()`/`available()`
+  branch on `WAYLAND_DISPLAY`: Wayland uses brightnessctl backlight, X11 uses the
+  original xrandr path unchanged, and a test asserts X11 never invokes
+  brightnessctl. No X11 capture/blank behaviour differs from before.
+
 - **WAYLAND FREEZE FIXED + confirmed by the user, and a UNIVERSAL privacy blank
   (2026-11-13).** The frozen picture is GONE: user's own viewer showed Parrot at
   **16 fps / 434 kbps**, live. Cause was the Wayland helper not pumping a GLib

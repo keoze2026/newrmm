@@ -232,26 +232,37 @@ def test_only_the_backlight_class_is_taken_never_keyboard_leds():
     assert dimmer.backlight_devices(fake.run) == {"intel_backlight": 30000}
 
 
-def test_the_backlight_goes_dark_through_brightnessctl():
+def test_the_backlight_goes_dark_through_brightnessctl_on_wayland(monkeypatch):
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
     fake = FakeBacklight()
     assert fake.dimmer().dim(guard_seconds=60) is True
     assert ["brightnessctl", "-d", "intel_backlight", "set", "0"] in fake.commands
+    assert not any("xrandr" in c for c in fake.commands), "xrandr must not be touched on Wayland"
 
 
-def test_the_backlight_is_preferred_over_xrandr_on_wayland_or_x11():
-    fake = FakeBacklight()
+def test_x11_still_uses_xrandr_and_never_the_backlight(monkeypatch):
+    """platform-scope: the X11 path must be exactly what Kali had - xrandr, never
+    brightnessctl - even on a machine that also has a backlight."""
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setenv("DISPLAY", ":0")
+    fake = FakeBacklight()  # has a backlight, but X11 must ignore it
+    fake.commands.clear()
+    # run() returns "" for the xrandr query here, so nothing is darkened - the
+    # point is only that brightnessctl is never invoked on X11.
     fake.dimmer().dim(guard_seconds=60)
-    assert not any("xrandr" in c for c in fake.commands), "xrandr must not be touched"
+    assert not any("brightnessctl" in c for c in fake.commands), "X11 must not touch the backlight"
 
 
-def test_the_backlight_safety_net_restores_the_saved_level():
+def test_the_backlight_safety_net_restores_the_saved_level(monkeypatch):
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
     fake = FakeBacklight()
     fake.dimmer().dim(guard_seconds=60)
     assert fake.guards[0].startswith("sleep 60;")
     assert "brightnessctl -d intel_backlight set 30000" in fake.guards[0]
 
 
-def test_restoring_the_backlight_puts_it_back_and_stands_the_net_down():
+def test_restoring_the_backlight_puts_it_back_and_stands_the_net_down(monkeypatch):
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
     fake = FakeBacklight()
     d = fake.dimmer()
     d.dim(guard_seconds=60)
@@ -264,7 +275,8 @@ def test_restoring_the_backlight_puts_it_back_and_stands_the_net_down():
     assert d.saved == {}
 
 
-def test_a_blank_on_wayland_dims_the_backlight_and_keeps_a_live_view():
+def test_a_blank_on_wayland_dims_the_backlight_and_keeps_a_live_view(monkeypatch):
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
     fake = FakeBacklight()
     blank = privacy.PrivacyBlank(watchdog_seconds=60)
     blank.mode = privacy.MODE_EXCLUDED
