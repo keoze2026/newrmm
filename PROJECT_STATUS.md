@@ -218,6 +218,33 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **ROLLBACK TO WORKING requested for a boss submission (2026-11-13). Forensics +
+  revert plan; NO new build.** Last working state: after `362c1de` (2026-11-10),
+  agent build **0.2.0.103** (CI run 103); status recorded "Kali and Windows now
+  run fine" and a Kali baseline of 26.9 fps / 931 kbps, no reconnects.
+  - *What changed since, by component.* relay + console: **nothing** -
+    `git diff 362c1de..HEAD -- relay console` is EMPTY, so the server system is
+    already at the working state. Agent: changed across f405697 (Wayland JPEG,
+    run 104), 8ffc086 (inline frames, 113), 734f356 (GLib loop, 116), f3bb4f2
+    (backlight blank - ran new code on X11, 117), 402d906 (confined blank to
+    Wayland, restored X11, 118), ff88589 (reconnect-flap, 119). CI: 29134a7
+    introduced auto-delivery (run 106), so runs 106/110/113/114/116/117/118/119
+    auto-overwrote `/opt/nermm/agent/dist`; server now serves 0.2.0.119.
+  - *What is broken, with evidence.* Parrot (Wayland): was broken, now fixed +
+    user-confirmed (16 fps/434 kbps). relay/console: not broken, not changed
+    (proof above). Kali (X11): user reported "behaving like parrot"; only X11-
+    touching change was f3bb4f2, confined by 402d906; **no live Kali test since
+    the report, so the current state is UNPROVEN.** Windows: **no evidence of
+    breakage; unproven.** Honest: cannot prove which commit broke Kali/Windows.
+  - *Revert given (no rebuild).* relay/console need no rollback; optional rebuild
+    from origin/main (== working). Agent: run-103 artifacts (0.2.0.103 .deb +
+    windows setup/exe + macos zip) downloaded to the Kali laptop at
+    `/tmp/agent-103`; scp into the server's dist (after backing up dist to
+    `backup/pre-rollback`), verified by the live connector Content-Disposition.
+    Must NOT push to main until submitted (auto-delivery would overwrite).
+  - PENDING: user runs the revert; then live-test 0.2.0.103 on Kali here + user
+    spot-checks Windows. Parrot fix + auto-delivery deferred per user.
+
 - **AGENT RECONNECT FLAP FIXED (2026-11-13): a removed device no longer
   reconnects forever every few seconds.** Cause: the data wipe earlier
   (`TRUNCATE devices`) deleted every enrolled device, but each machine still held
