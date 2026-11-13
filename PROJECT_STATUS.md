@@ -253,9 +253,25 @@ the rule that stops it happening again. Add one the moment something goes wrong.
     something other than capture/encode = UNKNOWN. Cloudflare transient >20s pong
     latency = UNKNOWN. DNS/sleep/wifi = not seen in the log (no getaddrinfo/OS
     errors), only clean 1011s.
-  - *NEEDED to finish the proof.* (1) Relay logs correlated by timestamp (one
-    server command given to the user). (2) A ≥1h soak on a streaming session
-    measuring pong round-trip and which side closes first. Candidate fixes (NOT
+  - *FLAP CAUSE PROVEN (relay logs + DB, 2026-11-13).* Relay log: `/ws/device/
+    4cf805ba-7c53-4204-99e5-0626e72699f2` accept → open → closed ~0.5s later,
+    every ~31s, 744 attempts in 24h, all from the internal proxy IP 172.20.0.5
+    (real client IP masked). DB: `SELECT ... WHERE id=4cf805ba` returns 0 rows -
+    the device was deleted by the earlier `TRUNCATE devices` wipe, so
+    `_authenticate_device` returns None at `ws.py:88-89` and the relay closes 4401
+    (`ws.py:382`); the 0.5s is the first-message auth read. The agent on that box
+    (likely Windows - the enrolled machine that never re-enrolled after the wipe;
+    identify by which `enrolment.json` holds 4cf805ba) runs a build older than
+    `ff88589`, so it retries the rejected credential forever (lesson #27). ONE FIX:
+    deploy `ff88589` there (it forgets the dead enrolment and stops) or re-enrol /
+    delete its `enrolment.json`; code fix already written. This flap is CHEAP (row
+    missing → returns before the argon2 verify at `ws.py:95`), so it does NOT load
+    the relay and is INDEPENDENT of the streaming 1011s.
+  - *NEEDED to finish the proof.* (1) Relay logs correlated by timestamp for the
+    Kali 1011s (agent-local -0500 ≈ relay-UTC +5h → T11:32:53 / T11:43:36): do
+    many sockets close in the same second (relay-worker stall) or only the
+    YZ669SGP guest (per-link latency)? STILL PENDING. (2) A ≥1h soak on a streaming
+    session measuring pong round-trip and which side closes first. Candidate fixes (NOT
     implemented, pending approval): raise/disable `ws_ping_timeout` on BOTH
     uvicorn and the agent; and/or move frame fan-out off the single relay worker.
 
