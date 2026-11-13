@@ -12,6 +12,22 @@ from rmm_agent import __version__
 log = logging.getLogger(__name__)
 HEARTBEAT_SECONDS = 20
 
+# A relay close carrying one of these codes means the credentials were rejected -
+# the device was removed from the server, or re-enrolled elsewhere, or its secret
+# is no longer valid. That is permanent, not a transient network drop, so the
+# agent must stop reconnecting forever (the every-few-seconds flap) and forget
+# the dead enrolment. Mirrors session.GIVE_UP_CODES.
+GIVE_UP_CODES = (4401, 4403, 4404)
+
+
+def _close_code(exc) -> "int | None":
+    """The WebSocket close code the relay sent, however the library exposes it."""
+    rcvd = getattr(exc, "rcvd", None)
+    code = getattr(rcvd, "code", None)
+    if code is None:
+        code = getattr(exc, "code", None)
+    return code
+
 
 @contextlib.asynccontextmanager
 async def connect_device(relay_url: str, device_id: str, secret: str, **options):
@@ -60,6 +76,9 @@ async def hold_presence(relay_url: str, device_id: str, secret: str, stop: async
             raise
         except Exception as exc:
             log.warning("device presence lost: %s", exc)
+            if _close_code(exc) in GIVE_UP_CODES:
+                log.warning("the relay rejected this device's credentials; stopping presence")
+                return
             try:
                 await asyncio.wait_for(stop.wait(), timeout=backoff)
             except asyncio.TimeoutError:
@@ -80,13 +99,14 @@ async def serve(
 ) -> None:
     """Stay online for as long as the agent runs, and start sessions on request.
 
-    This never gives up: after sleep, a network change, the relay restarting, or
-    a handshake the relay turns away, it keeps retrying until it is back. A
-    rejected handshake arrives as a plain 403 regardless of why the relay sent
-    it, so it cannot be told apart from a real "this device was removed" - it is
-    retried like any other drop rather than treated as final. The only way out
-    is `stop`. `on_revoked` is kept for a future, unambiguous revoke signal; it
-    is not called today.
+    A transient drop - sleep, a network change, the relay restarting - is retried
+    forever until it is back. But a close carrying a GIVE_UP code (4401/4403/4404)
+    is the relay rejecting the credentials: the device was removed or re-enrolled,
+    which is permanent. First-message auth makes that unambiguous now (the relay
+    closes with 4401, not a bare 403), so instead of reconnecting every few
+    seconds forever, `on_revoked` is called and the loop ends. The caller forgets
+    the dead enrolment; the machine comes back by re-enrolling from a session.
+    `stop` ends it in every other case.
 
     `on_start(code)` is called when an operator opens this device's session. It
     runs as its own task so a long session never blocks the connection, and a
@@ -131,6 +151,15 @@ async def serve(
             raise
         except Exception as exc:
             log.warning("device presence lost: %s", exc)
+            if _close_code(exc) in GIVE_UP_CODES:
+                log.warning(
+                    "the relay rejected this device's credentials - it was removed or "
+                    "re-enrolled. Forgetting it instead of reconnecting forever; "
+                    "re-enrol from a session to bring it back."
+                )
+                if on_revoked is not None:
+                    on_revoked()
+                return
 
         if stop.is_set():
             break

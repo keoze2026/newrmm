@@ -218,6 +218,22 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **AGENT RECONNECT FLAP FIXED (2026-11-13): a removed device no longer
+  reconnects forever every few seconds.** Cause: the data wipe earlier
+  (`TRUNCATE devices`) deleted every enrolled device, but each machine still held
+  its `device_id`/secret in `enrolment.json`, so the relay rejected it with close
+  **4401** ("Device authentication failed") and the agent's `device.serve()` loop
+  retried forever (its docstring even said it treats a reject as a transient drop,
+  `on_revoked` "not called today"). Now `device.py` reads the close code:
+  4401/4403/4404 = credentials rejected = permanent, so `serve()` calls
+  `on_revoked` (wired to `turn_off()` -> forget the dead enrolment) and stops; the
+  machine comes back by re-enrolling from a session. `hold_presence()` also stops
+  on those codes. A 403 *handshake* reject is still retried (ambiguous) - only the
+  post-accept 4401 close is treated as final. Test added; always-on suite 20/20.
+  OPERATIONAL: machines flapping right now re-stabilise by re-joining a session
+  (re-enrol), exactly as Parrot did (device 0a2c113e); the fix stops the
+  flap-forever going forward.
+
 - **PLATFORM-SCOPE FIX (2026-11-13): the backlight blank is confined to Wayland
   so the X11 (Kali) path is byte-for-byte what it was.** The dimmer rewrite below
   changed shared code and so altered X11 too, breaking the working Kali blank -

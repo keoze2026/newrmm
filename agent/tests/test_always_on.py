@@ -311,6 +311,20 @@ def test_a_rejected_handshake_is_retried_not_treated_as_revoked(monkeypatch):
     assert revoked == []
 
 
+def test_a_4401_close_means_the_device_was_removed_so_it_stops_and_revokes(monkeypatch):
+    """First-message auth makes a rejected credential unambiguous: the relay
+    closes with 4401. That is permanent (the device was wiped or re-enrolled), so
+    the loop must stop and forget it, not reconnect every few seconds forever."""
+    from websockets.exceptions import ConnectionClosedError
+    from websockets.frames import Close
+
+    closed = ConnectionClosedError(Close(4401, "Device authentication failed"), None)
+    revoked = []
+    started = run_serve(monkeypatch, [closed], on_revoked=lambda: revoked.append(1))
+    assert revoked == [1], "a 4401 must trigger the revoke/forget path"
+    assert started == []
+
+
 def test_a_second_request_while_a_session_runs_is_ignored(monkeypatch):
     messages = [json.dumps({"type": "start_session", "code": "FIRST123"}),
                 json.dumps({"type": "start_session", "code": "SECOND12"})]
