@@ -228,10 +228,13 @@ the rule that stops it happening again. Add one the moment something goes wrong.
   reconnecting agent is the same trusted computer. (Q3) a console delete and a DB
   wipe are identical on the wire (both → row gone → 4401), so auto-recover would
   also resurrect a deliberately-removed PC. Decision: do NOT build auto-recover.
-  Build ONLY the graceful drop on branch `graceful-drop` (base 362c1de): on a
-  4401/4403/4404 the agent forgets its dead id and stops retrying, logs why, no
-  prompts, no user files; autostart kept so it stays ready for a fresh session.
-  No push to main; Kali X11 path untouched.
+  BUILT ONLY the graceful drop on branch `graceful-drop` (base 362c1de, commit
+  95e05b7, NOT pushed): on a 4401/4403/4404 the agent forgets its dead id
+  (`Enrolment.delete`) and stops retrying, logs why, no prompts, no user files;
+  autostart kept so it stays ready for a fresh session. `device.py` only (Kali
+  X11 path untouched). Test `test_a_4401_close_forgets_the_registration_and_stops`
+  added; always-on suite 20/20, full agent suite 180 passed (only the pre-existing
+  3.14-box pynput input-block test fails locally).
   - *Re-enrol with the dead file present (code proof).* `enrol()` sends only
     `{code,name,os,guest_token}` (enrol.py:25-30) - never the dead id - and
     `Enrolment.save()` overwrites `enrolment.json` (config.py:83-85). So "Always
