@@ -206,8 +206,17 @@ class Portal:
         }
         if cursor_modes & CURSOR_EMBEDDED:
             sources["cursor_mode"] = GLib.Variant("u", CURSOR_EMBEDDED)
+            cursor = "embedded"
         elif cursor_modes & CURSOR_HIDDEN:
             sources["cursor_mode"] = GLib.Variant("u", CURSOR_HIDDEN)
+            cursor = "hidden"
+        else:
+            cursor = "none"
+        # Which cursor mode we got decides whether a pointer move alone produces
+        # a new frame: only "embedded" paints the cursor into the capture, so
+        # with anything else a mouse move changes nothing on screen and sends no
+        # frame. Logged so a "frozen unless content changes" report is readable.
+        log(f"cursor mode: {cursor} (available bitmask {cursor_modes})")
         # A screen-cast-only session persists through SelectSources (v4+).
         if persist and not want_input and self.version(SCREENCAST_IFACE) >= 4:
             sources.update(persist)
@@ -464,6 +473,17 @@ def main() -> int:
 
     worker = threading.Thread(target=input_worker, name="wl-input", daemon=True)
     worker.start()
+
+    # Keep a GLib main loop running for the life of the stream. During the
+    # handshake, request() iterated the default main context by hand, which is
+    # what let pipewiresrc negotiate and buffer its first few frames. Once the
+    # handshake returned, nothing iterated it any more - so the startup burst
+    # drained and the appsink never saw another buffer (the "frames 1,2,3 then
+    # frozen" the log showed). pipewiresrc and the portal session's D-Bus events
+    # are serviced from that main context, so it has to keep being pumped.
+    glib_loop = GLib.MainLoop()
+    glib_thread = threading.Thread(target=glib_loop.run, name="wl-glib", daemon=True)
+    glib_thread.start()
     try:
         for line in sys.stdin:
             try:
@@ -495,9 +515,10 @@ def main() -> int:
                     w, h, jpeg = frame
                     send(b"F", struct.pack("<II", w, h) + jpeg)
                     frames_sent += 1
-                    # Proof of frame flow in agent.log: the first few, then
-                    # occasionally, so a freeze is obvious from the log alone.
-                    if frames_sent <= 3 or frames_sent % 300 == 0:
+                    # Proof of frame flow in agent.log: the first few, then every
+                    # 30, so whether frames keep coming (and at what rate) is
+                    # obvious from the log alone.
+                    if frames_sent <= 3 or frames_sent % 30 == 0:
                         log(f"frames sent: {frames_sent}")
             elif op in ("motion", "button", "axis", "key"):
                 if granted["input"]:
@@ -505,6 +526,7 @@ def main() -> int:
             elif op == "close":
                 break
     finally:
+        glib_loop.quit()
         input_q.put(None)
         worker.join(timeout=3)
         stream.close()
