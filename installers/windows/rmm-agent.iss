@@ -124,6 +124,27 @@ begin
   end;
 end;
 
+{ Stop a previously-installed, RUNNING agent BEFORE its files are replaced.
+  Inno runs this just before the [Files] copy, so by the time the installer
+  tries to overwrite rmm-agent.exe the process is already gone - without this,
+  the copy fails with "an error occurred while trying to replace the existing
+  file" (the stop in [UninstallRun] only runs on uninstall, never on an
+  install/upgrade over a running agent). Stop the watchdog task first so it
+  cannot relaunch the agent in between. Best-effort: a missing task or a
+  not-running process is fine, so the result code is ignored. }
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN RMMAgentWatchdog /F', '',
+       SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM rmm-agent-watchdog.exe', '',
+       SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM rmm-agent.exe', '',
+       SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := '';
+end;
+
 function IsCodeChar(C: Char): Boolean;
 begin
   Result := ((C >= 'A') and (C <= 'Z')) or ((C >= '0') and (C <= '9'));
