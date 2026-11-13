@@ -8,9 +8,38 @@ from urllib.parse import quote
 import websockets
 
 from rmm_agent import __version__
+from rmm_agent.config import Enrolment
 
 log = logging.getLogger(__name__)
 HEARTBEAT_SECONDS = 20
+
+# A relay close carrying one of these codes means the credentials were rejected -
+# the device row was removed (e.g. deleted in the console) or re-enrolled
+# elsewhere. That is permanent, not a transient network drop, so retrying it
+# forever is pointless and spams the relay (lesson #27). The graceful drop:
+# forget the dead registration and stop, with a logged reason. No prompt, no
+# user action. Re-registering happens the next time someone starts a session
+# and chooses "Always allow", which overwrites the (already-forgotten) id.
+GIVE_UP_CODES = (4401, 4403, 4404)
+
+
+def _close_code(exc) -> "int | None":
+    """The WebSocket close code the relay sent, however the library exposes it."""
+    rcvd = getattr(exc, "rcvd", None)
+    code = getattr(rcvd, "code", None)
+    if code is None:
+        code = getattr(exc, "code", None)
+    return code
+
+
+def _drop_dead_registration(code) -> None:
+    log.warning(
+        "the relay rejected this device's credentials (close %s): it was removed "
+        "or re-enrolled. Forgetting the saved registration and stopping - it will "
+        "come back when someone starts a session and chooses 'Always allow'.",
+        code,
+    )
+    Enrolment.delete()
 
 
 @contextlib.asynccontextmanager
@@ -60,6 +89,9 @@ async def hold_presence(relay_url: str, device_id: str, secret: str, stop: async
             raise
         except Exception as exc:
             log.warning("device presence lost: %s", exc)
+            if _close_code(exc) in GIVE_UP_CODES:
+                _drop_dead_registration(_close_code(exc))
+                return
             try:
                 await asyncio.wait_for(stop.wait(), timeout=backoff)
             except asyncio.TimeoutError:
@@ -80,13 +112,14 @@ async def serve(
 ) -> None:
     """Stay online for as long as the agent runs, and start sessions on request.
 
-    This never gives up: after sleep, a network change, the relay restarting, or
-    a handshake the relay turns away, it keeps retrying until it is back. A
-    rejected handshake arrives as a plain 403 regardless of why the relay sent
-    it, so it cannot be told apart from a real "this device was removed" - it is
-    retried like any other drop rather than treated as final. The only way out
-    is `stop`. `on_revoked` is kept for a future, unambiguous revoke signal; it
-    is not called today.
+    Transient trouble - sleep, a network change, the relay restarting - is retried
+    forever until it is back. But a close carrying a GIVE_UP code (4401/4403/4404)
+    means the relay rejected the credentials: the device was removed or
+    re-enrolled, which is permanent. First-message auth makes that unambiguous (a
+    4401 close, not a bare 403), so instead of reconnecting forever the agent
+    forgets the dead registration (`_drop_dead_registration`) and stops - no
+    prompt, no user action. It comes back when someone starts a session and picks
+    "Always allow", which overwrites the forgotten id. `stop` ends it otherwise.
 
     `on_start(code)` is called when an operator opens this device's session. It
     runs as its own task so a long session never blocks the connection, and a
@@ -131,6 +164,9 @@ async def serve(
             raise
         except Exception as exc:
             log.warning("device presence lost: %s", exc)
+            if _close_code(exc) in GIVE_UP_CODES:
+                _drop_dead_registration(_close_code(exc))
+                return
 
         if stop.is_set():
             break

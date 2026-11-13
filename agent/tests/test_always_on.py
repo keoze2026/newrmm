@@ -311,6 +311,21 @@ def test_a_rejected_handshake_is_retried_not_treated_as_revoked(monkeypatch):
     assert revoked == []
 
 
+def test_a_4401_close_forgets_the_registration_and_stops(monkeypatch):
+    """First-message auth makes a rejected credential unambiguous: a 4401 close =
+    the device was removed/re-enrolled (permanent). The agent must forget the dead
+    registration and STOP, not reconnect every ~30s forever (graceful drop)."""
+    from websockets.exceptions import ConnectionClosedError
+    from websockets.frames import Close
+
+    deleted = []
+    monkeypatch.setattr(device.Enrolment, "delete", classmethod(lambda cls: deleted.append(1)))
+    closed = ConnectionClosedError(Close(4401, "Device authentication failed"), None)
+    started = run_serve(monkeypatch, [closed])
+    assert deleted == [1], "a 4401 must forget the dead registration"
+    assert started == [], "and it must stop, not start a session or loop"
+
+
 def test_a_second_request_while_a_session_runs_is_ignored(monkeypatch):
     messages = [json.dumps({"type": "start_session", "code": "FIRST123"}),
                 json.dumps({"type": "start_session", "code": "SECOND12"})]
