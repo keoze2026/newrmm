@@ -215,8 +215,27 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 | 59 | Split one task across messages and ended with "which do you want" / "say go". | One message, everything needed, in order. No menus, no "say go" for steps that follow from what the user already approved. |
 | 60 | Hedged or buried a blocker. | If truly blocked, say exactly what blocks it in ONE line, then give everything that does not depend on the blocker. |
 | 61 | Spent ~2 weeks "fixing" the Parrot Wayland path by editing code on an X11-only dev box, shipping each guess to Parrot, and learning it failed from the user - a blind loop. Both real causes (threaded frame-pull freeze; pynput-on-3.13 privacy crash) were obvious the moment the user ran `rmm-agent status` + pasted `agent.log`. | A platform-specific bug you cannot reproduce locally is not debuggable by reading code and guessing. Get one real artefact from the failing machine FIRST (status + agent.log), every time, before changing a line. Add logging that makes the failure self-evident (e.g. `frames sent: N`) so the next run proves it. Bundle all needed commands into ONE the user runs once (they may be relaying over WhatsApp). |
+| 62 | The "clear all data for the boss test" block used `TRUNCATE devices` (CASCADE). That deleted EVERY enrolled device row at once - including `4cf805ba` (the Windows PC) - while the machines still held their ids in `enrolment.json`, so they were rejected with 4401 and (pre-fix) flapped every 31s forever. It also deleted the trust anchor (`secret_hash`) and any tombstone, so there is NO safe automatic recovery: "removed on purpose" and "lost in a wipe" are identical on the wire (both = row gone = 4401), and after a wipe the relay cannot prove a reconnecting agent is the same trusted computer. | NEVER `TRUNCATE devices` (or the whole DB) on a live system. Remove machines ONE AT A TIME from the console, which can keep a tombstone so a deliberately-removed PC stays removed. A mass wipe is unrecoverable by design - every enrolled PC must then be re-authorised through a fresh consented session. If a reset is truly needed, keep `operators`/`devices` and only clear `sessions`/`audit_events`. |
 
 ## Change log
+
+- **AUTO-RECOVER of a dead registration = UNSAFE, NOT built; graceful-drop on a
+  branch instead (2026-11-13).** User asked whether the agent could self-register
+  a new id after the wipe. Answered with code proof: (Q2) after the row is
+  deleted there is no `secret_hash` to verify against (`ws.py:88-95`), and enrol
+  needs a live consented session + matching `guest_token` (`connector.py:240-252`)
+  which a dead always-on agent does not have - so the relay CANNOT prove a
+  reconnecting agent is the same trusted computer. (Q3) a console delete and a DB
+  wipe are identical on the wire (both → row gone → 4401), so auto-recover would
+  also resurrect a deliberately-removed PC. Decision: do NOT build auto-recover.
+  Build ONLY the graceful drop on branch `graceful-drop` (base 362c1de): on a
+  4401/4403/4404 the agent forgets its dead id and stops retrying, logs why, no
+  prompts, no user files; autostart kept so it stays ready for a fresh session.
+  No push to main; Kali X11 path untouched.
+  - *Re-enrol with the dead file present (code proof).* `enrol()` sends only
+    `{code,name,os,guest_token}` (enrol.py:25-30) - never the dead id - and
+    `Enrolment.save()` overwrites `enrolment.json` (config.py:83-85). So "Always
+    allow" on a fresh session replaces the dead id; no self-replace fix needed.
 
 - **DISCONNECT ROOT-CAUSE INVESTIGATION (2026-11-13). Mechanism PROVEN; exact
   trigger UNKNOWN pending relay logs + soak. No fix, no build.**
