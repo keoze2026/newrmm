@@ -218,6 +218,47 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **DISCONNECT ROOT-CAUSE INVESTIGATION (2026-11-13). Mechanism PROVEN; exact
+  trigger UNKNOWN pending relay logs + soak. No fix, no build.**
+  - *Proven from Kali agent.log (`~/.local/state/RMMAgent/agent.log`).* Two drops,
+    both during an ACTIVE streaming session `YZ669SGP`, same cause:
+    `06:32:53 session connection lost: received 1011 (internal error) keepalive
+    ping timeout; then sent 1011` and `06:43:36 ... sent 1011 keepalive ping
+    timeout; no close frame received`. ~10 min apart. All other session ends in
+    the log are clean "the operator ended the session". The device (idle presence)
+    socket did NOT drop in the same window - only the frame-carrying session
+    socket, under load.
+  - *Config facts (source).* Agent session socket `ping_interval=20`, default
+    `ping_timeout=20` (`session.py:203`). Relay = uvicorn with NO `--ws-ping-*`
+    flags (`infra/docker-compose.yml:56`) → defaults `ws_ping_interval=20`,
+    `ws_ping_timeout=20`. So either side closes 1011 if a pong is late >20s;
+    detection ≈ interval+timeout ≈ 40s.
+  - *Ruled out.* nginx: `proxy_read_timeout 3600s`, `proxy_send_timeout 3600s`,
+    `proxy_buffering off`, Upgrade headers set (`infra/nginx-tls.conf:112-118`).
+    Agent event-loop block by capture/encode: ruled out - both run off-loop via
+    `asyncio.to_thread` (`session.py:471,497`).
+  - *Important interpretation trap.* `diagnostics: still running` is a daemon
+    THREAD (`diagnostics.py:70-78`), not the asyncio loop, so it kept printing
+    through both 1011s and proves only that the PROCESS lived, NOT that the event
+    loop was healthy. A blocked loop (agent or relay) is fully consistent.
+  - *"1011 keepalive ping timeout" is the Python `websockets` library* closing for
+    >20s latency, NOT Cloudflare (Cloudflare idle ~100s; sources:
+    websockets docs, websocket.org, Cloudflare WS docs, uvicorn ws-ping defaults).
+  - *Known-cause table.* websockets/uvicorn keepalive 20/20 = CONFIRMED present and
+    too tight for the path. nginx timeouts/buffering = RULED OUT. Agent loop block
+    by capture/encode = RULED OUT. Cloudflare 100s idle cut = RULED OUT as the
+    cause of a 1011 (it is the lib, and the idle socket survived). Relay single
+    worker blocked >20s under frame fan-out = **LEADING, UNKNOWN** until relay logs
+    show whether multiple sockets drop at the same instant. Agent loop stalled by
+    something other than capture/encode = UNKNOWN. Cloudflare transient >20s pong
+    latency = UNKNOWN. DNS/sleep/wifi = not seen in the log (no getaddrinfo/OS
+    errors), only clean 1011s.
+  - *NEEDED to finish the proof.* (1) Relay logs correlated by timestamp (one
+    server command given to the user). (2) A ≥1h soak on a streaming session
+    measuring pong round-trip and which side closes first. Candidate fixes (NOT
+    implemented, pending approval): raise/disable `ws_ping_timeout` on BOTH
+    uvicorn and the agent; and/or move frame fan-out off the single relay worker.
+
 - **ROLLBACK TO WORKING requested for a boss submission (2026-11-13). Forensics +
   revert plan; NO new build.** Last working state: after `362c1de` (2026-11-10),
   agent build **0.2.0.103** (CI run 103); status recorded "Kali and Windows now
