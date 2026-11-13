@@ -31,9 +31,10 @@ Protocol
                   tile encoder. (Was packed RGB before 2026-11-11.)
       b"S" same   no new frame since the last one (a still screen)
       b"E" error  utf-8 text: the stream is gone
-  Only "grab" is answered, so input ops never desynchronise the stream. Grabs
-  and input are handled on separate threads (see main), so a pointer move is
-  never stuck behind a frame being pulled and sent.
+  Only "grab" is answered, so input ops never desynchronise the stream. Frames
+  are pulled inline on the main reader thread (the one that owns the pipeline);
+  input is injected on its own thread (see main) so a pointer move is not stuck
+  behind a frame being pulled.
 
 `python3 wayland_helper.py --check` prints one JSON line describing what this
 machine can do, for `rmm-agent status` and CI.
@@ -425,49 +426,21 @@ def main() -> int:
             portal.close()
         return 1
 
-    # Grabs and input run on their own threads so a pointer move is never stuck
-    # behind a frame being pulled and sent. The stdin reader only routes each
-    # line to a queue and returns at once; the grab worker owns the one frame
-    # reply per grab (so replies stay ordered and in step with requests), and
-    # the input worker injects pointer/key events the moment they arrive,
-    # concurrently with whatever the grab worker is doing. GDBus call_sync and
-    # the appsink pull are both thread-safe, so the two never collide.
-    stop = threading.Event()
-    grab_q: "queue.Queue" = queue.Queue()
+    # Input runs on its own thread so a pointer move is never stuck behind a
+    # frame being pulled; frames are pulled INLINE in this reader loop, on the
+    # very thread that created and started the GStreamer pipeline. Moving the
+    # frame pull onto a second worker thread is what froze the picture after the
+    # first frame (the worker stopped after one pull while input, on its own
+    # thread, kept working - exactly the "frozen screen, agent still responds"
+    # symptom). The appsink pull (frames, this thread) and GDBus call_sync
+    # (input, the worker) touch different subsystems, so they never collide, and
+    # only this thread ever writes to the pipe, so no output lock is needed.
     input_q: "queue.Queue" = queue.Queue()
-    out_lock = threading.Lock()
     pending = first
-
-    def emit(kind: bytes, payload: bytes) -> None:
-        with out_lock:
-            send(kind, payload)
-
-    def grab_worker() -> None:
-        nonlocal pending
-        while True:
-            item = grab_q.get()
-            if item is None:
-                break
-            # After a stream error or shutdown, keep draining to the sentinel
-            # but send nothing more.
-            if stop.is_set():
-                continue
-            try:
-                frame = pending or stream.pull(0.05)
-                pending = None
-            except RuntimeError as exc:
-                emit(b"E", str(exc).encode())
-                stop.set()
-                continue
-            if frame is None:
-                emit(b"S", b"")
-            else:
-                w, h, jpeg = frame
-                emit(b"F", struct.pack("<II", w, h) + jpeg)
+    frames_sent = 0
 
     def input_worker() -> None:
-        # Drains to the sentinel so input queued before close is still injected
-        # (the grab worker never blocks it, and close joins this thread).
+        # Drains to the sentinel so input queued before close is still injected.
         while True:
             command = input_q.get()
             if command is None:
@@ -489,12 +462,8 @@ def main() -> int:
             except Exception as exc:
                 log(f"input {op} failed: {exc}")
 
-    workers = [
-        threading.Thread(target=grab_worker, name="wl-grab", daemon=True),
-        threading.Thread(target=input_worker, name="wl-input", daemon=True),
-    ]
-    for worker in workers:
-        worker.start()
+    worker = threading.Thread(target=input_worker, name="wl-input", daemon=True)
+    worker.start()
     try:
         for line in sys.stdin:
             try:
@@ -503,20 +472,41 @@ def main() -> int:
                 continue
             op = command.get("op")
             if op == "grab":
-                grab_q.put(command)
+                # Pull and answer on this thread. The first frame was already
+                # pulled during the handshake, so it is sent as-is.
+                try:
+                    if pending is not None:
+                        frame, pending = pending, None
+                    else:
+                        frame = stream.pull(0.05)
+                except RuntimeError as exc:
+                    # The stream itself ended: tell the agent and stop.
+                    send(b"E", str(exc).encode())
+                    break
+                except Exception as exc:
+                    # A transient pull hiccup must NEVER freeze the picture.
+                    # Report it as "no new frame" and keep serving the next grab.
+                    log(f"frame pull failed, treating as still: {exc}")
+                    send(b"S", b"")
+                    continue
+                if frame is None:
+                    send(b"S", b"")
+                else:
+                    w, h, jpeg = frame
+                    send(b"F", struct.pack("<II", w, h) + jpeg)
+                    frames_sent += 1
+                    # Proof of frame flow in agent.log: the first few, then
+                    # occasionally, so a freeze is obvious from the log alone.
+                    if frames_sent <= 3 or frames_sent % 300 == 0:
+                        log(f"frames sent: {frames_sent}")
             elif op in ("motion", "button", "axis", "key"):
                 if granted["input"]:
                     input_q.put(command)
             elif op == "close":
                 break
     finally:
-        grab_q.put(None)
         input_q.put(None)
-        # Let the workers finish what is queued (bounded) before the portal and
-        # stream they use are torn down.
-        for worker in workers:
-            worker.join(timeout=3)
-        stop.set()
+        worker.join(timeout=3)
         stream.close()
         portal.close()
         try:

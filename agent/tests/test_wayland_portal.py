@@ -191,13 +191,17 @@ def test_the_helper_never_imports_the_agent():
     assert "rmm_agent" not in source.split('"""', 2)[2]
 
 
-def test_helper_handles_input_on_a_separate_channel_from_grabs():
-    """Mouse and keyboard must never wait behind a frame: the helper routes
-    grabs and input to separate worker threads/queues (wayland_helper.main), so
-    a pointer move is injected while a grab is being pulled, not after it."""
+def test_helper_injects_input_on_its_own_thread():
+    """Input must not wait behind a frame: the helper routes pointer/key ops to
+    an input queue drained by a dedicated thread (wayland_helper.main), so they
+    are injected concurrently with frame pulls. Frames themselves are pulled
+    inline on the reader thread that owns the pipeline - moving them onto a
+    second worker thread is what froze the picture after the first frame."""
     source = wayland_portal.helper_path().read_text()
-    assert "grab_q" in source and "input_q" in source
-    assert 'name="wl-grab"' in source and 'name="wl-input"' in source
+    assert "input_q" in source
+    assert 'name="wl-input"' in source
+    # The frame pull must stay inline in the reader loop, not on a worker thread.
+    assert 'name="wl-grab"' not in source and "grab_q" not in source
 
 
 # ------------------------------------------------------------------ detection
