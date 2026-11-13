@@ -214,8 +214,38 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 | 58 | Gave end users developer steps (commands, files, paths). | End users cannot code: their steps are SCREEN-ONLY - links, buttons, windows. Only the user (Hans) gets commands, and only for the server. |
 | 59 | Split one task across messages and ended with "which do you want" / "say go". | One message, everything needed, in order. No menus, no "say go" for steps that follow from what the user already approved. |
 | 60 | Hedged or buried a blocker. | If truly blocked, say exactly what blocks it in ONE line, then give everything that does not depend on the blocker. |
+| 61 | Spent ~2 weeks "fixing" the Parrot Wayland path by editing code on an X11-only dev box, shipping each guess to Parrot, and learning it failed from the user - a blind loop. Both real causes (threaded frame-pull freeze; pynput-on-3.13 privacy crash) were obvious the moment the user ran `rmm-agent status` + pasted `agent.log`. | A platform-specific bug you cannot reproduce locally is not debuggable by reading code and guessing. Get one real artefact from the failing machine FIRST (status + agent.log), every time, before changing a line. Add logging that makes the failure self-evident (e.g. `frames sent: N`) so the next run proves it. Bundle all needed commands into ONE the user runs once (they may be relaying over WhatsApp). |
 
 ## Change log
+
+- **TWO Parrot root causes FOUND FROM THE REAL agent.log (2026-11-13) and fixed;
+  NOT confirmed until the new build is installed on Parrot and the user says so.**
+  First time we had Parrot's own `rmm-agent status` + `agent.log` instead of
+  guessing. Status confirmed the build is capable on Parrot: `jpegenc yes`,
+  `pipewiresrc yes`, portal ScreenCast v5 / RemoteDesktop v2, session type
+  wayland, Wayland portal capture + input used in-session.
+  - *Frozen picture (operator 0 fps, agent still responds).* The helper split in
+    `f405697` pulled frames on a `wl-grab` worker thread; that path stopped after
+    the first frame while the `wl-input` thread kept working - exactly "screen
+    frozen, mouse still moves". Fix `8ffc086`: pull frames INLINE on the reader
+    thread that owns the pipeline (as before the split, when frames flowed), keep
+    the JPEG speed fix, keep input on its own `wl-input` thread, treat a transient
+    pull error as "no new frame" instead of dying, and log `frames sent: N` so a
+    freeze is visible in agent.log. `wayland_helper.py` main() + its test updated;
+    full wayland suite green locally (21/21).
+  - *"Watchdog not working on Linux" = the privacy blank.* agent.log showed, the
+    instant the blank turns on: `pynput ... xorg.py:470 _handler TypeError:
+    '_thread._ThreadHandle' object is not callable`. Known Python 3.13 regression
+    vs pynput 1.7.7 (our pinned version), inside pynput's own handler so the agent
+    can't guard it; with pynput dead the guest-lock never blocks local input and
+    the Escape-release safety net dies. No pynput release fixes 3.13. Fix
+    `19fe418`: build all three agents on Python 3.12 (was 3.13) in
+    `.github/workflows/agents.yml`; nothing the agent uses needs 3.13. This also
+    explains the local `test_privacy_input_block` failure on the 3.14 dev box.
+  - NEXT: when both builds auto-deliver, peter re-downloads from the join page,
+    reinstalls, RESTARTS Parrot (kills the old running agent), then test: picture
+    must not freeze (check `frames sent:` climbs in agent.log) and the blank must
+    lock local input + release on Escape/end. Not fixed until the user confirms.
 
 - **#1 AUTOMATIC AGENT DELIVERY built: CI delivers green builds to the server by
   itself (2026-11-12). One-time admin step (deploy-key secret) pending; NOT
