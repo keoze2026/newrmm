@@ -220,6 +220,32 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **TWO RESEARCH-BACKED CAUSES CONFIRMED IN OUR CODE (2026-11-13). No fix yet
+  (awaiting approval); no push.**
+  - *Finding 1 - the 1011 keepalive disconnects = relay backpressure.* The relay
+    forwards each guest frame to the operator INLINE in the guest read loop with
+    no drop/queue: `ws.py:314-316` → `hub.to_operator_bytes` → `_send_operator`
+    `await send(socket)` (`hub.py:255-265`). A slow operator blocks that await, so
+    the guest loop stops `receive()`-ing, the relay stops reading the guest, and
+    the guest↔relay keepalive times out → 1011 (matches Kali 06:32:53 / 06:43:36).
+    ONE FIX (approved research): relay keeps one newest-frame slot per operator and
+    drops older frames so the guest read never blocks. Files: `hub.py` (+ minor
+    `ws.py`). Relay-only; Kali X11 agent capture unchanged.
+  - *Finding 2 - Windows 0 fps freeze = silent WGC stop, undetected.* Rust
+    `grab()` returns the last stored frame with no error whenever `frames_seen>0`
+    (`lib.rs:333-345`); `on_frame_arrived` (`lib.rs:84`) is the only updater, so if
+    WGC silently stops calling it the frame goes stale forever. Our self-heal
+    `recover()` fires ONLY on an exception (`session.py:471-495`, comment confirms
+    "error-driven"). So a silent stop = stale frame, no throw, recover never fires
+    → 0 fps/0 kbps, green dot, no error. Confirmed as the code path; NOT yet
+    confirmed active on DESKTOP-NHO4OFM (needs its agent.log / live test). ONE FIX:
+    Windows-only - when input is injected and `frames_seen` does not advance within
+    ~1s, call the existing `recover()`. Files: `session.py` (Windows-gated) +
+    `lib.rs` (expose `frames_seen`/last-frame time). Windows only; X11/Wayland/mss
+    and Kali X11 untouched.
+  - Different causes (disconnect vs frozen-stream). Each fix one-at-a-time, gated
+    by lesson #63 before any build reaches the user.
+
 - **OPERATOR CONSOLE "drops every ~4s" = EXPIRED LOGIN TOKEN, fixed by env, no
   code/push (2026-11-13).** After the Windows PC re-registered, the user saw the
   session "drop every 5s". Relay log proved it was NOT the device: `/ws/device/
