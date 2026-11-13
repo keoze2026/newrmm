@@ -218,6 +218,28 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **WAYLAND FREEZE FIXED + confirmed by the user, and a UNIVERSAL privacy blank
+  (2026-11-13).** The frozen picture is GONE: user's own viewer showed Parrot at
+  **16 fps / 434 kbps**, live. Cause was the Wayland helper not pumping a GLib
+  main loop after the handshake, so pipewiresrc delivered its startup burst
+  (frames 1-3 in the log) then stalled; fix `734f356` runs a `GLib.MainLoop` on
+  a `wl-glib` thread for the stream's life. The agent IS now universal on
+  Wayland for capture.
+  - *Privacy blank, made universal (every Linux, X11 and Wayland).* Old blank on
+    Wayland fell back to guest-lock (blacked out the operator too) and the pynput
+    input-block crashed on 3.13. New approach: darken the physical **backlight**
+    (applied after capture, so the operator keeps the picture) via
+    `brightnessctl` - portable, no root (ships a udev rule), discovers the device
+    itself. `dimmer.py` rewritten: brightnessctl backend first (X11+Wayland),
+    xrandr kept as an X11 fallback, guest-lock only if nothing can be dimmed.
+    `brightnessctl` added to the `.deb` Depends and to install.sh for
+    apt/dnf/pacman/zypper, so every install has it (same pattern as jpegenc).
+    `privacy.supported_mode()` now returns capture-excluded on Wayland too. Tests
+    added for the backlight path; dimmer+privacy suites green (34), full agent
+    suite 186 passed (only the 3.14-dev-box pynput input-block test fails locally;
+    CI builds on 3.12 where it passes). NOT confirmed until the user tests the
+    blank on Parrot with the new build.
+
 - **TWO Parrot root causes FOUND FROM THE REAL agent.log (2026-11-13) and fixed;
   NOT confirmed until the new build is installed on Parrot and the user says so.**
   First time we had Parrot's own `rmm-agent status` + `agent.log` instead of

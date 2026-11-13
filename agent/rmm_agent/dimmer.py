@@ -1,13 +1,22 @@
 """Darken the physical display without darkening what the operator sees.
 
-The privacy blank is meant to make the endpoint's own screen go dark while the
-operator keeps a live view of the real desktop (specification section 4). A
-black window laid over the desktop cannot do that on Linux: the screen capture
-reads the desktop as composed, overlay included, so the operator sees black too.
+The privacy blank must make the endpoint's own screen go dark while the operator
+keeps a live view of the real desktop (specification section 4). A black window
+laid over the desktop cannot do that on Linux: the screen capture reads the
+desktop as composed, overlay included, so the operator would see black too.
 
-Brightness is applied later, when the picture is sent to the monitor, so the
-captured picture is untouched. Setting every connected output's brightness to 0
-makes the monitor dark while the operator still sees the real screen.
+Backlight brightness is applied by the panel AFTER the picture is composed and
+captured, so turning the backlight to 0 makes the physical screen go dark while
+the captured picture - what the operator sees - is untouched. This works the
+same on X11 and on Wayland, because it is below the display server entirely.
+
+Backends, tried in order so this works on any Linux machine at runtime:
+  1. brightnessctl - the portable backlight tool; ships a udev rule so it needs
+     no root, discovers the device itself, and is a hard dependency of the .deb
+     / install.sh so every install has it. Covers laptops (eDP) everywhere.
+  2. xrandr --brightness - X11 only, a gamma multiplier that the XShm capture
+     reads around; the original method, kept for X11 boxes with no backlight.
+  3. (none worked) -> the caller falls back to the guest-lock overlay.
 
 That setting persists if the agent dies, so a dead man's switch is started in
 its own process: a few seconds past the longest the blank may last it restores
@@ -26,37 +35,6 @@ log = logging.getLogger(__name__)
 
 _OUTPUT = re.compile(r"^(\S+) connected\b")
 _BRIGHTNESS = re.compile(r"^\s+Brightness:\s*([0-9.]+)")
-
-
-def available() -> bool:
-    """Only on X11 with xrandr: Wayland compositors own their own brightness."""
-    if not shutil.which("xrandr"):
-        return False
-    if os.environ.get("WAYLAND_DISPLAY"):
-        return False
-    return bool(os.environ.get("DISPLAY"))
-
-
-def parse_outputs(verbose_query: str) -> dict[str, float]:
-    """Connected outputs and their current brightness, from `xrandr --verbose`."""
-    found: dict[str, float] = {}
-    current: str | None = None
-    for line in verbose_query.splitlines():
-        match = _OUTPUT.match(line)
-        if match:
-            current = match.group(1)
-            found[current] = 1.0
-            continue
-        if line and not line[0].isspace():
-            current = None
-            continue
-        bright = _BRIGHTNESS.match(line)
-        if bright and current is not None:
-            try:
-                found[current] = float(bright.group(1))
-            except ValueError:
-                pass
-    return found
 
 
 def _run(command: list[str]) -> str:
@@ -82,17 +60,117 @@ def _spawn_guard(command: str) -> "subprocess.Popen | None":
         return None
 
 
+def _on_x11() -> bool:
+    return bool(shutil.which("xrandr")) and not os.environ.get("WAYLAND_DISPLAY") and bool(
+        os.environ.get("DISPLAY")
+    )
+
+
+def backlight_devices(run=_run) -> dict[str, int]:
+    """Backlight devices and their current raw brightness, via brightnessctl.
+
+    `brightnessctl -l -m` prints one CSV line per device:
+    `name,class,current,percent,max`. We take only class == "backlight" (the
+    panel), never keyboards or LEDs.
+    """
+    found: dict[str, int] = {}
+    try:
+        # FileNotFoundError here simply means brightnessctl is not installed.
+        text = run(["brightnessctl", "-l", "-m"])
+    except Exception:
+        return {}
+    for line in text.splitlines():
+        parts = line.strip().split(",")
+        if len(parts) >= 5 and parts[1] == "backlight":
+            try:
+                found[parts[0]] = int(parts[2])
+            except ValueError:
+                pass
+    return found
+
+
+def available() -> bool:
+    """Whether this machine can darken its display and keep the picture."""
+    if backlight_devices():
+        return True
+    return _on_x11()
+
+
+def parse_outputs(verbose_query: str) -> dict[str, float]:
+    """Connected X11 outputs and their current brightness, from `xrandr --verbose`."""
+    found: dict[str, float] = {}
+    current: str | None = None
+    for line in verbose_query.splitlines():
+        match = _OUTPUT.match(line)
+        if match:
+            current = match.group(1)
+            found[current] = 1.0
+            continue
+        if line and not line[0].isspace():
+            current = None
+            continue
+        bright = _BRIGHTNESS.match(line)
+        if bright and current is not None:
+            try:
+                found[current] = float(bright.group(1))
+            except ValueError:
+                pass
+    return found
+
+
 class Dimmer:
-    """Darkens the connected displays, and always knows how to put them back."""
+    """Darkens the connected displays, and always knows how to put them back.
+
+    Tries the backlight first (works on X11 and Wayland, any machine), then the
+    X11-only xrandr path. `dim` returns False only if neither could darken
+    anything, so the caller can fall back to the overlay lock.
+    """
 
     def __init__(self, run=None, spawn_guard=None) -> None:
         self._run = run or _run
         self._spawn_guard = spawn_guard or _spawn_guard
-        self.saved: dict[str, float] = {}
+        # Backlight: device -> raw brightness to restore. xrandr: output -> level.
+        self.saved: dict[str, int] = {}
+        self.saved_outputs: dict[str, float] = {}
         self._guard = None
 
     def dim(self, guard_seconds: float) -> bool:
-        """Darken every connected output. False if nothing could be darkened."""
+        """Darken the display. False if nothing could be darkened."""
+        if self._dim_backlight(guard_seconds):
+            return True
+        return self._dim_xrandr(guard_seconds)
+
+    # ---------------------------------------------------------- backlight
+
+    def _dim_backlight(self, guard_seconds: float) -> bool:
+        devices = backlight_devices(self._run)
+        if not devices:
+            return False
+
+        # Arm the safety net first, so there is never a moment where the screen
+        # is dark with nothing set to bring it back.
+        restore = "; ".join(
+            f"brightnessctl -d {shlex.quote(name)} set {level}"
+            for name, level in devices.items()
+        )
+        self._guard = self._spawn_guard(f"sleep {int(guard_seconds)}; {restore}")
+
+        for name, level in devices.items():
+            try:
+                self._run(["brightnessctl", "-d", name, "set", "0"])
+                self.saved[name] = level
+            except Exception as exc:
+                log.warning("could not darken backlight %s: %s", name, exc)
+
+        if not self.saved:
+            self._stop_guard()
+            return False
+        log.info("darkened backlight %s", ", ".join(self.saved))
+        return True
+
+    # -------------------------------------------------------------- xrandr
+
+    def _dim_xrandr(self, guard_seconds: float) -> bool:
         try:
             outputs = parse_outputs(self._run(["xrandr", "--verbose", "--query"]))
         except Exception as exc:
@@ -101,8 +179,6 @@ class Dimmer:
         if not outputs:
             return False
 
-        # Arm the safety net first, so there is no moment where the screen is
-        # dark and nothing is set to bring it back.
         restore = "; ".join(
             f"xrandr --output {shlex.quote(name)} --brightness {level}"
             for name, level in outputs.items()
@@ -112,24 +188,32 @@ class Dimmer:
         for name in outputs:
             try:
                 self._run(["xrandr", "--output", name, "--brightness", "0"])
-                self.saved[name] = outputs[name]
+                self.saved_outputs[name] = outputs[name]
             except Exception as exc:
                 log.warning("could not darken %s: %s", name, exc)
 
-        if not self.saved:
+        if not self.saved_outputs:
             self._stop_guard()
             return False
-        log.info("darkened %s", ", ".join(self.saved))
+        log.info("darkened %s", ", ".join(self.saved_outputs))
         return True
 
+    # ------------------------------------------------------------- restore
+
     def restore(self) -> None:
-        """Put every darkened output back exactly as it was."""
+        """Put every darkened display back exactly as it was."""
         for name, level in list(self.saved.items()):
+            try:
+                self._run(["brightnessctl", "-d", name, "set", str(level)])
+            except Exception as exc:
+                log.warning("could not restore backlight %s: %s", name, exc)
+        self.saved.clear()
+        for name, level in list(self.saved_outputs.items()):
             try:
                 self._run(["xrandr", "--output", name, "--brightness", str(level)])
             except Exception as exc:
                 log.warning("could not restore %s: %s", name, exc)
-        self.saved.clear()
+        self.saved_outputs.clear()
         self._stop_guard()
 
     def _stop_guard(self) -> None:

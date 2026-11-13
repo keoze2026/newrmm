@@ -12,12 +12,15 @@ screen capture is an OS graphics-layer operation with no common mechanism:
   macOS     The same idea through NSWindowSharingNone, which removes the window
             from captures.
 
-  Linux     No universal capture-exclusion exists, so this is a *guest-lock*
-            instead: the screen goes black and local input is blocked, and the
-            operator's view goes black too. It locks the machine rather than
-            hiding the operator's work. The spec names this as the reliable
-            fallback, and the agent reports which of the two it is doing so
-            nobody is misled.
+  Linux     No capture-exclusion flag exists, so instead the physical display's
+            backlight is turned to 0 (dimmer.py, via brightnessctl on X11 or
+            Wayland, xrandr on X11). The backlight is applied after the picture
+            is captured, so the endpoint's screen goes dark while the operator
+            keeps the real view - the same outcome as Windows/macOS. Only where
+            nothing can be dimmed (e.g. a desktop with no backlight device) does
+            it fall back to the *guest-lock*: a black overlay with local input
+            blocked, where the operator's view goes black too. The agent reports
+            which of the two it is doing so nobody is misled.
 
 No kernel display driver is used anywhere.
 
@@ -57,8 +60,8 @@ def supported_mode() -> str:
         return MODE_EXCLUDED
     if MACOS:
         return MODE_EXCLUDED if _has_pyobjc() else MODE_GUEST_LOCK
-    # Linux on X11: darken the display and the operator keeps the real picture.
-    # Anywhere that is not possible, fall back to the overlay lock.
+    # Linux (X11 or Wayland): darken the backlight and the operator keeps the
+    # real picture. Anywhere nothing can be dimmed, fall back to the overlay lock.
     return MODE_EXCLUDED if dimmer.available() else MODE_GUEST_LOCK
 
 

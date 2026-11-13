@@ -36,14 +36,14 @@ install_packages() {
         echo "Debian/Ubuntu family (apt) detected"
         apt-get update || return 1
         apt-get install -y --no-install-recommends \
-            libx11-6 libxext6 libxrandr2 libxfixes3 x11-xserver-utils \
+            libx11-6 libxext6 libxrandr2 libxfixes3 x11-xserver-utils brightnessctl \
             python3 python3-gi gir1.2-glib-2.0 gir1.2-gstreamer-1.0 \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-pipewire || return 1
         apt-get install -y --no-install-recommends python3-tk gir1.2-appindicator3-0.1 || true
     elif command -v dnf >/dev/null 2>&1; then
         echo "Fedora/RHEL family (dnf) detected"
         dnf install -y \
-            libX11 libXext libXrandr libXfixes \
+            libX11 libXext libXrandr libXfixes brightnessctl \
             python3 python3-gobject glib2 gstreamer1 gstreamer1-plugins-base \
             gstreamer1-plugins-good pipewire-gstreamer || return 1
         # xrandr (the Linux privacy blank dims with it) is its own package on
@@ -55,7 +55,7 @@ install_packages() {
         # No -y: refreshing the database without upgrading (-Sy) is the
         # partial upgrade Arch warns can break the system.
         if ! pacman -S --noconfirm --needed \
-                libx11 libxext libxrandr libxfixes xorg-xrandr \
+                libx11 libxext libxrandr libxfixes xorg-xrandr brightnessctl \
                 python python-gobject glib2 gstreamer gst-plugins-base gst-plugins-good gst-plugin-pipewire; then
             echo "pacman could not install the packages; run 'pacman -Syu' first, then this again." >&2
             return 1
@@ -66,7 +66,7 @@ install_packages() {
     elif command -v zypper >/dev/null 2>&1; then
         echo "openSUSE family (zypper) detected"
         zypper --non-interactive install \
-            libX11-6 libXext6 libXrandr2 libXfixes3 xrandr \
+            libX11-6 libXext6 libXrandr2 libXfixes3 xrandr brightnessctl \
             python3 python3-gobject typelib-1_0-GLib-2_0 typelib-1_0-Gio-2_0 \
             typelib-1_0-Gst-1_0 gstreamer-plugins-base gstreamer-plugins-good gstreamer-plugin-pipewire || return 1
         zypper --non-interactive install python3-tk typelib-1_0-AppIndicator3-0_1 || true

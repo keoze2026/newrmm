@@ -189,3 +189,96 @@ def test_if_the_display_cannot_be_darkened_it_falls_back_to_the_overlay():
     assert blank.mode == privacy.MODE_GUEST_LOCK
     assert blank._dimmer is None
     assert state["active"] is False
+
+
+# ----------------------------------------------- the universal backlight path
+# brightnessctl -l -m prints one CSV line per device: name,class,current,%,max.
+BRIGHTNESSCTL = (
+    "intel_backlight,backlight,30000,80%,37500\n"
+    "input3::capslock,leds,0,0%,1\n"
+)
+
+
+class FakeBacklight:
+    """A machine with a backlight, driven through brightnessctl (works the same
+    on X11 and Wayland). xrandr is never needed here."""
+
+    def __init__(self):
+        self.commands: list[list[str]] = []
+        self.guards: list[str] = []
+        self.guard_stopped = 0
+
+    def run(self, command):
+        self.commands.append(command)
+        if command[:3] == ["brightnessctl", "-l", "-m"]:
+            return BRIGHTNESSCTL
+        return ""
+
+    def guard(self, script):
+        self.guards.append(script)
+
+        class Handle:
+            def terminate(handle):  # noqa: N805
+                self.guard_stopped += 1
+
+        return Handle()
+
+    def dimmer(self):
+        return dimmer.Dimmer(run=self.run, spawn_guard=self.guard)
+
+
+def test_only_the_backlight_class_is_taken_never_keyboard_leds():
+    fake = FakeBacklight()
+    assert dimmer.backlight_devices(fake.run) == {"intel_backlight": 30000}
+
+
+def test_the_backlight_goes_dark_through_brightnessctl():
+    fake = FakeBacklight()
+    assert fake.dimmer().dim(guard_seconds=60) is True
+    assert ["brightnessctl", "-d", "intel_backlight", "set", "0"] in fake.commands
+
+
+def test_the_backlight_is_preferred_over_xrandr_on_wayland_or_x11():
+    fake = FakeBacklight()
+    fake.dimmer().dim(guard_seconds=60)
+    assert not any("xrandr" in c for c in fake.commands), "xrandr must not be touched"
+
+
+def test_the_backlight_safety_net_restores_the_saved_level():
+    fake = FakeBacklight()
+    fake.dimmer().dim(guard_seconds=60)
+    assert fake.guards[0].startswith("sleep 60;")
+    assert "brightnessctl -d intel_backlight set 30000" in fake.guards[0]
+
+
+def test_restoring_the_backlight_puts_it_back_and_stands_the_net_down():
+    fake = FakeBacklight()
+    d = fake.dimmer()
+    d.dim(guard_seconds=60)
+    fake.commands.clear()
+
+    d.restore()
+
+    assert ["brightnessctl", "-d", "intel_backlight", "set", "30000"] in fake.commands
+    assert fake.guard_stopped == 1
+    assert d.saved == {}
+
+
+def test_a_blank_on_wayland_dims_the_backlight_and_keeps_a_live_view():
+    fake = FakeBacklight()
+    blank = privacy.PrivacyBlank(watchdog_seconds=60)
+    blank.mode = privacy.MODE_EXCLUDED
+    blank._dimmer = fake.dimmer()
+    blank._watch_escape = lambda: None
+
+    state = blank.enable()
+    try:
+        assert state["active"] is True
+        assert state["mode"] == privacy.MODE_EXCLUDED
+        assert state["input_blocked"] is False, "local input must keep flowing"
+        assert blank._thread is None, "no overlay may be drawn: the capture would see it"
+    finally:
+        blank.disable()
+
+    assert blank.active is False
+    assert ["brightnessctl", "-d", "intel_backlight", "set", "30000"] in fake.commands
