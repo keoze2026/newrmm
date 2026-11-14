@@ -65,6 +65,9 @@ class SessionChannel:
     latest_frame: bytes | None = None
     frame_signal: asyncio.Event = field(default_factory=asyncio.Event)
     sender_task: asyncio.Task | None = None
+    # Diagnostic counters (temporary) to pinpoint where frame delivery stalls.
+    frames_read: int = 0
+    frames_sent: int = 0
 
 
 class Hub:
@@ -165,20 +168,43 @@ class Hub:
         operator (the 1011 keepalive cause). Older frames are intentionally
         dropped: a slow viewer gets the newest picture, not a backlog."""
         channel.latest_frame = payload
+        channel.frames_read += 1
+        if channel.frames_read % 100 == 0:
+            log.info("DIAG frames read from agent: %d (sent to operator: %d, sender_done=%s)",
+                     channel.frames_read, channel.frames_sent,
+                     channel.sender_task.done() if channel.sender_task else None)
         if channel.sender_task is None or channel.sender_task.done():
+            log.info("DIAG starting frame sender (read=%d sent=%d)",
+                     channel.frames_read, channel.frames_sent)
             channel.sender_task = asyncio.create_task(self._frame_sender(channel))
         channel.frame_signal.set()
 
     async def _frame_sender(self, channel: "SessionChannel") -> None:
-        while True:
-            await channel.frame_signal.wait()
-            channel.frame_signal.clear()
-            frame, channel.latest_frame = channel.latest_frame, None
-            if frame is None:
-                continue
-            # Goes through the same guarded, lock-serialized path as the
-            # heartbeat, so a frame and the 1s ping never interleave on the wire.
-            await self._send_operator(channel, lambda s, f=frame: s.send_bytes(f))
+        try:
+            while True:
+                await channel.frame_signal.wait()
+                channel.frame_signal.clear()
+                frame, channel.latest_frame = channel.latest_frame, None
+                if frame is None:
+                    continue
+                # Goes through the same guarded, lock-serialized path as the
+                # heartbeat, so a frame and the 1s ping never interleave on the wire.
+                t0 = asyncio.get_running_loop().time()
+                await self._send_operator(channel, lambda s, f=frame: s.send_bytes(f))
+                dt = asyncio.get_running_loop().time() - t0
+                channel.frames_sent += 1
+                if dt > 1.0:
+                    log.warning("DIAG operator send took %.1fs (read=%d sent=%d)",
+                                dt, channel.frames_read, channel.frames_sent)
+                if channel.frames_sent % 100 == 0:
+                    log.info("DIAG frames sent to operator: %d (read=%d)",
+                             channel.frames_sent, channel.frames_read)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("DIAG frame sender EXITED on %r (read=%d sent=%d)",
+                        exc, channel.frames_read, channel.frames_sent)
+            raise
 
     def guest_online(self, code: str) -> bool:
         """Whether a guest socket is attached *to this instance*.
