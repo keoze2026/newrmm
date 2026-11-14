@@ -22,6 +22,15 @@ from app.core.config import settings
 
 log = logging.getLogger(__name__)
 
+# How long a single operator send may take before its socket is treated as
+# wedged. A real keyframe on a slow link finishes in a second or two; a
+# half-open viewer never finishes at all and, without this bound, freezes the
+# per-session sender task forever (stuck inside _send_operator holding the
+# channel lock), so every later frame is queued but never sent - the ~5-min
+# freeze seen on every OS. 10s is generous enough that a healthy-but-slow link
+# is never dropped, which is what made a 2s timeout cause a reconnect storm.
+OPERATOR_SEND_TIMEOUT = 10.0
+
 # Channel names. Binary frames and JSON travel separately so the subscriber
 # never has to guess which it is holding.
 def operator_binary_channel(code: str) -> str:
@@ -293,9 +302,23 @@ class Hub:
                 # the lock; the new one gets the next message, not this.
                 if channel.operator is not socket:
                     return
-                await send(socket)
+                try:
+                    await asyncio.wait_for(send(socket), timeout=OPERATOR_SEND_TIMEOUT)
+                except asyncio.TimeoutError:
+                    # The viewer's socket is wedged (half-open): this send has
+                    # not returned in OPERATOR_SEND_TIMEOUT, far past any real
+                    # keyframe. Abandon it so the sender task frees the lock and
+                    # the next (reconnected) operator is served, instead of the
+                    # whole session's delivery dying here for good.
+                    if channel.operator is socket:
+                        channel.operator = None
+                    raise ConnectionError("operator send wedged; dropping socket")
         except Exception as exc:
             log.debug("send to operator failed: %s", exc)
+            try:
+                await asyncio.wait_for(socket.close(code=1011), timeout=2.0)
+            except Exception:
+                pass
 
     async def to_operator_bytes(self, code: str, payload: bytes) -> None:
         channel = self._channels.get(code)
