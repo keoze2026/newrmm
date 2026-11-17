@@ -68,10 +68,40 @@ on a Windows, macOS and Linux runner. Both workflows were green on build 83
 
 ## What does NOT work yet
 
-- **macOS has never run the agent.** It compiles in CI and a CI step now checks
-  that the built agent carries the Swift capture module. The consent surface,
-  tray indicator, capture, input injection, privacy blank and restart auto-start
-  are all unproven there, and all are security-relevant.
+- **macOS agent now RUN on a real Mac (macOS 27.0, arm64 VM, 2026-11-16/17).**
+  First time ever on hardware. Rented a cloud Mac, built on it with Python 3.12,
+  and tested capability by capability. **Verified PASS (proof in the agent's own
+  `~/Library/Application Support/RMMAgent/agent.log` and direct tests on the VM):**
+  - *Starts clean* - the Python 3.13 `_struct` crash is gone; the 3.12 build loads
+    `_struct.cpython-312-darwin.so` and runs.
+  - *Connects over TLS* - `certifi` bundling + `SSL_CERT_FILE` fixed the cert
+    failure; log shows `attached to session`.
+  - *Consent + tray* fire without crashing - the NSStatusItem main-thread fix
+    (`AppHelper.callAfter`) holds; notifications logged, no SIGTRAP.
+  - *Accessibility requested the standard way* - log: `requested macOS
+    Accessibility (already trusted: False)`; the app now registers itself in
+    System Settings > Privacy & Security > Accessibility.
+  - *Remote terminal* - spawns `/bin/zsh -i` over a real PTY, runs commands,
+    captures full ANSI output (tested live 2026-11-17).
+  - *File transfer* - list / upload / download round-trip with atomic replace
+    (tested live 2026-11-17).
+  - *Clipboard* - `pbcopy`/`pbpaste` (verified 2026-11-16).
+  **Needs one on-screen grant each, cannot be done over SSH (SIP blocks it) -
+  this is the normal one-time macOS user action, not a defect:**
+  - *Native screen capture* works once Screen Recording is granted; the grant is
+    keyed to the app's code signature, so **every rebuild of the unsigned
+    (ad-hoc) app resets it** and the agent falls back to `mss`. For production
+    updates this needs a stable Developer ID signature, or an MDM PPPC profile
+    to pre-grant it - a macOS-specific point, separate from the Windows
+    no-signing decision.
+  - *Mouse/keyboard control* needs the Accessibility toggle flipped once; the
+    request now fires correctly, confirmation of control pending that toggle.
+  **Still open (real work, not a click):** privacy blank and chat both create
+  `tk.Tk()` on a background thread, which crashes on macOS (the known
+  Tk-off-main-thread abort, already noted below) - they need a native Cocoa or
+  separate-process rewrite before they work on Mac. Reconnect-after-drop and
+  logout/login auto-start not yet exercised on the Mac. Windows and Linux
+  untouched by all of the above.
 - **Windows has run on one real laptop and is not yet clean.** The installer
   (`rmm-agent-setup.exe`) was built in CI and installed there. That run found and
   fixed: the mss thread failure, the missing Rust module, the console-window
