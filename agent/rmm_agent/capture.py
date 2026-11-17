@@ -20,6 +20,7 @@ import time
 from PIL import Image, ImageDraw
 
 from rmm_agent import native as native_loader
+from rmm_agent import macos_permissions
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +48,12 @@ class ScreenCapture:
         self._fallback: tuple[str, list[dict], int] | None = None
         self._last_frame: tuple[bytes, Image.Image] | None = None
         self.backend = "synthetic"
+        # macOS only: cache the Screen Recording permission check so grab() can
+        # show the operator why the picture is blank without calling the OS on
+        # every frame. Re-checked periodically so the moment the user grants it
+        # the real picture returns. Off macOS this stays True and is never used.
+        self._macos_sr_ok = True
+        self._macos_sr_checked_at = 0.0
 
         # A started portal wins over the X11 module, never the other way
         # round: under Wayland, X11's open() succeeds through XWayland and
@@ -211,7 +218,34 @@ class ScreenCapture:
             return True
         return False
 
+    def _macos_permission_frame(self):
+        """macOS only: if Screen Recording permission is missing, a frame that
+        explains it, else None. Without the permission macOS hands back a flat
+        redacted fill, so the operator would otherwise see a silent grey screen.
+        The check is cached and refreshed every 2s so granting it mid-session
+        brings the real picture straight back."""
+        if not macos_permissions.IS_MACOS or self.synthetic:
+            return None
+        now = time.monotonic()
+        if now - self._macos_sr_checked_at >= 2.0:
+            self._macos_sr_checked_at = now
+            self._macos_sr_ok = macos_permissions.screen_recording_granted()
+        if self._macos_sr_ok:
+            return None
+        monitor = self._monitors[self.monitor_index] if self._monitors else {}
+        size = (monitor.get("width") or self.size[0], monitor.get("height") or self.size[1])
+        return macos_permissions.render_permission_frame(
+            size,
+            [
+                macos_permissions.SCREEN_RECORDING_TITLE,
+                macos_permissions.SCREEN_RECORDING_STEPS,
+            ],
+        )
+
     def grab(self) -> Image.Image:
+        blocked = self._macos_permission_frame()
+        if blocked is not None:
+            return blocked
         if self._wayland is not None:
             data, _width, _height = self._wayland.grab()
             # A still screen hands back the same frame object; do not re-decode.

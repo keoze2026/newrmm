@@ -7,7 +7,7 @@ import time
 
 import websockets
 
-from rmm_agent import __version__, clipboard, files, platform_support, privacy, sysinfo
+from rmm_agent import __version__, clipboard, files, macos_permissions, platform_support, privacy, sysinfo
 from rmm_agent.capture import RateController, ScreenCapture
 from rmm_agent.chat import ChatWindow
 from rmm_agent.consent import ask_choice as ask_consent_choice
@@ -350,6 +350,7 @@ class AgentSession:
             await self._open_portal()
         self._tiles.request_keyframe()
         log.info("consent granted; streaming starts now")
+        self._check_macos_permissions()
         if self.tray:
             self.tray.set_state(SHARING, f"Sharing your screen — session {self.code}")
             self.tray.notify(
@@ -368,6 +369,35 @@ class AgentSession:
             if self.tray:
                 self.tray.set_state(IDLE, "Not in a session")
                 self.tray.notify("The remote session has ended.", "Session ended")
+
+    def _check_macos_permissions(self) -> None:
+        """macOS only: the screen and input are useless without their TCC grants,
+        and an ad-hoc-signed build loses them on every update. Without this the
+        operator just sees a grey picture and dead input with no explanation.
+
+        So at the start of each session: register the app for Screen Recording
+        (which also shows it in System Settings to switch on) and, if it or
+        Accessibility is still missing, tell the endpoint user exactly what to
+        turn on. The capture path separately draws the same Screen Recording
+        message onto the operator's picture (capture.py). No-op off macOS, so
+        Windows and Linux are unaffected."""
+        if not macos_permissions.IS_MACOS:
+            return
+        if not macos_permissions.screen_recording_granted():
+            macos_permissions.request_screen_recording()
+            log.warning("macOS Screen Recording permission missing; picture will be blank until granted")
+            if self.tray:
+                self.tray.notify(
+                    macos_permissions.SCREEN_RECORDING_STEPS,
+                    macos_permissions.SCREEN_RECORDING_TITLE,
+                )
+        if self._inject and not macos_permissions.accessibility_granted():
+            log.warning("macOS Accessibility permission missing; remote control will not reach this Mac")
+            if self.tray:
+                self.tray.notify(
+                    macos_permissions.ACCESSIBILITY_STEPS,
+                    macos_permissions.ACCESSIBILITY_TITLE,
+                )
 
     async def _open_portal(self) -> None:
         """Wayland: ask the compositor for the screen and input. Runs after
