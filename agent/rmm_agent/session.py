@@ -7,7 +7,7 @@ import time
 
 import websockets
 
-from rmm_agent import __version__, clipboard, files, macos_permissions, platform_support, privacy, sysinfo
+from rmm_agent import __version__, clipboard, files, macos_display, macos_permissions, platform_support, privacy, sysinfo
 from rmm_agent.capture import RateController, ScreenCapture
 from rmm_agent.chat import ChatWindow
 from rmm_agent.consent import ask_choice as ask_consent_choice
@@ -94,6 +94,8 @@ class AgentSession:
         self._restore_token: str | None = None
         self.capture = ScreenCapture(synthetic=synthetic)
         self.injector = InputInjector(enabled=inject)
+        # macOS: keep the display from sleeping mid-session (no-op elsewhere).
+        self._keep_awake = macos_display.KeepDisplayAwake()
         self.rate = RateController(fps, quality)
         self.budget_kbps = budget_kbps
         self.auto_consent = auto_consent
@@ -351,6 +353,7 @@ class AgentSession:
         self._tiles.request_keyframe()
         log.info("consent granted; streaming starts now")
         self._check_macos_permissions()
+        self._keep_awake.start()
         if self.tray:
             self.tray.set_state(SHARING, f"Sharing your screen — session {self.code}")
             self.tray.notify(
@@ -364,6 +367,7 @@ class AgentSession:
         finally:
             self._streamed_until = time.monotonic()
             receiver.cancel()
+            self._keep_awake.stop()
             self._close_tools()
             await self._close_portal()
             if self.tray:

@@ -21,6 +21,7 @@ from PIL import Image, ImageDraw
 
 from rmm_agent import native as native_loader
 from rmm_agent import macos_permissions
+from rmm_agent import macos_display
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +55,8 @@ class ScreenCapture:
         # the real picture returns. Off macOS this stays True and is never used.
         self._macos_sr_ok = True
         self._macos_sr_checked_at = 0.0
+        self._macos_locked = False
+        self._macos_lock_checked_at = 0.0
 
         # A started portal wins over the X11 module, never the other way
         # round: under Wayland, X11's open() succeeds through XWayland and
@@ -218,29 +221,40 @@ class ScreenCapture:
             return True
         return False
 
+    def _macos_overlay_size(self):
+        monitor = self._monitors[self.monitor_index] if self._monitors else {}
+        return (monitor.get("width") or self.size[0], monitor.get("height") or self.size[1])
+
     def _macos_permission_frame(self):
-        """macOS only: if Screen Recording permission is missing, a frame that
-        explains it, else None. Without the permission macOS hands back a flat
-        redacted fill, so the operator would otherwise see a silent grey screen.
-        The check is cached and refreshed every 2s so granting it mid-session
-        brings the real picture straight back."""
+        """macOS only: a frame that EXPLAINS why the picture would otherwise be
+        blank, or None when the real picture should flow.
+
+        Two causes, both of which hand the operator a black/grey picture with no
+        reason: missing Screen Recording permission (macOS redacts capture to a
+        flat fill) and a locked screen (capture shows the lock window). Each is
+        cached and refreshed every 2s so the moment the cause clears - permission
+        granted, screen unlocked - the real picture returns. No-op off macOS and
+        for the synthetic path, so Windows/Linux are untouched."""
         if not macos_permissions.IS_MACOS or self.synthetic:
             return None
         now = time.monotonic()
         if now - self._macos_sr_checked_at >= 2.0:
             self._macos_sr_checked_at = now
             self._macos_sr_ok = macos_permissions.screen_recording_granted()
-        if self._macos_sr_ok:
-            return None
-        monitor = self._monitors[self.monitor_index] if self._monitors else {}
-        size = (monitor.get("width") or self.size[0], monitor.get("height") or self.size[1])
-        return macos_permissions.render_permission_frame(
-            size,
-            [
-                macos_permissions.SCREEN_RECORDING_TITLE,
-                macos_permissions.SCREEN_RECORDING_STEPS,
-            ],
-        )
+        if not self._macos_sr_ok:
+            return macos_permissions.render_permission_frame(
+                self._macos_overlay_size(),
+                [macos_permissions.SCREEN_RECORDING_TITLE, macos_permissions.SCREEN_RECORDING_STEPS],
+            )
+        if now - self._macos_lock_checked_at >= 2.0:
+            self._macos_lock_checked_at = now
+            self._macos_locked = macos_display.screen_locked()
+        if self._macos_locked:
+            return macos_permissions.render_permission_frame(
+                self._macos_overlay_size(),
+                [macos_display.LOCKED_TITLE, macos_display.LOCKED_STEPS],
+            )
+        return None
 
     def grab(self) -> Image.Image:
         blocked = self._macos_permission_frame()
