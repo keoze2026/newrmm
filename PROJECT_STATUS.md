@@ -220,6 +220,92 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **macOS AGENT BROUGHT UP ON A REAL MAC (2026-11-17, continued): 3 crash/connect
+  bugs FIXED and PROVEN on the VM; capability testing in progress.** Built the
+  agent ON the rented Mac (macOS 27.0 arm64, Mac18,5 VM): installed Python 3.12.8
+  (python.org) + Command Line Tools, built the Swift ScreenCaptureKit module
+  (`libRMMCapture.dylib`, arm64) and `build.py --app`, so each fix is testable in
+  minutes instead of waiting for CI. Branch `macos-agent-fixes` (NOT pushed):
+  - *FIX 1 - Python 3.13 `_struct` crash.* The shipped server build was Python
+    **3.13** (`_struct.cpython-313`), which PyInstaller bundles so the frozen
+    interpreter can't load its C extensions on macOS 27 -> `ModuleNotFoundError:
+    _struct`, dead on launch. Building on **3.12** fixes it; the 3.12 pin is
+    already in main (`19fe418`), so the server build is just a stale 3.13 artifact
+    that needs a fresh CI run. PROVEN: `rmm-agent status` now runs and prints full
+    status.
+  - *FIX 2 - TLS `CERTIFICATE_VERIFY_FAILED` (commit 1688857).* The macOS build
+    ships its own OpenSSL with no trust store and `certifi` was never a dep, so
+    the agent could never verify the relay cert. Added `certifi` to requirements
+    and, on darwin only, set `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE` to
+    `certifi.where()` at startup (`__main__.py`). Linux/Windows untouched. PROVEN:
+    log now shows `attached to session` over `wss://`.
+  - *FIX 3 - tray NSStatusItem off-main-thread crash (commit 971f788).* The agent
+    crashed `EXC_BREAKPOINT` ~1s after attaching: `set_state()`/`notify()` run on
+    the asyncio thread but pystray touches `NSStatusItem`, which AppKit only
+    allows on the main thread (backtrace: asyncio -> `-[NSStatusItem setMenu:]` ->
+    `assertBarrierOnQueue`). Marshalled those updates to the main thread via
+    `AppHelper.callAfter` on darwin only (`tray.py`). PROVEN: agent now attaches,
+    auto-consents and **streams** without crashing.
+  - *CI hardening (commit 1688857, lesson #41).* The macOS smoke test only failed
+    on a crash SIGNAL (`status -ge 128`); a clean `exit 1` (like FIX 1) passed and
+    shipped. Now fails on ANY non-zero exit.
+  - *FIX 4 - agent never requested Accessibility (commit 1f0900f).* The macOS
+    input path posts CGEvents (pynput) but never asked for Accessibility, so the
+    app never appeared in the Accessibility list and a user had nothing to switch
+    on - control silently did nothing. On darwin, call
+    `AXIsProcessTrustedWithOptions({prompt:true})` via ctypes against the system
+    ApplicationServices framework (nothing bundled, universal across macOS
+    versions) when the input injector is built. PROVEN: log shows "requested
+    macOS Accessibility"; the app now registers and prompts. (Same gap existed
+    for Screen Recording but the native SCK path does prompt, so that one works.)
+  - *Capability results end of 2026-11-17 (macOS 27 arm64 VM).* PASS, proven:
+    starts; tray icon/state transitions (idle->connected->sharing) no crash;
+    connects to relay over TLS; attaches to session; consent reaches "streaming
+    starts now"; **native ScreenCaptureKit real picture - user confirmed sharp,
+    live, 14 fps in the console**; clipboard set+get via pbcopy/pbpaste; Screen
+    Recording permission grantable and applied. PENDING (user will grant + test
+    tomorrow, 1-line left): Accessibility toggle -> mouse/keyboard control (fix 4
+    is in; user just toggles it on). FOUND, not yet fixed: (a) chat window
+    creates `tk.Tk()` on a
+    background thread -> macOS main-thread crash risk; (b) privacy blank on macOS
+    falls to guest-lock + a Tk overlay (`dimmer` is Linux-only), so the operator
+    sees black AND it risks the same Tk main-thread crash - NOT triggered live, to
+    avoid locking the VM out. VM caveats (could differ on a real Mac): virtual
+    display, 1920x1080, no Retina, no discrete GPU - so Retina coordinate mapping
+    and real-GPU ScreenCaptureKit throughput/latency are unproven here.
+
+- **macOS AGENT RUN FOR THE FIRST TIME ON A REAL MAC (2026-11-17): it crashes
+  at startup. Root cause PROVEN; fix NOT built (needs a CI mac-runner rebuild).**
+  Rented a cloud Mac (rentamac.io, Mac mini M4, macOS 27.0 **arm64**), reached it
+  over SSH, downloaded the live connector (`/api/connector/macos`, sha256
+  b65e8e77…, matches the relay's `rmm-agent-macos.zip`), unzipped `rmm-agent.app`
+  and launched it two ways (GUI via `open`, and the binary directly). Both die
+  immediately with: `[PYI…:ERROR] Module object for struct is NULL! →
+  ModuleNotFoundError: No module named '_struct'`.
+  - *Proven cause.* The shipped bundle was built with **Python 3.13**, not the
+    **3.12** the macOS CI job pins on purpose (`agents.yml:228`; the comment says
+    pynput 1.7.7 breaks on 3.13). Evidence in the artifact:
+    `Contents/Frameworks/python3__dot__13/lib-dynload/_struct.cpython-**313**-darwin.so`.
+    PyInstaller's 3.13 macOS bundle puts the stdlib C-extensions under
+    `python3__dot__13/lib-dynload`, which the frozen interpreter does not search
+    on macOS 27, so Python cannot finish booting (`_struct` is a core C module).
+    Binary is native arm64 (not an architecture mismatch); a symlink
+    `python3.13 → python3__dot__13` did **not** fix it, so the break is the 3.13
+    bundle layout, not just the folder name.
+  - *Why CI shipped it broken.* The macOS smoke test (`agents.yml:253-258`) only
+    fails when the agent exits with a **signal** (`status -ge 128`); a plain
+    `exit 1` Python crash passes, and the build picked up 3.13 somewhere despite
+    `setup-python` 3.12.
+  - *ONE FIX (proposed, macOS only, not built).* Force the macOS build to use the
+    3.12 interpreter it intends (verify `python -V` in the Build step / invoke
+    PyInstaller with that exact Python), AND harden the smoke test to fail on any
+    non-zero exit, so a non-booting bundle can never ship again. Linux/Windows
+    builds untouched. Then rebuild on the CI mac runner, re-download, and re-run
+    on this same rented Mac (SSH access proven, so the retest is quick).
+  - *Still unproven on Mac even after this fix:* consent dialog, Screen Recording
+    + Accessibility grants, real capture/input, privacy blank, auto-start — none
+    reached, because the agent never started.
+
 - **TWO RESEARCH-BACKED CAUSES CONFIRMED IN OUR CODE (2026-11-13). No fix yet
   (awaiting approval); no push.**
   - *Finding 1 - the 1011 keepalive disconnects = relay backpressure.* The relay
