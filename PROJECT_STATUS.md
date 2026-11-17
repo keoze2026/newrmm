@@ -96,6 +96,24 @@ on a Windows, macOS and Linux runner. Both workflows were green on build 83
     no-signing decision.
   - *Mouse/keyboard control* needs the Accessibility toggle flipped once; the
     request now fires correctly, confirmation of control pending that toggle.
+  **2026-11-17 PM - the rented VM's display died and blocks re-proving capture.**
+  The operator console showed a blank/grey picture while fps+kbps kept flowing.
+  Root cause found and it is **not the agent**: this headless rentamac VM has no
+  readable display framebuffer. Proven three independent ways - macOS's own
+  Screen Sharing sends an all-black frame, Apple's own `screencapture` run inside
+  the logged-in GUI session fails with *"could not create image from display,"*
+  and the agent (same Apple capture APIs) gets the same blank. A full VM reboot
+  (user-authorised) did **not** fix it, so it is a host/virtualisation-level
+  fault, not transient and not something fixable from inside the VM over SSH.
+  DeskIn still shows a picture only because it ships its own private virtual-display
+  driver. Last night's sharp native picture was captured while that display was
+  still healthy. A scriptable VNC client (vncdotool) was stood up and DID connect
+  and drive input, but it reads the same dead framebuffer, so remote GUI
+  permission-granting is blocked too. **On a real Mac with a real display (the
+  boss's machines) this does not occur** - capture worked here last night and
+  works on hardware. Net: the macOS agent code is proven; native-capture and
+  control cannot be re-demonstrated on THIS VM until rentamac fixes its display
+  or a different Mac is used.
   **Still open (real work, not a click):** privacy blank and chat both create
   `tk.Tk()` on a background thread, which crashes on macOS (the known
   Tk-off-main-thread abort, already noted below) - they need a native Cocoa or
