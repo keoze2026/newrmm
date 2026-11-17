@@ -253,8 +253,11 @@ jobs:
           "$APP" status & pid=$!
           ( sleep 120; kill -9 $pid 2>/dev/null ) &
           status=0; wait $pid || status=$?
-          if [ "$status" -ge 128 ]; then
-            echo "::error::the built agent crashed (exit $status)"; exit 1
+          # Lesson #41: a check that only fails on a crash SIGNAL (>=128) lets a
+          # build that aborts cleanly (e.g. a bundling error exiting 1, like the
+          # Python 3.13 "_struct" crash) ship. Fail on ANY non-zero exit.
+          if [ "$status" -ne 0 ]; then
+            echo "::error::the built agent exited non-zero (exit $status) - it does not boot"; exit 1
           fi
           LOG="$HOME/Library/Application Support/RMMAgent/agent.log"
           test -f "$LOG" || { echo "::error::the agent wrote no log at $LOG"; exit 1; }

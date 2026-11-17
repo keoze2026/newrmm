@@ -25,6 +25,21 @@ from rmm_agent.tray import Tray
 log = logging.getLogger("rmm_agent")
 
 
+# macOS only: the python.org/PyInstaller build ships its own OpenSSL with no
+# system trust store, so TLS to the relay fails with CERTIFICATE_VERIFY_FAILED.
+# Point SSL at the bundled certifi CA file. Linux and Windows use their own
+# system trust and are deliberately left untouched (one-OS-only fix).
+if sys.platform == "darwin":
+    try:
+        import certifi
+
+        _ca = certifi.where()
+        os.environ.setdefault("SSL_CERT_FILE", _ca)
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", _ca)
+    except Exception:  # pragma: no cover - never block startup on this
+        pass
+
+
 def _run_with_tray(coroutine_factory, use_tray: bool, on_user_quit=None) -> int:
     """The tray owns the main thread, so the event loop runs beside it."""
     loop = asyncio.new_event_loop()
