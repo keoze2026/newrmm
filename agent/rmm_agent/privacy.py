@@ -59,7 +59,14 @@ def supported_mode() -> str:
     if WINDOWS:
         return MODE_EXCLUDED
     if MACOS:
-        return MODE_EXCLUDED if _has_pyobjc() else MODE_GUEST_LOCK
+        # macOS is deliberately unavailable for now: the only non-crashing blank
+        # here would be a Tk overlay, and Tk on macOS must own the main thread
+        # (held by the tray), so building it on a worker thread aborts the whole
+        # process - the same reason consent/clipboard/chat avoid Tk on macOS. A
+        # native NSWindow (NSWindowSharingNone) blank needs bundled pyobjc and a
+        # main-thread host and is a separate piece of work; until then the agent
+        # reports it unavailable rather than crash or draw a Tk window.
+        return MODE_UNAVAILABLE
     # Linux (X11 or Wayland): darken the backlight and the operator keeps the
     # real picture. Anywhere nothing can be dimmed, fall back to the overlay lock.
     return MODE_EXCLUDED if dimmer.available() else MODE_GUEST_LOCK
@@ -147,6 +154,13 @@ class PrivacyBlank:
         """Blank the guest's screen. Returns what actually happened."""
         if self.active:
             return self.state()
+
+        if MACOS:
+            # Never create Tk on macOS (it would abort the process). Report the
+            # blank unavailable so the operator is told, instead of a crash.
+            log.warning("privacy blank is not available on macOS yet; not blanking")
+            return {"active": False, "mode": MODE_UNAVAILABLE,
+                    "error": "privacy blank is not available on macOS yet"}
 
         self._stop.clear()
 

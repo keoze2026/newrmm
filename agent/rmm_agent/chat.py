@@ -19,13 +19,36 @@ thread". One root, reused as a parent for a `Toplevel` per window, avoids
 ever creating a second interpreter.
 """
 import logging
+import platform
 import queue
+import subprocess
 import threading
 from typing import Callable
 
 log = logging.getLogger(__name__)
 
 TITLE = "Chat with support"
+
+# macOS must never create a Tk window: Tk on macOS has to own the main thread,
+# which the tray already holds, so a Tk root built on this background GUI thread
+# aborts the whole process (the same NSApplication/Tcl crash that moved consent
+# and the clipboard to osascript/pbcopy). So on macOS the chat shows the
+# operator's messages as a native notification instead of a window. (Typing a
+# reply back needs a native window and is a separate, later piece of work.)
+IS_MACOS = platform.system() == "Darwin"
+
+
+def _macos_notify(text: str) -> None:
+    script = f'display notification {_osa_quote(text)} with title {_osa_quote(TITLE)}'
+    try:
+        subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5)
+    except Exception as exc:  # pragma: no cover - never break the session
+        log.debug("could not post macOS chat notification: %s", exc)
+
+
+def _osa_quote(text: str) -> str:
+    """AppleScript string literal: wrap in quotes, escape backslash and quote."""
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 _commands: "queue.Queue[tuple]" = queue.Queue()
 _gui_thread: threading.Thread | None = None
@@ -99,6 +122,12 @@ class ChatWindow:
         self._toplevel = None
         self._history = None
         self._closed = threading.Event()
+        self._macos = IS_MACOS
+        if self._macos:
+            # No Tk on macOS: messages arrive as notifications; available so
+            # receive() still delivers them.
+            self.available = True
+            return
         _ensure_gui_thread()
         _gui_decided.wait(timeout=3.0)
         self.available = not _gui_unavailable.is_set()
@@ -172,10 +201,16 @@ class ChatWindow:
 
     def receive(self, text: str) -> None:
         """Called from any thread when the operator sends a message."""
+        if self._macos:
+            _macos_notify(text)
+            return
         if self.available:
             _commands.put(("receive", self, text))
 
     def close(self) -> None:
+        if self._macos:
+            self._closed.set()
+            return
         if self.available:
             _commands.put(("close", self))
         self._closed.wait(timeout=2.0)
