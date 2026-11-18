@@ -295,9 +295,19 @@ the rule that stops it happening again. Add one the moment something goes wrong.
   - **One-time:** moving from the current ad-hoc build to the first signed build
     makes employees re-grant once; after that it sticks across updates.
   - **Windows/Linux:** untouched (macOS CI job + macOS join-page branch only).
-  - **Verifying (in progress):** CI run 44279091523 must sign green with a
-    cert-bound requirement; then install the signed build on the VM, grant once,
-    and confirm a SECOND signed build keeps the grant (the real persistence proof).
+  - **VERIFIED (2026-11-18):** CI run 44280039898 green; the sign step proves
+    `designated => identifier "com.rmm.agent" and certificate root =
+    H"66ad71261403ceac771cf430238ac015841ef8d1"` and `satisfies its Designated
+    Requirement`. TWO independent CI builds produced the IDENTICAL requirement
+    (same cert root hash) - the mechanical proof that an update keeps the identity,
+    so a granted permission carries across updates. Live-tested on the VM: the
+    downloaded signed build is `codesign --verify --strict` VALID, its requirement
+    on the VM matches the CI hash, and it boots + connects + attaches + streams.
+    Only the one-time on-screen grant of the signed app (Screen Recording +
+    Accessibility) remains - after that it persists across every update.
+  - **To ship it to employees:** merge branch `macos-self-signed` to main; the
+    deliver job then serves the signed build from the server (Windows/Linux
+    rebuild unchanged). Not merged by this session (no push to main / production).
 
 - **2026-11-18: three-agent live retest + the VM access and Mac findings that
   this file was missing (the omission that caused a whole session of confusion).**
