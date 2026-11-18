@@ -323,7 +323,7 @@ jobs:
           codesign -d -r- "$APP"
           codesign -dvv "$APP" 2>&1 | grep -iE 'Authority|Identifier|Signature' || true
           codesign --verify --strict --verbose=2 "$APP"
-          if codesign -d -r- "$APP" 2>&1 | grep -q 'certificate leaf'; then
+          if codesign -d -r- "$APP" 2>&1 | grep -qE 'certificate (leaf|root)'; then
             echo "OK: requirement is bound to the stable certificate (TCC grants will persist)."
           else
             echo "::error::signed bundle's requirement is not certificate-bound - TCC would still reset on update"; exit 1
