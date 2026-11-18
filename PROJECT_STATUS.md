@@ -274,6 +274,31 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **2026-11-18: macOS made reliable with a STABLE SELF-SIGNED signing identity -
+  the real fix for Screen Recording/Accessibility being lost on every update.
+  macOS only; branch `macos-self-signed`.**
+  - **Cause (researched, links):** ad-hoc signing binds the TCC grant to the
+    binary's cdhash, which changes every rebuild, so the permissions reset on
+    every update even though the toggle looks on. Signing with a stable cert makes
+    the grant bind to the certificate instead (`identifier "com.rmm.agent" and
+    certificate leaf = H"..."`), so it persists across updates. A reboot alone
+    never drops it (TCC stores it keyed to identity; neither the store nor the
+    identity changes on reboot) - the loss is on update/rebuild. Sources:
+    nick-liu.com (cdhash trap), barkeepmac.com, github spdore/macos-tcc-signing.
+  - **Done:** generated a self-signed Code Signing cert (CN "Micro AV RMM Agent",
+    10-year); stored as GitHub Actions secrets `MACOS_CERT_P12` /
+    `MACOS_CERT_PASSWORD` / `MACOS_SIGN_IDENTITY`. The macOS CI job now signs every
+    build INSIDE-OUT with it (no notarise - self-signed can't), and FAILS the build
+    unless the signed bundle's requirement is certificate-bound (proof printed in
+    the job log). Not notarised, so first open still needs right-click > Open - the
+    macOS join page now leads with that, then the two permission switches.
+  - **One-time:** moving from the current ad-hoc build to the first signed build
+    makes employees re-grant once; after that it sticks across updates.
+  - **Windows/Linux:** untouched (macOS CI job + macOS join-page branch only).
+  - **Verifying (in progress):** CI run 44279091523 must sign green with a
+    cert-bound requirement; then install the signed build on the VM, grant once,
+    and confirm a SECOND signed build keeps the grant (the real persistence proof).
+
 - **2026-11-18: three-agent live retest + the VM access and Mac findings that
   this file was missing (the omission that caused a whole session of confusion).**
   - **VM ACCESS (never recorded before - fix the gap).** The rented Mac is reached
