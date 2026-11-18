@@ -7,7 +7,7 @@ import time
 
 import websockets
 
-from rmm_agent import __version__, clipboard, files, macos_display, macos_permissions, platform_support, privacy, sysinfo
+from rmm_agent import __version__, clipboard, files, macos_app, macos_display, macos_permissions, platform_support, privacy, sysinfo
 from rmm_agent.capture import RateController, ScreenCapture
 from rmm_agent.chat import ChatWindow
 from rmm_agent.consent import ask_choice as ask_consent_choice
@@ -402,6 +402,10 @@ class AgentSession:
                     macos_permissions.ACCESSIBILITY_STEPS,
                     macos_permissions.ACCESSIBILITY_TITLE,
                 )
+        if macos_app.is_translocated():
+            log.warning("running from an App Translocation mount; auto-start will not work until the app is moved to Applications")
+            if self.tray:
+                self.tray.notify(macos_app.MOVE_STEPS, macos_app.MOVE_TITLE)
 
     async def _open_portal(self) -> None:
         """Wayland: ask the compositor for the screen and input. Runs after

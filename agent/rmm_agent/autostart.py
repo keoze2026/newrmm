@@ -205,6 +205,18 @@ def _mac_plist() -> Path:
 
 
 def _mac_enable() -> bool:
+    from rmm_agent import macos_app
+
+    if macos_app.is_translocated():
+        # The executable path is a throwaway App Translocation mount; a
+        # LaunchAgent written from it would point at a path that vanishes. Refuse
+        # rather than write a broken auto-start - the user must move the app to
+        # Applications first (surfaced to them separately).
+        log.warning(
+            "running from an App Translocation mount; not setting auto-start - "
+            "move rmm-agent to Applications first"
+        )
+        return False
     try:
         path = _mac_plist()
         path.parent.mkdir(parents=True, exist_ok=True)
