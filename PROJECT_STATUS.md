@@ -301,10 +301,20 @@ the rule that stops it happening again. Add one the moment something goes wrong.
   | 5 | Sleep/wake or network change -> does it reconnect? | No change needed: `run_forever` has exponential backoff + `ping_interval=20` drop detection + `release_all()` on every drop; platform-agnostic | `p6_reconnect.py` (existing) | n/a (not macOS-specific) | A timed real-Mac sleep/wake cycle |
   | 6 | Retina / multi-display -> wrong picture or mouse position | Already handled: input uses logical points (0..1 normalised), Swift capture uses `pointPixelScale` (status 2026-11-02 entry) | `test_input_mapping.py` (existing, incl. Retina/scaled/2nd-monitor) | n/a - VM has no Retina | A real Retina + multi-monitor Mac to confirm visually |
 
-  Branch `macos-agent-fixes` only; NOT pushed to main; NOT built into a server
-  artifact yet (build gate #63 applies before any server hand-off). Next: a CI
-  build so the packaged app carries these, then the real-Mac grant + live session
-  to close the "still needs a real Mac" column.
+  **MERGED + DEPLOYED (2026-11-17 late, user-authorised).** PR #1 merged to main
+  (`c0b1de3`); CI green on main for all three agents incl. the Linux `.deb`
+  (the PR's only red was a pre-existing version-string bug on PR refs - `1/merge`
+  - fixed in the same work, lesson #7). The "Deliver to the server" job ran and
+  **succeeded**: delivered all three builds, proved the live download serves the
+  new version, kept the previous build as a backup (reversible). **Live
+  end-to-end test on the real Mac with the freshly rebuilt packaged agent,
+  against the production relay:** connected, consent, Screen Recording + Accessibility
+  both detected and warned, `caffeinate -d` display-awake held, streamed, no
+  crash (agent.log 16:48). So the current changes are proven working live on a
+  real Mac - what still needs a real Mac is only the parts behind the on-screen
+  permission GRANT (seeing the real picture + control once toggled on).
+  **TODO with the user (next session): test all three agents (Windows, Linux,
+  macOS) against the newly deployed server build.**
 
 - **macOS AGENT BROUGHT UP ON A REAL MAC (2026-11-17, continued): 3 crash/connect
   bugs FIXED and PROVEN on the VM; capability testing in progress.** Built the
