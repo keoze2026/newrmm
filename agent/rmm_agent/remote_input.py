@@ -14,6 +14,55 @@ from rmm_agent import wayland_portal
 
 log = logging.getLogger(__name__)
 
+_MACOS = platform.system() == "Darwin"
+
+
+def _request_macos_accessibility() -> None:
+    """macOS only: ask for Accessibility (keyboard/mouse control) the standard
+    way.
+
+    Posting CGEvents (pynput) needs Accessibility, but it neither registers the
+    app in System Settings > Privacy & Security > Accessibility nor prompts, so
+    a user has nothing to switch on and control silently does nothing. The
+    public ``AXIsProcessTrustedWithOptions`` call with the prompt option is
+    Apple's version-independent way to register the app and show the system
+    prompt; it works on every macOS release and is a no-op once trusted. It is
+    called through ctypes against the system ApplicationServices framework (not
+    a bundled pyobjc module), so it needs nothing packaged and behaves the same
+    on every Mac. Only the macOS input path calls it, so Linux and Windows are
+    unaffected.
+    """
+    try:
+        import ctypes
+        import ctypes.util
+
+        app_services = ctypes.CDLL(ctypes.util.find_library("ApplicationServices"))
+        core_foundation = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
+
+        prompt_key = ctypes.c_void_p.in_dll(app_services, "kAXTrustedCheckOptionPrompt")
+        true_value = ctypes.c_void_p.in_dll(core_foundation, "kCFBooleanTrue")
+
+        core_foundation.CFDictionaryCreate.restype = ctypes.c_void_p
+        core_foundation.CFDictionaryCreate.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p,
+        ]
+        keys = (ctypes.c_void_p * 1)(prompt_key)
+        values = (ctypes.c_void_p * 1)(true_value)
+        options = core_foundation.CFDictionaryCreate(None, keys, values, 1, None, None)
+
+        app_services.AXIsProcessTrustedWithOptions.restype = ctypes.c_bool
+        app_services.AXIsProcessTrustedWithOptions.argtypes = [ctypes.c_void_p]
+        trusted = app_services.AXIsProcessTrustedWithOptions(options)
+
+        if options:
+            core_foundation.CFRelease.argtypes = [ctypes.c_void_p]
+            core_foundation.CFRelease(options)
+        log.info("requested macOS Accessibility (already trusted: %s)", bool(trusted))
+    except Exception as exc:  # pragma: no cover - never block input setup
+        log.debug("could not request macOS Accessibility: %s", exc)
+
+
 # Temporary, Windows-only diagnostic: log the NAME of each key the operator
 # sends and whether it was injected, to find where a key like "m" is lost.
 # Only the key name and any exception are logged, never a run of typed text,
@@ -90,8 +139,37 @@ class InputInjector:
             self._Button = Button
             self._Key = Key
             self.available = True
+            if platform.system() == "Darwin":
+                _request_macos_accessibility()
+                # Clear any modifier left stuck down by a previous session that
+                # dropped between a modifier press and its release - otherwise
+                # the first thing typed in this session combines with it (a
+                # stuck Cmd turns letters into shortcuts: "stray tabs").
+                self._clear_macos_modifiers()
         except Exception as exc:
             log.warning("input injection unavailable: %s", exc)
+
+    def _clear_macos_modifiers(self) -> None:
+        """macOS only: force every modifier key up at the OS level.
+
+        A lost key-up (a drop mid-shortcut) leaves the modifier stuck in the
+        CGEvent flags with nothing tracking it, so release_all() - which only
+        releases keys this session pressed - cannot clear it. Posting a key-up
+        for each modifier clears the stuck flag whether or not we pressed it.
+        Releasing a key that is not down is harmless. macOS only, so Windows and
+        Linux input is untouched."""
+        if not _MACOS or self._keyboard is None or self._Key is None:
+            return
+        Key = self._Key
+        for name in ("shift", "shift_r", "ctrl", "ctrl_r", "alt", "alt_r",
+                     "alt_gr", "cmd", "cmd_r", "caps_lock"):
+            key = getattr(Key, name, None)
+            if key is None:
+                continue
+            try:
+                self._keyboard.release(key)
+            except Exception as exc:
+                log.debug("could not clear modifier %s: %s", name, exc)
 
     # Browser key names -> pynput keys.
     def _special(self, name: str):
@@ -265,3 +343,6 @@ class InputInjector:
                 log.debug("could not release key %s: %s", key, exc)
         self._pressed_buttons.clear()
         self._pressed_keys.clear()
+        # macOS: also force the modifiers up, so none is left stuck for the next
+        # session even if its release never arrived this one.
+        self._clear_macos_modifiers()

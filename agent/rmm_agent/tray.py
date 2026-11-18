@@ -1,8 +1,29 @@
 """Tray presence indicator and session notifications (spec section 9)."""
 import logging
+import sys
 import threading
 
 log = logging.getLogger(__name__)
+
+
+def _run_on_main(fn) -> None:
+    """Run an AppKit-touching update on the main thread.
+
+    macOS only: the tray's NSStatusItem may only be touched from the main
+    thread, but set_state()/notify() are called from the asyncio thread, so a
+    direct call traps the process (EXC_BREAKPOINT). The tray's own run loop is
+    the main thread, so schedule the update there. Other platforms have no such
+    rule and run the update inline, so their behaviour is unchanged.
+    """
+    if sys.platform == "darwin":
+        try:
+            from PyObjCTools import AppHelper
+
+            AppHelper.callAfter(fn)
+            return
+        except Exception as exc:  # pragma: no cover - fall back to inline
+            log.debug("could not schedule on the main thread: %s", exc)
+    fn()
 
 IDLE = "idle"
 CONNECTED = "connected"
@@ -62,21 +83,24 @@ class Tray:
         self._state = state
         self._status = status
         if self._icon is not None:
-            try:
-                self._icon.icon = _icon_image(state)
-                self._icon.title = f"Remote support agent — {status}"
-                self._icon.update_menu()
-            except Exception as exc:
-                log.debug("could not update the tray: %s", exc)
+            def _apply() -> None:
+                try:
+                    self._icon.icon = _icon_image(state)
+                    self._icon.title = f"Remote support agent — {status}"
+                    self._icon.update_menu()
+                except Exception as exc:
+                    log.debug("could not update the tray: %s", exc)
+            _run_on_main(_apply)
         log.info("presence: %s (%s)", state, status)
 
     def notify(self, message: str, title: str = "Remote support") -> None:
         if self._icon is not None:
-            try:
-                self._icon.notify(message, title)
-                return
-            except Exception as exc:
-                log.debug("tray notification failed: %s", exc)
+            def _emit() -> None:
+                try:
+                    self._icon.notify(message, title)
+                except Exception as exc:
+                    log.debug("tray notification failed: %s", exc)
+            _run_on_main(_emit)
         log.info("notification: %s — %s", title, message)
 
     def run(self) -> None:

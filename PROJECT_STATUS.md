@@ -68,10 +68,64 @@ on a Windows, macOS and Linux runner. Both workflows were green on build 83
 
 ## What does NOT work yet
 
-- **macOS has never run the agent.** It compiles in CI and a CI step now checks
-  that the built agent carries the Swift capture module. The consent surface,
-  tray indicator, capture, input injection, privacy blank and restart auto-start
-  are all unproven there, and all are security-relevant.
+- **macOS agent now RUN on a real Mac (macOS 27.0, arm64 VM, 2026-11-16/17).**
+  First time ever on hardware. Rented a cloud Mac, built on it with Python 3.12,
+  and tested capability by capability. **Verified PASS (proof in the agent's own
+  `~/Library/Application Support/RMMAgent/agent.log` and direct tests on the VM):**
+  - *Starts clean* - the Python 3.13 `_struct` crash is gone; the 3.12 build loads
+    `_struct.cpython-312-darwin.so` and runs.
+  - *Connects over TLS* - `certifi` bundling + `SSL_CERT_FILE` fixed the cert
+    failure; log shows `attached to session`.
+  - *Consent + tray* fire without crashing - the NSStatusItem main-thread fix
+    (`AppHelper.callAfter`) holds; notifications logged, no SIGTRAP.
+  - *Accessibility requested the standard way* - log: `requested macOS
+    Accessibility (already trusted: False)`; the app now registers itself in
+    System Settings > Privacy & Security > Accessibility.
+  - *Remote terminal* - spawns `/bin/zsh -i` over a real PTY, runs commands,
+    captures full ANSI output (tested live 2026-11-17).
+  - *File transfer* - list / upload / download round-trip with atomic replace
+    (tested live 2026-11-17).
+  - *Clipboard* - `pbcopy`/`pbpaste` (verified 2026-11-16).
+  **Needs one on-screen grant each, cannot be done over SSH (SIP blocks it) -
+  this is the normal one-time macOS user action, not a defect:**
+  - *Native screen capture* works once Screen Recording is granted; the grant is
+    keyed to the app's code signature, so **every rebuild of the unsigned
+    (ad-hoc) app resets it** and the agent falls back to `mss`. For production
+    updates this needs a stable Developer ID signature, or an MDM PPPC profile
+    to pre-grant it - a macOS-specific point, separate from the Windows
+    no-signing decision.
+  - *Mouse/keyboard control* needs the Accessibility toggle flipped once; the
+    request now fires correctly, confirmation of control pending that toggle.
+  **2026-11-17 PM - CORRECTED: the blank/grey picture is MISSING SCREEN RECORDING
+  PERMISSION, not a dead VM.** An earlier entry here wrongly concluded the VM's
+  display was structurally dead; that was wrong and is retracted. Proof the
+  display is alive and the cause is permission (all run on the VM after a reboot,
+  not locked, not asleep, display active 1920x1080):
+  - `Quartz.CGPreflightScreenCaptureAccess()` returns **False** - this process has
+    no Screen Recording permission.
+  - `Quartz.CGDisplayCreateImage(main)` returns a real 1920x1080 image, but every
+    pixel is the identical flat fill `(50,45,45)` from corner to corner - macOS
+    *redacts* the capture to a solid colour when permission is missing. That flat
+    grey is exactly what the operator console showed.
+  - `pmset -g`: `displaysleep 0`, `sleep 0 (prevented by powerd)`; no
+    ScreenSaverEngine process; `CGSSessionScreenIsLocked = 0`. So not sleep, not
+    lock, not screensaver - purely the permission redaction.
+  (`screencapture` and ScreenCaptureKit *fail outright* without permission on
+  macOS 27; the legacy `CGDisplayCreateImage` returns the redacted fill instead -
+  which is why the older `mss` fallback streams flat grey rather than erroring.)
+  This is the unsigned-build permission-loss problem (every rebuild changes the
+  ad-hoc signature, so macOS forgets the grant). The fix is to DETECT the missing
+  permission and tell the user, instead of silently streaming grey - tracked as
+  fix #2 in the 2026-11-17 macOS hardening pass below. Lesson for me: I jumped to
+  "the VM is broken" from `screencapture` failing, without checking the permission
+  API first; the user was right to force the check (cf. lesson #49 - verify, do
+  not assume).
+  **Still open (real work, not a click):** privacy blank and chat both create
+  `tk.Tk()` on a background thread, which crashes on macOS (the known
+  Tk-off-main-thread abort, already noted below) - they need a native Cocoa or
+  separate-process rewrite before they work on Mac. Reconnect-after-drop and
+  logout/login auto-start not yet exercised on the Mac. Windows and Linux
+  untouched by all of the above.
 - **Windows has run on one real laptop and is not yet clean.** The installer
   (`rmm-agent-setup.exe`) was built in CI and installed there. That run found and
   fixed: the mss thread failure, the missing Rust module, the console-window
@@ -215,8 +269,287 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 | 59 | Split one task across messages and ended with "which do you want" / "say go". | One message, everything needed, in order. No menus, no "say go" for steps that follow from what the user already approved. |
 | 60 | Hedged or buried a blocker. | If truly blocked, say exactly what blocks it in ONE line, then give everything that does not depend on the blocker. |
 | 61 | Spent ~2 weeks "fixing" the Parrot Wayland path by editing code on an X11-only dev box, shipping each guess to Parrot, and learning it failed from the user - a blind loop. Both real causes (threaded frame-pull freeze; pynput-on-3.13 privacy crash) were obvious the moment the user ran `rmm-agent status` + pasted `agent.log`. | A platform-specific bug you cannot reproduce locally is not debuggable by reading code and guessing. Get one real artefact from the failing machine FIRST (status + agent.log), every time, before changing a line. Add logging that makes the failure self-evident (e.g. `frames sent: N`) so the next run proves it. Bundle all needed commands into ONE the user runs once (they may be relaying over WhatsApp). |
+| 63 | Served `0.2.0.120` (graceful-drop branch, base `362c1de`) to the server without checking what was in it; it was missing all three Wayland fixes (`f405697/8ffc086/734f356`), so Parrot regressed to the freeze and the user lost a full day. | **BUILD GATE (do ALL, show proof in the same message, or do NOT hand over the build).** Before giving the user any build to put on the server: (1) list the build's exact commits and run `git merge-base --is-ancestor <fix> <build-ref>` for EVERY fix we rely on, pasting the results; (2) install that exact build's agent on Kali yourself and run the live test - frames flowing, mouse responsive, 10 min no freeze; (3) through the boss account, view-only (lesson #52), open a session to each target machine (Windows, Parrot) that build is for and run the same live test. If any check fails or cannot be run, do NOT give the build - say which check failed and why. ONE change per build; never combine fixes unless each was proven alone. |
+| 62 | The "clear all data for the boss test" block used `TRUNCATE devices` (CASCADE). That deleted EVERY enrolled device row at once - including `4cf805ba` (the Windows PC) - while the machines still held their ids in `enrolment.json`, so they were rejected with 4401 and (pre-fix) flapped every 31s forever. It also deleted the trust anchor (`secret_hash`) and any tombstone, so there is NO safe automatic recovery: "removed on purpose" and "lost in a wipe" are identical on the wire (both = row gone = 4401), and after a wipe the relay cannot prove a reconnecting agent is the same trusted computer. | NEVER `TRUNCATE devices` (or the whole DB) on a live system. Remove machines ONE AT A TIME from the console, which can keep a tombstone so a deliberately-removed PC stays removed. A mass wipe is unrecoverable by design - every enrolled PC must then be re-authorised through a fresh consented session. If a reset is truly needed, keep `operators`/`devices` and only clear `sessions`/`audit_events`. |
 
 ## Change log
+
+- **macOS HARDENING PASS (2026-11-17 PM): 8 real-Mac failure modes handled, one
+  fix at a time, macOS-only, each with a test; Windows/Linux untouched.** Prompted
+  by the blank-screen panic (root cause was missing Screen Recording permission,
+  see the corrected entry under "What does NOT work yet" above - proven with
+  `CGPreflightScreenCaptureAccess()=False` + a flat-fill capture, NOT a dead VM
+  as an earlier entry wrongly said). Driven by "anticipate every error a real Mac
+  user hits and fix it now, blind, with a simulating test." All checks use the
+  public Apple APIs through ctypes (no bundled pyobjc) and are no-ops off macOS.
+  New modules: `macos_permissions.py`, `macos_display.py`, `macos_app.py`. Full
+  agent suite 219 passed / 1 pre-existing unrelated failure (`test_privacy_input_block`,
+  pynput needs a display on this Kali box - fails on a clean tree too) / 1 skipped.
+  **"Fixed" here means code done + test passing + run on the real Mac where
+  possible; it is NOT the lesson-#54 sense of "confirmed working end-to-end by a
+  user," because the VM has no Screen Recording / Accessibility grant and a live
+  operator session could not be driven.** Per-item final table:
+
+  | # | Issue (how a user sees it) | Fix | Test | Proof on the real Mac | Still needs a real Mac |
+  | --- | --- | --- | --- | --- | --- |
+  | 2 | No Screen Recording permission -> operator sees a silent grey picture | Detect via `CGPreflightScreenCaptureAccess`; `grab()` returns a readable "permission needed" frame; request + notify the user at session start (`macos_permissions.py`, `capture.py`, `session.py`, commit 6a8a976) | `test_macos_permissions.py` 9/9 | YES - on the VM (no permission) `grab()` returns the explain frame (340 colours), not the flat fill; rendered + read back legibly | Seeing it in a live operator console |
+  | 7 | Chat window + privacy blank crash the whole agent (Tk off the main thread) | macOS never creates Tk: chat -> osascript notification, privacy blank -> `MODE_UNAVAILABLE`, no Tk thread (`chat.py`, `privacy.py`, commit 72b474f) | `test_macos_no_tk.py` 13/13 | YES - both construct and run on the VM with no Tk thread and no crash (exit 0) | A native macOS blank/chat window (follow-up) |
+  | 1 | Display sleeps or screen locks mid-session -> operator sees black | `caffeinate -d` holds the display awake for the session; lock detected via `CGSessionCopyCurrentDictionary` and shown as a "screen is locked" frame (`macos_display.py`, `capture.py`, `session.py`, commit 67c50a9) | `test_macos_display.py` 16/16 | YES - on the VM caffeinate holds `PreventUserIdleDisplaySleep` while active, releases on stop; lock state read live | A real sleep/wake + a real lock during a live session |
+  | 8 | A lost modifier key-up sticks (stray tabs from a stuck Cmd) | Force-release all modifiers on macOS at injector start and in `release_all()` (fires on every drop too) (`remote_input.py`, commit 6a5c3f6) | `test_macos_modifiers.py` 15/15 | Partial - runs clean on the VM (no crash); the releases need Accessibility to take effect | Accessibility granted + a live session to see "no stray tabs" |
+  | 4 | Run from Downloads -> App Translocation random path -> auto-start silently breaks | Detect `/AppTranslocation/`; refuse to write a broken LaunchAgent; tell the user to move to Applications. Saved settings already use `~/Library/Application Support` (absolute), unaffected (`macos_app.py`, `autostart.py`, `session.py`, commit 198ce88) | `test_macos_app.py` 30/30 | YES - on the VM the normal path is not flagged, a sample translocation path is | A real quarantined-from-Downloads launch |
+  | 3 | Unsigned app -> Gatekeeper "unidentified developer", no guidance | Join page gets a macOS-only steps branch: unzip, move to Applications, System Settings > Open Anyway, then Screen Recording + Accessibility (`console/src/pages/JoinPage.tsx`, commit f6e6f7c) | tsc clean + vite build | n/a (console) - builds green | A macOS browser to see it; a console rebuild to deploy |
+  | 5 | Sleep/wake or network change -> does it reconnect? | No change needed: `run_forever` has exponential backoff + `ping_interval=20` drop detection + `release_all()` on every drop; platform-agnostic | `p6_reconnect.py` (existing) | n/a (not macOS-specific) | A timed real-Mac sleep/wake cycle |
+  | 6 | Retina / multi-display -> wrong picture or mouse position | Already handled: input uses logical points (0..1 normalised), Swift capture uses `pointPixelScale` (status 2026-11-02 entry) | `test_input_mapping.py` (existing, incl. Retina/scaled/2nd-monitor) | n/a - VM has no Retina | A real Retina + multi-monitor Mac to confirm visually |
+
+  Branch `macos-agent-fixes` only; NOT pushed to main; NOT built into a server
+  artifact yet (build gate #63 applies before any server hand-off). Next: a CI
+  build so the packaged app carries these, then the real-Mac grant + live session
+  to close the "still needs a real Mac" column.
+
+- **macOS AGENT BROUGHT UP ON A REAL MAC (2026-11-17, continued): 3 crash/connect
+  bugs FIXED and PROVEN on the VM; capability testing in progress.** Built the
+  agent ON the rented Mac (macOS 27.0 arm64, Mac18,5 VM): installed Python 3.12.8
+  (python.org) + Command Line Tools, built the Swift ScreenCaptureKit module
+  (`libRMMCapture.dylib`, arm64) and `build.py --app`, so each fix is testable in
+  minutes instead of waiting for CI. Branch `macos-agent-fixes` (NOT pushed):
+  - *FIX 1 - Python 3.13 `_struct` crash.* The shipped server build was Python
+    **3.13** (`_struct.cpython-313`), which PyInstaller bundles so the frozen
+    interpreter can't load its C extensions on macOS 27 -> `ModuleNotFoundError:
+    _struct`, dead on launch. Building on **3.12** fixes it; the 3.12 pin is
+    already in main (`19fe418`), so the server build is just a stale 3.13 artifact
+    that needs a fresh CI run. PROVEN: `rmm-agent status` now runs and prints full
+    status.
+  - *FIX 2 - TLS `CERTIFICATE_VERIFY_FAILED` (commit 1688857).* The macOS build
+    ships its own OpenSSL with no trust store and `certifi` was never a dep, so
+    the agent could never verify the relay cert. Added `certifi` to requirements
+    and, on darwin only, set `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE` to
+    `certifi.where()` at startup (`__main__.py`). Linux/Windows untouched. PROVEN:
+    log now shows `attached to session` over `wss://`.
+  - *FIX 3 - tray NSStatusItem off-main-thread crash (commit 971f788).* The agent
+    crashed `EXC_BREAKPOINT` ~1s after attaching: `set_state()`/`notify()` run on
+    the asyncio thread but pystray touches `NSStatusItem`, which AppKit only
+    allows on the main thread (backtrace: asyncio -> `-[NSStatusItem setMenu:]` ->
+    `assertBarrierOnQueue`). Marshalled those updates to the main thread via
+    `AppHelper.callAfter` on darwin only (`tray.py`). PROVEN: agent now attaches,
+    auto-consents and **streams** without crashing.
+  - *CI hardening (commit 1688857, lesson #41).* The macOS smoke test only failed
+    on a crash SIGNAL (`status -ge 128`); a clean `exit 1` (like FIX 1) passed and
+    shipped. Now fails on ANY non-zero exit.
+  - *FIX 4 - agent never requested Accessibility (commit 1f0900f).* The macOS
+    input path posts CGEvents (pynput) but never asked for Accessibility, so the
+    app never appeared in the Accessibility list and a user had nothing to switch
+    on - control silently did nothing. On darwin, call
+    `AXIsProcessTrustedWithOptions({prompt:true})` via ctypes against the system
+    ApplicationServices framework (nothing bundled, universal across macOS
+    versions) when the input injector is built. PROVEN: log shows "requested
+    macOS Accessibility"; the app now registers and prompts. (Same gap existed
+    for Screen Recording but the native SCK path does prompt, so that one works.)
+  - *Capability results end of 2026-11-17 (macOS 27 arm64 VM).* PASS, proven:
+    starts; tray icon/state transitions (idle->connected->sharing) no crash;
+    connects to relay over TLS; attaches to session; consent reaches "streaming
+    starts now"; **native ScreenCaptureKit real picture - user confirmed sharp,
+    live, 14 fps in the console**; clipboard set+get via pbcopy/pbpaste; Screen
+    Recording permission grantable and applied. PENDING (user will grant + test
+    tomorrow, 1-line left): Accessibility toggle -> mouse/keyboard control (fix 4
+    is in; user just toggles it on). FOUND, not yet fixed: (a) chat window
+    creates `tk.Tk()` on a
+    background thread -> macOS main-thread crash risk; (b) privacy blank on macOS
+    falls to guest-lock + a Tk overlay (`dimmer` is Linux-only), so the operator
+    sees black AND it risks the same Tk main-thread crash - NOT triggered live, to
+    avoid locking the VM out. VM caveats (could differ on a real Mac): virtual
+    display, 1920x1080, no Retina, no discrete GPU - so Retina coordinate mapping
+    and real-GPU ScreenCaptureKit throughput/latency are unproven here.
+
+- **macOS AGENT RUN FOR THE FIRST TIME ON A REAL MAC (2026-11-17): it crashes
+  at startup. Root cause PROVEN; fix NOT built (needs a CI mac-runner rebuild).**
+  Rented a cloud Mac (rentamac.io, Mac mini M4, macOS 27.0 **arm64**), reached it
+  over SSH, downloaded the live connector (`/api/connector/macos`, sha256
+  b65e8e77…, matches the relay's `rmm-agent-macos.zip`), unzipped `rmm-agent.app`
+  and launched it two ways (GUI via `open`, and the binary directly). Both die
+  immediately with: `[PYI…:ERROR] Module object for struct is NULL! →
+  ModuleNotFoundError: No module named '_struct'`.
+  - *Proven cause.* The shipped bundle was built with **Python 3.13**, not the
+    **3.12** the macOS CI job pins on purpose (`agents.yml:228`; the comment says
+    pynput 1.7.7 breaks on 3.13). Evidence in the artifact:
+    `Contents/Frameworks/python3__dot__13/lib-dynload/_struct.cpython-**313**-darwin.so`.
+    PyInstaller's 3.13 macOS bundle puts the stdlib C-extensions under
+    `python3__dot__13/lib-dynload`, which the frozen interpreter does not search
+    on macOS 27, so Python cannot finish booting (`_struct` is a core C module).
+    Binary is native arm64 (not an architecture mismatch); a symlink
+    `python3.13 → python3__dot__13` did **not** fix it, so the break is the 3.13
+    bundle layout, not just the folder name.
+  - *Why CI shipped it broken.* The macOS smoke test (`agents.yml:253-258`) only
+    fails when the agent exits with a **signal** (`status -ge 128`); a plain
+    `exit 1` Python crash passes, and the build picked up 3.13 somewhere despite
+    `setup-python` 3.12.
+  - *ONE FIX (proposed, macOS only, not built).* Force the macOS build to use the
+    3.12 interpreter it intends (verify `python -V` in the Build step / invoke
+    PyInstaller with that exact Python), AND harden the smoke test to fail on any
+    non-zero exit, so a non-booting bundle can never ship again. Linux/Windows
+    builds untouched. Then rebuild on the CI mac runner, re-download, and re-run
+    on this same rented Mac (SSH access proven, so the retest is quick).
+  - *Still unproven on Mac even after this fix:* consent dialog, Screen Recording
+    + Accessibility grants, real capture/input, privacy blank, auto-start — none
+    reached, because the agent never started.
+
+- **TWO RESEARCH-BACKED CAUSES CONFIRMED IN OUR CODE (2026-11-13). No fix yet
+  (awaiting approval); no push.**
+  - *Finding 1 - the 1011 keepalive disconnects = relay backpressure.* The relay
+    forwards each guest frame to the operator INLINE in the guest read loop with
+    no drop/queue: `ws.py:314-316` → `hub.to_operator_bytes` → `_send_operator`
+    `await send(socket)` (`hub.py:255-265`). A slow operator blocks that await, so
+    the guest loop stops `receive()`-ing, the relay stops reading the guest, and
+    the guest↔relay keepalive times out → 1011 (matches Kali 06:32:53 / 06:43:36).
+    ONE FIX (approved research): relay keeps one newest-frame slot per operator and
+    drops older frames so the guest read never blocks. Files: `hub.py` (+ minor
+    `ws.py`). Relay-only; Kali X11 agent capture unchanged.
+  - *Finding 2 - Windows 0 fps freeze = silent WGC stop, undetected.* Rust
+    `grab()` returns the last stored frame with no error whenever `frames_seen>0`
+    (`lib.rs:333-345`); `on_frame_arrived` (`lib.rs:84`) is the only updater, so if
+    WGC silently stops calling it the frame goes stale forever. Our self-heal
+    `recover()` fires ONLY on an exception (`session.py:471-495`, comment confirms
+    "error-driven"). So a silent stop = stale frame, no throw, recover never fires
+    → 0 fps/0 kbps, green dot, no error. Confirmed as the code path; NOT yet
+    confirmed active on DESKTOP-NHO4OFM (needs its agent.log / live test). ONE FIX:
+    Windows-only - when input is injected and `frames_seen` does not advance within
+    ~1s, call the existing `recover()`. Files: `session.py` (Windows-gated) +
+    `lib.rs` (expose `frames_seen`/last-frame time). Windows only; X11/Wayland/mss
+    and Kali X11 untouched.
+  - Different causes (disconnect vs frozen-stream). Each fix one-at-a-time, gated
+    by lesson #63 before any build reaches the user.
+
+- **OPERATOR CONSOLE "drops every ~4s" = EXPIRED LOGIN TOKEN, fixed by env, no
+  code/push (2026-11-13).** After the Windows PC re-registered, the user saw the
+  session "drop every 5s". Relay log proved it was NOT the device: `/ws/device/
+  e79e0e79-...` (new Windows id) was stable, the OLD `4cf805ba` 31s flap had
+  STOPPED at 13:54 (the installer's PrepareToInstall killed the old agent - the
+  fix worked). The every-~4s churn was `/ws/operator/3CMNGS62` - the console's own
+  socket - accepted then "connection closed" immediately, looping. Cause: the
+  operator JWT lasts only `access_token_minutes: 480` (8h, config.py:19) with NO
+  console refresh; after 8h the token is dead, the operator socket is rejected at
+  `ws.py:449-451` (Not authenticated), and the browser retries the same dead token
+  every ~4s. Fix (no code, no push): `access_token_minutes` is a pydantic
+  `BaseSettings` field, so set `ACCESS_TOKEN_MINUTES` in the relay's environment.
+  Done on the server via `docker-compose.override-token.yml` (= "525600", 1 year)
+  + `up --force-recreate relay`; `printenv ACCESS_TOKEN_MINUTES` = 525600. User
+  must re-login once for a fresh long token. TODO: fold the env line into the main
+  compose on a branch so it survives rebuilds; proper fix (token auto-refresh so
+  no re-login ever) is a console+relay change, offered, not built.
+
+- **AUTO-RECOVER of a dead registration = UNSAFE, NOT built; graceful-drop on a
+  branch instead (2026-11-13).** User asked whether the agent could self-register
+  a new id after the wipe. Answered with code proof: (Q2) after the row is
+  deleted there is no `secret_hash` to verify against (`ws.py:88-95`), and enrol
+  needs a live consented session + matching `guest_token` (`connector.py:240-252`)
+  which a dead always-on agent does not have - so the relay CANNOT prove a
+  reconnecting agent is the same trusted computer. (Q3) a console delete and a DB
+  wipe are identical on the wire (both → row gone → 4401), so auto-recover would
+  also resurrect a deliberately-removed PC. Decision: do NOT build auto-recover.
+  BUILT ONLY the graceful drop on branch `graceful-drop` (base 362c1de, commit
+  95e05b7, NOT pushed): on a 4401/4403/4404 the agent forgets its dead id
+  (`Enrolment.delete`) and stops retrying, logs why, no prompts, no user files;
+  autostart kept so it stays ready for a fresh session. `device.py` only (Kali
+  X11 path untouched). Test `test_a_4401_close_forgets_the_registration_and_stops`
+  added; always-on suite 20/20, full agent suite 180 passed (only the pre-existing
+  3.14-box pynput input-block test fails locally).
+  - *Windows install-over-running fix (same branch, commit 158bf37).* Root cause
+    of "an error occurred while trying to replace the existing file": the taskkill
+    that stops rmm-agent.exe lived ONLY in `[UninstallRun]` (rmm-agent.iss:51-63),
+    so it never ran on an install/upgrade over a running agent → the exe stayed
+    locked. Added a `PrepareToInstall()` that deletes the watchdog task and kills
+    both processes BEFORE the `[Files]` copy, so install-over-running is seamless
+    (no "close the app first"). Windows installer only. CANNOT be tested on Linux
+    (needs Inno Setup on Windows) - confirm with a Windows build. Immediate
+    user-facing workaround until then: uninstall first (Settings → Apps), which
+    already stops the agent and clears the dead id, then run the session app.
+  - *Re-enrol with the dead file present (code proof).* `enrol()` sends only
+    `{code,name,os,guest_token}` (enrol.py:25-30) - never the dead id - and
+    `Enrolment.save()` overwrites `enrolment.json` (config.py:83-85). So "Always
+    allow" on a fresh session replaces the dead id; no self-replace fix needed.
+
+- **DISCONNECT ROOT-CAUSE INVESTIGATION (2026-11-13). Mechanism PROVEN; exact
+  trigger UNKNOWN pending relay logs + soak. No fix, no build.**
+  - *Proven from Kali agent.log (`~/.local/state/RMMAgent/agent.log`).* Two drops,
+    both during an ACTIVE streaming session `YZ669SGP`, same cause:
+    `06:32:53 session connection lost: received 1011 (internal error) keepalive
+    ping timeout; then sent 1011` and `06:43:36 ... sent 1011 keepalive ping
+    timeout; no close frame received`. ~10 min apart. All other session ends in
+    the log are clean "the operator ended the session". The device (idle presence)
+    socket did NOT drop in the same window - only the frame-carrying session
+    socket, under load.
+  - *Config facts (source).* Agent session socket `ping_interval=20`, default
+    `ping_timeout=20` (`session.py:203`). Relay = uvicorn with NO `--ws-ping-*`
+    flags (`infra/docker-compose.yml:56`) → defaults `ws_ping_interval=20`,
+    `ws_ping_timeout=20`. So either side closes 1011 if a pong is late >20s;
+    detection ≈ interval+timeout ≈ 40s.
+  - *Ruled out.* nginx: `proxy_read_timeout 3600s`, `proxy_send_timeout 3600s`,
+    `proxy_buffering off`, Upgrade headers set (`infra/nginx-tls.conf:112-118`).
+    Agent event-loop block by capture/encode: ruled out - both run off-loop via
+    `asyncio.to_thread` (`session.py:471,497`).
+  - *Important interpretation trap.* `diagnostics: still running` is a daemon
+    THREAD (`diagnostics.py:70-78`), not the asyncio loop, so it kept printing
+    through both 1011s and proves only that the PROCESS lived, NOT that the event
+    loop was healthy. A blocked loop (agent or relay) is fully consistent.
+  - *"1011 keepalive ping timeout" is the Python `websockets` library* closing for
+    >20s latency, NOT Cloudflare (Cloudflare idle ~100s; sources:
+    websockets docs, websocket.org, Cloudflare WS docs, uvicorn ws-ping defaults).
+  - *Known-cause table.* websockets/uvicorn keepalive 20/20 = CONFIRMED present and
+    too tight for the path. nginx timeouts/buffering = RULED OUT. Agent loop block
+    by capture/encode = RULED OUT. Cloudflare 100s idle cut = RULED OUT as the
+    cause of a 1011 (it is the lib, and the idle socket survived). Relay single
+    worker blocked >20s under frame fan-out = **LEADING, UNKNOWN** until relay logs
+    show whether multiple sockets drop at the same instant. Agent loop stalled by
+    something other than capture/encode = UNKNOWN. Cloudflare transient >20s pong
+    latency = UNKNOWN. DNS/sleep/wifi = not seen in the log (no getaddrinfo/OS
+    errors), only clean 1011s.
+  - *FLAP CAUSE PROVEN (relay logs + DB, 2026-11-13).* Relay log: `/ws/device/
+    4cf805ba-7c53-4204-99e5-0626e72699f2` accept → open → closed ~0.5s later,
+    every ~31s, 744 attempts in 24h, all from the internal proxy IP 172.20.0.5
+    (real client IP masked). DB: `SELECT ... WHERE id=4cf805ba` returns 0 rows -
+    the device was deleted by the earlier `TRUNCATE devices` wipe, so
+    `_authenticate_device` returns None at `ws.py:88-89` and the relay closes 4401
+    (`ws.py:382`); the 0.5s is the first-message auth read. The agent on that box
+    (likely Windows - the enrolled machine that never re-enrolled after the wipe;
+    identify by which `enrolment.json` holds 4cf805ba) runs a build older than
+    `ff88589`, so it retries the rejected credential forever (lesson #27). ONE FIX:
+    deploy `ff88589` there (it forgets the dead enrolment and stops) or re-enrol /
+    delete its `enrolment.json`; code fix already written. This flap is CHEAP (row
+    missing → returns before the argon2 verify at `ws.py:95`), so it does NOT load
+    the relay and is INDEPENDENT of the streaming 1011s.
+  - *NEEDED to finish the proof.* (1) Relay logs correlated by timestamp for the
+    Kali 1011s (agent-local -0500 ≈ relay-UTC +5h → T11:32:53 / T11:43:36): do
+    many sockets close in the same second (relay-worker stall) or only the
+    YZ669SGP guest (per-link latency)? STILL PENDING. (2) A ≥1h soak on a streaming
+    session measuring pong round-trip and which side closes first. Candidate fixes (NOT
+    implemented, pending approval): raise/disable `ws_ping_timeout` on BOTH
+    uvicorn and the agent; and/or move frame fan-out off the single relay worker.
+
+- **ROLLBACK TO WORKING requested for a boss submission (2026-11-13). Forensics +
+  revert plan; NO new build.** Last working state: after `362c1de` (2026-11-10),
+  agent build **0.2.0.103** (CI run 103); status recorded "Kali and Windows now
+  run fine" and a Kali baseline of 26.9 fps / 931 kbps, no reconnects.
+  - *What changed since, by component.* relay + console: **nothing** -
+    `git diff 362c1de..HEAD -- relay console` is EMPTY, so the server system is
+    already at the working state. Agent: changed across f405697 (Wayland JPEG,
+    run 104), 8ffc086 (inline frames, 113), 734f356 (GLib loop, 116), f3bb4f2
+    (backlight blank - ran new code on X11, 117), 402d906 (confined blank to
+    Wayland, restored X11, 118), ff88589 (reconnect-flap, 119). CI: 29134a7
+    introduced auto-delivery (run 106), so runs 106/110/113/114/116/117/118/119
+    auto-overwrote `/opt/nermm/agent/dist`; server now serves 0.2.0.119.
+  - *What is broken, with evidence.* Parrot (Wayland): was broken, now fixed +
+    user-confirmed (16 fps/434 kbps). relay/console: not broken, not changed
+    (proof above). Kali (X11): user reported "behaving like parrot"; only X11-
+    touching change was f3bb4f2, confined by 402d906; **no live Kali test since
+    the report, so the current state is UNPROVEN.** Windows: **no evidence of
+    breakage; unproven.** Honest: cannot prove which commit broke Kali/Windows.
+  - *Revert given (no rebuild).* relay/console need no rollback; optional rebuild
+    from origin/main (== working). Agent: run-103 artifacts (0.2.0.103 .deb +
+    windows setup/exe + macos zip) downloaded to the Kali laptop at
+    `/tmp/agent-103`; scp into the server's dist (after backing up dist to
+    `backup/pre-rollback`), verified by the live connector Content-Disposition.
+    Must NOT push to main until submitted (auto-delivery would overwrite).
+  - PENDING: user runs the revert; then live-test 0.2.0.103 on Kali here + user
+    spot-checks Windows. Parrot fix + auto-delivery deferred per user.
 
 - **AGENT RECONNECT FLAP FIXED (2026-11-13): a removed device no longer
   reconnects forever every few seconds.** Cause: the data wipe earlier

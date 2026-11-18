@@ -22,6 +22,15 @@ from app.core.config import settings
 
 log = logging.getLogger(__name__)
 
+# How long a single operator send may take before its socket is treated as
+# wedged. A real keyframe on a slow link finishes in a second or two; a
+# half-open viewer never finishes at all and, without this bound, freezes the
+# per-session sender task forever (stuck inside _send_operator holding the
+# channel lock), so every later frame is queued but never sent - the ~5-min
+# freeze seen on every OS. 10s is generous enough that a healthy-but-slow link
+# is never dropped, which is what made a 2s timeout cause a reconnect storm.
+OPERATOR_SEND_TIMEOUT = 10.0
+
 # Channel names. Binary frames and JSON travel separately so the subscriber
 # never has to guess which it is holding.
 def operator_binary_channel(code: str) -> str:
@@ -47,6 +56,18 @@ class SessionChannel:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Tasks listening on this session's Redis channels, one per attached role.
     subscriptions: list[asyncio.Task] = field(default_factory=list)
+    # Newest-frame-only delivery to the operator. A frame is dropped into this
+    # one slot (overwriting any older unsent frame) and a dedicated sender task
+    # drains it; the guest read path NEVER awaits the operator's socket. This is
+    # what stops a slow operator from backpressuring the guest read - the cause
+    # of the "1011 keepalive ping timeout" drops on the busy socket. A viewer
+    # that falls behind sees the latest picture, not a growing backlog.
+    latest_frame: bytes | None = None
+    frame_signal: asyncio.Event = field(default_factory=asyncio.Event)
+    sender_task: asyncio.Task | None = None
+    # Diagnostic counters (temporary) to pinpoint where frame delivery stalls.
+    frames_read: int = 0
+    frames_sent: int = 0
 
 
 class Hub:
@@ -133,7 +154,57 @@ class Hub:
         if channel and channel.guest is None and channel.operator is None:
             for task in channel.subscriptions:
                 task.cancel()
+            if channel.sender_task is not None:
+                channel.sender_task.cancel()
+                channel.sender_task = None
             self._channels.pop(code, None)
+
+    # --------------------------------------------------- newest-frame delivery
+
+    def _queue_frame(self, channel: "SessionChannel", payload: bytes) -> None:
+        """Drop a frame into the operator's one slot, replacing any older unsent
+        frame, and wake the sender. Returns at once - never awaits the operator
+        socket - so the guest read path can never be backpressured by a slow
+        operator (the 1011 keepalive cause). Older frames are intentionally
+        dropped: a slow viewer gets the newest picture, not a backlog."""
+        channel.latest_frame = payload
+        channel.frames_read += 1
+        if channel.frames_read % 100 == 0:
+            log.info("DIAG frames read from agent: %d (sent to operator: %d, sender_done=%s)",
+                     channel.frames_read, channel.frames_sent,
+                     channel.sender_task.done() if channel.sender_task else None)
+        if channel.sender_task is None or channel.sender_task.done():
+            log.info("DIAG starting frame sender (read=%d sent=%d)",
+                     channel.frames_read, channel.frames_sent)
+            channel.sender_task = asyncio.create_task(self._frame_sender(channel))
+        channel.frame_signal.set()
+
+    async def _frame_sender(self, channel: "SessionChannel") -> None:
+        try:
+            while True:
+                await channel.frame_signal.wait()
+                channel.frame_signal.clear()
+                frame, channel.latest_frame = channel.latest_frame, None
+                if frame is None:
+                    continue
+                # Goes through the same guarded, lock-serialized path as the
+                # heartbeat, so a frame and the 1s ping never interleave on the wire.
+                t0 = asyncio.get_running_loop().time()
+                await self._send_operator(channel, lambda s, f=frame: s.send_bytes(f))
+                dt = asyncio.get_running_loop().time() - t0
+                channel.frames_sent += 1
+                if dt > 1.0:
+                    log.warning("DIAG operator send took %.1fs (read=%d sent=%d)",
+                                dt, channel.frames_read, channel.frames_sent)
+                if channel.frames_sent % 100 == 0:
+                    log.info("DIAG frames sent to operator: %d (read=%d)",
+                             channel.frames_sent, channel.frames_read)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("DIAG frame sender EXITED on %r (read=%d sent=%d)",
+                        exc, channel.frames_read, channel.frames_sent)
+            raise
 
     def guest_online(self, code: str) -> bool:
         """Whether a guest socket is attached *to this instance*.
@@ -212,7 +283,9 @@ class Hub:
         async def deliver_binary(data: bytes) -> None:
             ch = self._channels.get(code)
             if ch and ch.operator is not None:
-                await self._send_operator(ch, lambda s: s.send_bytes(data))
+                # Cross-instance frames go through the same newest-only slot,
+                # so a slow operator never backpressures the Redis reader either.
+                self._queue_frame(ch, data)
 
         async def deliver_json(data: bytes) -> None:
             ch = self._channels.get(code)
@@ -255,14 +328,30 @@ class Hub:
                 # the lock; the new one gets the next message, not this.
                 if channel.operator is not socket:
                     return
-                await send(socket)
+                try:
+                    await asyncio.wait_for(send(socket), timeout=OPERATOR_SEND_TIMEOUT)
+                except asyncio.TimeoutError:
+                    # The viewer's socket is wedged (half-open): this send has
+                    # not returned in OPERATOR_SEND_TIMEOUT, far past any real
+                    # keyframe. Abandon it so the sender task frees the lock and
+                    # the next (reconnected) operator is served, instead of the
+                    # whole session's delivery dying here for good.
+                    if channel.operator is socket:
+                        channel.operator = None
+                    raise ConnectionError("operator send wedged; dropping socket")
         except Exception as exc:
             log.debug("send to operator failed: %s", exc)
+            try:
+                await asyncio.wait_for(socket.close(code=1011), timeout=2.0)
+            except Exception:
+                pass
 
     async def to_operator_bytes(self, code: str, payload: bytes) -> None:
         channel = self._channels.get(code)
         if channel and channel.operator is not None:
-            await self._send_operator(channel, lambda s: s.send_bytes(payload))
+            # Newest-frame-only: hand the frame to the slot and return at once.
+            # The guest read loop calls this, so it must never await the operator.
+            self._queue_frame(channel, payload)
             return
         await self._publish(operator_binary_channel(code), payload)
 
