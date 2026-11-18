@@ -274,6 +274,38 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **macOS HARDENING PASS (2026-11-17 PM): 8 real-Mac failure modes handled, one
+  fix at a time, macOS-only, each with a test; Windows/Linux untouched.** Prompted
+  by the blank-screen panic (root cause was missing Screen Recording permission,
+  see the corrected entry under "What does NOT work yet" above - proven with
+  `CGPreflightScreenCaptureAccess()=False` + a flat-fill capture, NOT a dead VM
+  as an earlier entry wrongly said). Driven by "anticipate every error a real Mac
+  user hits and fix it now, blind, with a simulating test." All checks use the
+  public Apple APIs through ctypes (no bundled pyobjc) and are no-ops off macOS.
+  New modules: `macos_permissions.py`, `macos_display.py`, `macos_app.py`. Full
+  agent suite 219 passed / 1 pre-existing unrelated failure (`test_privacy_input_block`,
+  pynput needs a display on this Kali box - fails on a clean tree too) / 1 skipped.
+  **"Fixed" here means code done + test passing + run on the real Mac where
+  possible; it is NOT the lesson-#54 sense of "confirmed working end-to-end by a
+  user," because the VM has no Screen Recording / Accessibility grant and a live
+  operator session could not be driven.** Per-item final table:
+
+  | # | Issue (how a user sees it) | Fix | Test | Proof on the real Mac | Still needs a real Mac |
+  | --- | --- | --- | --- | --- | --- |
+  | 2 | No Screen Recording permission -> operator sees a silent grey picture | Detect via `CGPreflightScreenCaptureAccess`; `grab()` returns a readable "permission needed" frame; request + notify the user at session start (`macos_permissions.py`, `capture.py`, `session.py`, commit 6a8a976) | `test_macos_permissions.py` 9/9 | YES - on the VM (no permission) `grab()` returns the explain frame (340 colours), not the flat fill; rendered + read back legibly | Seeing it in a live operator console |
+  | 7 | Chat window + privacy blank crash the whole agent (Tk off the main thread) | macOS never creates Tk: chat -> osascript notification, privacy blank -> `MODE_UNAVAILABLE`, no Tk thread (`chat.py`, `privacy.py`, commit 72b474f) | `test_macos_no_tk.py` 13/13 | YES - both construct and run on the VM with no Tk thread and no crash (exit 0) | A native macOS blank/chat window (follow-up) |
+  | 1 | Display sleeps or screen locks mid-session -> operator sees black | `caffeinate -d` holds the display awake for the session; lock detected via `CGSessionCopyCurrentDictionary` and shown as a "screen is locked" frame (`macos_display.py`, `capture.py`, `session.py`, commit 67c50a9) | `test_macos_display.py` 16/16 | YES - on the VM caffeinate holds `PreventUserIdleDisplaySleep` while active, releases on stop; lock state read live | A real sleep/wake + a real lock during a live session |
+  | 8 | A lost modifier key-up sticks (stray tabs from a stuck Cmd) | Force-release all modifiers on macOS at injector start and in `release_all()` (fires on every drop too) (`remote_input.py`, commit 6a5c3f6) | `test_macos_modifiers.py` 15/15 | Partial - runs clean on the VM (no crash); the releases need Accessibility to take effect | Accessibility granted + a live session to see "no stray tabs" |
+  | 4 | Run from Downloads -> App Translocation random path -> auto-start silently breaks | Detect `/AppTranslocation/`; refuse to write a broken LaunchAgent; tell the user to move to Applications. Saved settings already use `~/Library/Application Support` (absolute), unaffected (`macos_app.py`, `autostart.py`, `session.py`, commit 198ce88) | `test_macos_app.py` 30/30 | YES - on the VM the normal path is not flagged, a sample translocation path is | A real quarantined-from-Downloads launch |
+  | 3 | Unsigned app -> Gatekeeper "unidentified developer", no guidance | Join page gets a macOS-only steps branch: unzip, move to Applications, System Settings > Open Anyway, then Screen Recording + Accessibility (`console/src/pages/JoinPage.tsx`, commit f6e6f7c) | tsc clean + vite build | n/a (console) - builds green | A macOS browser to see it; a console rebuild to deploy |
+  | 5 | Sleep/wake or network change -> does it reconnect? | No change needed: `run_forever` has exponential backoff + `ping_interval=20` drop detection + `release_all()` on every drop; platform-agnostic | `p6_reconnect.py` (existing) | n/a (not macOS-specific) | A timed real-Mac sleep/wake cycle |
+  | 6 | Retina / multi-display -> wrong picture or mouse position | Already handled: input uses logical points (0..1 normalised), Swift capture uses `pointPixelScale` (status 2026-11-02 entry) | `test_input_mapping.py` (existing, incl. Retina/scaled/2nd-monitor) | n/a - VM has no Retina | A real Retina + multi-monitor Mac to confirm visually |
+
+  Branch `macos-agent-fixes` only; NOT pushed to main; NOT built into a server
+  artifact yet (build gate #63 applies before any server hand-off). Next: a CI
+  build so the packaged app carries these, then the real-Mac grant + live session
+  to close the "still needs a real Mac" column.
+
 - **macOS AGENT BROUGHT UP ON A REAL MAC (2026-11-17, continued): 3 crash/connect
   bugs FIXED and PROVEN on the VM; capability testing in progress.** Built the
   agent ON the rented Mac (macOS 27.0 arm64, Mac18,5 VM): installed Python 3.12.8
