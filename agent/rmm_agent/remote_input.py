@@ -14,6 +14,8 @@ from rmm_agent import wayland_portal
 
 log = logging.getLogger(__name__)
 
+_MACOS = platform.system() == "Darwin"
+
 
 def _request_macos_accessibility() -> None:
     """macOS only: ask for Accessibility (keyboard/mouse control) the standard
@@ -139,8 +141,35 @@ class InputInjector:
             self.available = True
             if platform.system() == "Darwin":
                 _request_macos_accessibility()
+                # Clear any modifier left stuck down by a previous session that
+                # dropped between a modifier press and its release - otherwise
+                # the first thing typed in this session combines with it (a
+                # stuck Cmd turns letters into shortcuts: "stray tabs").
+                self._clear_macos_modifiers()
         except Exception as exc:
             log.warning("input injection unavailable: %s", exc)
+
+    def _clear_macos_modifiers(self) -> None:
+        """macOS only: force every modifier key up at the OS level.
+
+        A lost key-up (a drop mid-shortcut) leaves the modifier stuck in the
+        CGEvent flags with nothing tracking it, so release_all() - which only
+        releases keys this session pressed - cannot clear it. Posting a key-up
+        for each modifier clears the stuck flag whether or not we pressed it.
+        Releasing a key that is not down is harmless. macOS only, so Windows and
+        Linux input is untouched."""
+        if not _MACOS or self._keyboard is None or self._Key is None:
+            return
+        Key = self._Key
+        for name in ("shift", "shift_r", "ctrl", "ctrl_r", "alt", "alt_r",
+                     "alt_gr", "cmd", "cmd_r", "caps_lock"):
+            key = getattr(Key, name, None)
+            if key is None:
+                continue
+            try:
+                self._keyboard.release(key)
+            except Exception as exc:
+                log.debug("could not clear modifier %s: %s", name, exc)
 
     # Browser key names -> pynput keys.
     def _special(self, name: str):
@@ -314,3 +343,6 @@ class InputInjector:
                 log.debug("could not release key %s: %s", key, exc)
         self._pressed_buttons.clear()
         self._pressed_keys.clear()
+        # macOS: also force the modifiers up, so none is left stuck for the next
+        # session even if its release never arrived this one.
+        self._clear_macos_modifiers()
