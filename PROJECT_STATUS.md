@@ -274,6 +274,84 @@ the rule that stops it happening again. Add one the moment something goes wrong.
 
 ## Change log
 
+- **2026-11-18: three-agent live retest + the VM access and Mac findings that
+  this file was missing (the omission that caused a whole session of confusion).**
+  - **VM ACCESS (never recorded before - fix the gap).** The rented Mac is reached
+    over SSH at `gate1.rentamac.io` port `29951`, user `rentamac`; the account
+    password is the same one used for the VNC/ARD screen-share (port `5900`). The
+    locally-built Python-3.12 agent lives at `~/build/agent/dist/rmm-agent.app`
+    (adhoc-signed, id `com.rmm.agent`); log at
+    `~/Library/Application Support/RMMAgent/agent.log`.
+  - **Windows (DESKTOP-NHO4OFM): HEALTHY.** Read its agent.log live through the
+    operator terminal (boss account, lesson #52): continuous heartbeats since the
+    08:15 boot, clean session open/close, zero 1011/network/crash lines, empty
+    crash.log. The watchdog task points to the SILENT `rmm-agent-watchdog.exe`
+    (not the old flashing `rmm-agent.exe resume`), so no PowerShell flash. Ping to
+    the relay 0% loss, 146 ms +/-1 ms. The "disconnect" was the OPERATOR login
+    token: it is back to the 8 h default, NOT the 1-year override set 2026-11-13 -
+    that env override was lost on a relay restart (the 11-13 TODO to fold
+    `ACCESS_TOKEN_MINUTES` into the compose was never done).
+    - **MADE PERMANENT 2026-11-18.** The reference `ACCESS_TOKEN_MINUTES:
+      ${ACCESS_TOKEN_MINUTES:-480}` is now in the relay `environment:` of
+      `infra/docker-compose.yml` (in the repo), and the value
+      `ACCESS_TOKEN_MINUTES=525600` goes in the server-local `infra/.env` (not
+      tracked, so it survives git pulls). Because it is in the base compose it is
+      always loaded on every `up`/restart - the old separate override file could be
+      dropped by a plain `up`, which is how it was wiped. The server command block
+      to apply it + the live-verify is in the 2026-11-18 handover. User re-logs in
+      once for a fresh long token. The redundant `docker-compose.override-token.yml`
+      can be deleted.
+    - **LESSON (token persistence): a temporary override is made permanent in the
+      SAME session - folded into the tracked config (compose/.env), proven to
+      survive a restart - or it is written here as an explicit OPEN ITEM with the
+      exact file + line still to add. A temp fix that only lives in a running
+      container or a separate, easily-dropped file is treated as not done.**
+  - **Linux (kali): HEALTHY.** Operator live test 40 s, 104 frames, no stalls (the
+    sawtooth freeze did not reproduce); clean open/close. Older log lines are last
+    night's reconnect-backoff (self-recovered) and a pystray/Xlib tray crash when
+    the X display connection dropped (23:12) - a display-environment event, not now.
+  - **macOS (VM): connects + streams; real picture still blocked on Screen
+    Recording.** The agent was not running (why it "wasn't connecting"). Started it
+    (SSH join + `--auto-consent`): connects over TLS, attaches, consent, and streams
+    to the operator CONTINUOUSLY (104 frames/20 s, no stalls) - but as the
+    "Screen Recording needed" explain frame (fix #2 working), ~647 B frames.
+    **Accessibility is now GRANTED** on the VM (`already trusted: True`; was False on
+    11-17) so control should reach the Mac. **Screen Recording is still REFUSED**
+    (`user declined TCCs ... display capture`) so no real desktop yet. Two causes
+    under test: (a) the Screen-Recording toggle for `rmm-agent` is not actually on;
+    (b) launching over SSH is not in the GUI/window-server session that
+    ScreenCaptureKit requires.
+  - **Relaunched via `open` (desktop session):** agent runs, connects, streams -
+    but ScreenCaptureKit STILL refused (Screen Recording not granted to the bundle
+    identity) and, launched this way, Accessibility reads `trusted: False` too
+    (SSH-launch read `True`). So the adhoc-signed app presents a DIFFERENT TCC
+    identity per launch method and the grants do not line up - the unsigned-build
+    TCC fragility (hardening item #2) in the flesh. No code can bypass this without
+    a stable code signature, which is out of scope (in-house, no signing).
+  - **Tried to grant it myself over the VM's screen (vncdotool over an SSH tunnel
+    to :5900):** auth succeeds and input is accepted, but the ARD framebuffer comes
+    back ALL-BLACK (extrema 0,0; `displaysleep 0`, console user `rentamac` logged
+    in, so not a sleeping display - macOS/ARD simply sends no pixels through
+    vncdotool). So I cannot SEE the desktop to click the Screen Recording toggle.
+  - **BLOCKED (one thing only a human at the Mac can do):** turn Screen Recording
+    ON for `rmm-agent` in System Settings on the Mac's own screen. TCC grants for an
+    unsigned app require an on-screen human action (Apple's security model); SSH
+    can't (SIP), and the VNC framebuffer is black here. Everything else is proven.
+
+  **macOS result table (2026-11-18):**
+  | Issue | Fixed | Proof | Needs a real Mac |
+  |---|---|---|---|
+  | 3.13 `_struct` crash | YES | 3.12 build boots + runs (`rmm-agent status`) | - |
+  | TLS cert verify fail | YES | log: `attached to session` over `wss://` | - |
+  | Tray off-main-thread crash | YES | streams, no EXC_BREAKPOINT | - |
+  | Blank grey picture (no SR) | YES (shows explain frame) | operator got 104 frames/20s of the "permission needed" card, no stalls | real picture needs SR toggle |
+  | No Tk on macOS (chat/privacy) | YES | `test_macos_no_tk.py` 13/13; runs on VM no crash | native blank/chat window (follow-up) |
+  | Display sleep/lock | YES | `caffeinate -d` held; lock frame | real sleep/lock during a live session |
+  | Stuck modifiers | YES (code) | `test_macos_modifiers.py` 15/15 | AX granted + live session to see no stray tabs |
+  | App translocation | YES | `test_macos_app.py` 30/30 | real quarantined-from-Downloads launch |
+  | Accessibility (control) | code YES; grant per-identity | AX prompt registers; `trusted:True` when launched one way | consistent grant + live control test |
+  | Screen Recording (real picture) | NO (blocked) | refused today; proven working 14fps on 2026-11-17 when granted | **human toggles SR ON on the Mac screen** |
+
 - **macOS HARDENING PASS (2026-11-17 PM): 8 real-Mac failure modes handled, one
   fix at a time, macOS-only, each with a test; Windows/Linux untouched.** Prompted
   by the blank-screen panic (root cause was missing Screen Recording permission,

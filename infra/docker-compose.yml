@@ -40,6 +40,12 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-production}
       LOG_DIR: /var/log/rmm-relay
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Operator login-token lifetime in minutes. The value lives in infra/.env
+      # (ACCESS_TOKEN_MINUTES=525600 = 1 year) so it survives restarts AND git
+      # pulls; the default here (480 = 8h) matches config.py. Made permanent
+      # 2026-11-18 - the 2026-11-13 override file was a temp fix that a restart
+      # wiped (lesson: a temp override is folded in the same session).
+      ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-480}
     volumes:
       # Persistent operational logging (Phase 6): a restart must not lose it.
       - relaylogs:/var/log/rmm-relay
