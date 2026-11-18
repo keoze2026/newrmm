@@ -284,43 +284,58 @@ jobs:
             echo "::warning::installers/macos/build_pkg.sh is missing; shipping the zipped .app only."
           fi
 
-      - name: Sign and notarise
-        # Needs a Developer ID certificate and an App Store Connect key.
-        # Without them the build is unsigned and Gatekeeper will refuse it on
-        # any machine other than the one that built it.
+      - name: Sign with the stable self-signed identity (keeps TCC permissions across updates)
+        # In-house system, no Apple Developer ID (decided: not paying for one).
+        # A STABLE self-signed code-signing cert gives the app a constant
+        # "designated requirement" (identifier + certificate leaf) instead of a
+        # per-build cdhash, so macOS keeps its Screen Recording / Accessibility
+        # grants across every update - the whole point. It is NOT notarised
+        # (self-signed can't be), so Gatekeeper still warns on first open; the
+        # macOS join page tells employees to right-click > Open once. Signed
+        # inside-out (nested Mach-O first, bundle last) because `codesign --deep`
+        # is unreliable on a PyInstaller bundle. macOS only; Windows/Linux
+        # untouched. Secrets: MACOS_CERT_P12 (base64 .p12), MACOS_CERT_PASSWORD,
+        # MACOS_SIGN_IDENTITY (the cert CN: "Micro AV RMM Agent").
         if: ${{ env.MACOS_CERT_P12 != '' }}
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
-          MACOS_NOTARY_PROFILE: ${{ secrets.MACOS_NOTARY_PROFILE }}
         run: |
+          set -euo pipefail
           echo "$MACOS_CERT_P12" | base64 --decode > cert.p12
           security create-keychain -p ci build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p ci build.keychain
-          security import cert.p12 -k build.keychain -P "$MACOS_CERT_PASSWORD" \
-            -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k ci build.keychain
-          codesign --force --deep --options runtime --timestamp \
-            --sign "$MACOS_SIGN_IDENTITY" agent/dist/rmm-agent.app
+          security import cert.p12 -k build.keychain -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci build.keychain >/dev/null
           rm cert.p12
-          # Re-archive after signing, then notarise the signed bundle.
-          rm -f agent/dist/rmm-agent-macos.zip
-          ditto -c -k --keepParent agent/dist/rmm-agent.app agent/dist/rmm-agent-macos.zip
-          if [ -n "$MACOS_NOTARY_PROFILE" ]; then
-            xcrun notarytool submit agent/dist/rmm-agent-macos.zip \
-              --keychain-profile "$MACOS_NOTARY_PROFILE" --wait
-            xcrun stapler staple agent/dist/rmm-agent.app
-            rm -f agent/dist/rmm-agent-macos.zip
-            ditto -c -k --keepParent agent/dist/rmm-agent.app agent/dist/rmm-agent-macos.zip
+          APP=agent/dist/rmm-agent.app
+          # inside-out: every nested Mach-O (dylibs, .so, frameworks) first ...
+          find "$APP/Contents" -type f \( -name '*.dylib' -o -name '*.so' \) -print0 \
+            | while IFS= read -r -d '' f; do codesign --force --timestamp --sign "$MACOS_SIGN_IDENTITY" "$f"; done
+          find "$APP/Contents" -type d -name '*.framework' -print0 \
+            | while IFS= read -r -d '' fw; do codesign --force --timestamp --sign "$MACOS_SIGN_IDENTITY" "$fw"; done
+          # ... then the main executable and the bundle itself.
+          codesign --force --timestamp --sign "$MACOS_SIGN_IDENTITY" "$APP/Contents/MacOS/rmm-agent" || true
+          codesign --force --timestamp --sign "$MACOS_SIGN_IDENTITY" "$APP"
+          echo "=== PROOF: designated requirement must name the certificate, not a cdhash ==="
+          codesign -d -r- "$APP"
+          codesign -dvv "$APP" 2>&1 | grep -iE 'Authority|Identifier|Signature' || true
+          codesign --verify --strict --verbose=2 "$APP"
+          if codesign -d -r- "$APP" 2>&1 | grep -q 'certificate leaf'; then
+            echo "OK: requirement is bound to the stable certificate (TCC grants will persist)."
+          else
+            echo "::error::signed bundle's requirement is not certificate-bound - TCC would still reset on update"; exit 1
           fi
+          rm -f agent/dist/rmm-agent-macos.zip
+          ditto -c -k --keepParent "$APP" agent/dist/rmm-agent-macos.zip
 
       - name: Note when unsigned
         if: ${{ env.MACOS_CERT_P12 == '' }}
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
-        run: echo "::warning::No Developer ID certificate; this build is unsigned and Gatekeeper will refuse it."
+        run: echo "::warning::No signing certificate secret set; this build is ad-hoc and macOS will reset its permissions on every update."
 
       - uses: actions/upload-artifact@v4
         with:
