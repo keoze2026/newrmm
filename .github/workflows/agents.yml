@@ -90,9 +90,14 @@ jobs:
         # not install; the package does.
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          # On a pull_request GITHUB_REF_NAME is "<n>/merge" (e.g. "1/merge"),
+          # which starts with a digit yet is not a valid version - the "/" is
+          # rejected by dpkg. Only keep a ref that is already a bare dotted
+          # version (a real tag); anything else (a PR merge ref, "main", a
+          # branch name) gets a synthesized number. (lesson #7)
           # Every build needs its own number: apt skips "0.2.0" over an
           # installed "0.2.0", so a fixed build never replaced the old one.
-          case "$VERSION" in [0-9]*) ;; *) VERSION="0.2.0.${GITHUB_RUN_NUMBER}" ;; esac
+          case "$VERSION" in *[!0-9.]* | "" ) VERSION="0.2.0.${GITHUB_RUN_NUMBER}" ;; esac
           ./installers/linux/build_deb.sh "$VERSION"
 
       - uses: actions/upload-artifact@v4
@@ -273,7 +278,7 @@ jobs:
         run: |
           if [ -x installers/macos/build_pkg.sh ]; then
             VERSION="${GITHUB_REF_NAME#v}"
-            case "$VERSION" in [0-9]*) ;; *) VERSION="0.2.0" ;; esac
+            case "$VERSION" in *[!0-9.]* | "" ) VERSION="0.2.0" ;; esac
             ./installers/macos/build_pkg.sh "$VERSION"
           else
             echo "::warning::installers/macos/build_pkg.sh is missing; shipping the zipped .app only."
