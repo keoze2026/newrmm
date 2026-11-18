@@ -42,7 +42,7 @@ function howTo(build: Build): string | null {
   if (name.includes('-setup')) return 'Open it. It installs and starts by itself - nothing to type.'
   if (name.endsWith('.exe')) return 'Run it. If Windows warns, choose More info, then Run anyway.'
   if (name.endsWith('.pkg')) return 'Open it and follow the installer.'
-  if (name.endsWith('.zip')) return 'Unzip it, then open the app.'
+  if (name.endsWith('.zip')) return 'Unzip it, move the app to Applications, then open it - see the macOS steps below for the security prompt.'
   return `Make it executable, then run it: chmod +x ${name}`
 }
 
@@ -244,6 +244,20 @@ export default function JoinPage() {
                   <li>3. Type your computer password when asked. Nothing shows while you type; that is normal.</li>
                   <li>4. It asks your permission. Nothing is shared until you allow it.</li>
                   <li>5. It keeps running if you close the terminal. To end the session run <span className="font-mono text-navy">rmm-agent stop</span>.</li>
+                </ol>
+              ) : mine === 'macos' ? (
+                <ol data-testid="macos-steps" className="mt-2 space-y-1 text-xs leading-relaxed text-muted">
+                  <li>1. In your Downloads, double-click the file to unzip it. You get an app called <span className="font-mono text-navy">rmm-agent</span>.</li>
+                  <li>2. Drag <span className="font-mono text-navy">rmm-agent</span> into your <span className="font-semibold text-navy">Applications</span> folder, then open it from there. (Opening it from Downloads can stop it starting again later.)</li>
+                  <li>
+                    3. The first time, macOS says it is from an unidentified developer and will not open it. Open the Apple menu &gt; <span className="font-semibold text-navy">System Settings</span> &gt; <span className="font-semibold text-navy">Privacy &amp; Security</span>, scroll down, and next to the message about <span className="font-mono text-navy">rmm-agent</span> click <span className="font-semibold text-navy">Open Anyway</span>. (On older macOS: hold Control, click the app, choose Open, then Open.)
+                  </li>
+                  <li>4. If a window asks for a code, type <span className="font-mono text-navy">{session.code}</span>.</li>
+                  <li>5. It asks your permission. Nothing is shared until you allow it.</li>
+                  <li>
+                    6. When it asks to record the screen and control the computer, switch <span className="font-mono text-navy">rmm-agent</span> on under <span className="font-semibold text-navy">System Settings</span> &gt; <span className="font-semibold text-navy">Privacy &amp; Security</span> &gt; <span className="font-semibold text-navy">Screen Recording</span> and <span className="font-semibold text-navy">Accessibility</span>, then open the app again. Without this the screen stays blank and the mouse will not move.
+                  </li>
+                  <li>7. An icon stays in your menu bar for as long as the session runs. Use it to end the session.</li>
                 </ol>
               ) : (
               <ol className="mt-2 space-y-1 text-xs leading-relaxed text-muted">
